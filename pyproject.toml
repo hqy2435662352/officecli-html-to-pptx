@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "html-to-pptx"
+version = "0.1.0"
+description = "Convert HTML slide decks to editable PowerPoint files using browser-based DOM measurement."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Design Arena" }]
+keywords = ["pptx", "powerpoint", "html", "slides", "converter", "presentation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business",
+    "Topic :: Multimedia :: Graphics :: Presentation",
+    "Typing :: Typed",
+]
+dependencies = [
+    "python-pptx>=1.0.0",
+    "playwright>=1.40.0",
+    "lxml>=5.0.0",
+]
+
+[project.optional-dependencies]
+compare = [
+    "Pillow>=10.0.0",
+    "pymupdf>=1.24.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "html-to-pptx[compare]",
+]
+
+[project.scripts]
+html-to-pptx = "html_to_pptx.cli:main"
+html-to-pptx-compare = "html_to_pptx.compare:main"
+
+[project.urls]
+Homepage = "https://github.com/Design-Arena/html-to-pptx"
+Repository = "https://github.com/Design-Arena/html-to-pptx"
+Issues = "https://github.com/Design-Arena/html-to-pptx/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/html_to_pptx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920, height=1080">
+<style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #111; overflow: hidden; }
+
+    .slide {
+        width: 1920px;
+        height: 1080px;
+        display: none;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        position: relative;
+        overflow: hidden;
+        font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+    .slide.active { display: flex; }
+
+    /* --- Slide 1: Title --- */
+    .slide-title {
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        background-color: #0f172a;
+    }
+    .slide-title h1 {
+        font-size: 72px;
+        font-weight: 700;
+        color: #f8fafc;
+        text-align: center;
+        margin-bottom: 24px;
+    }
+    .slide-title p {
+        font-size: 28px;
+        color: #94a3b8;
+        text-align: center;
+        max-width: 800px;
+    }
+
+    /* --- Slide 2: Two-column --- */
+    .slide-content {
+        background-color: #ffffff;
+        padding: 80px 120px;
+        align-items: flex-start;
+    }
+    .slide-content h2 {
+        font-size: 48px;
+        font-weight: 600;
+        color: #0f172a;
+        margin-bottom: 48px;
+        width: 100%;
+    }
+    .columns {
+        display: flex;
+        gap: 64px;
+        width: 100%;
+    }
+    .column {
+        flex: 1;
+    }
+    .column h3 {
+        font-size: 28px;
+        font-weight: 600;
+        color: #1e293b;
+        margin-bottom: 16px;
+    }
+    .column p {
+        font-size: 22px;
+        color: #475569;
+        line-height: 1.6;
+    }
+
+    /* --- Slide 3: Feature cards --- */
+    .slide-cards {
+        background-color: #f8fafc;
+        padding: 80px 120px;
+        align-items: flex-start;
+    }
+    .slide-cards h2 {
+        font-size: 48px;
+        font-weight: 600;
+        color: #0f172a;
+        margin-bottom: 48px;
+        width: 100%;
+    }
+    .card-grid {
+        display: flex;
+        gap: 32px;
+        width: 100%;
+    }
+    .card {
+        flex: 1;
+        background-color: #ffffff;
+        border-radius: 16px;
+        padding: 40px;
+        border: 1px solid #e2e8f0;
+    }
+    .card .icon {
+        font-size: 36px;
+        margin-bottom: 16px;
+    }
+    .card h3 {
+        font-size: 24px;
+        font-weight: 600;
+        color: #0f172a;
+        margin-bottom: 12px;
+    }
+    .card p {
+        font-size: 18px;
+        color: #64748b;
+        line-height: 1.5;
+    }
+
+    /* --- Slide 4: List with accent --- */
+    .slide-list {
+        background-color: #ffffff;
+        padding: 80px 120px;
+        align-items: flex-start;
+    }
+    .slide-list h2 {
+        font-size: 48px;
+        font-weight: 600;
+        color: #0f172a;
+        margin-bottom: 48px;
+    }
+    .slide-list ul {
+        list-style: none;
+        width: 100%;
+    }
+    .slide-list li {
+        font-size: 24px;
+        color: #334155;
+        padding: 20px 24px;
+        border-left: 4px solid #3b82f6;
+        margin-bottom: 16px;
+        background-color: #f1f5f9;
+        border-radius: 0 8px 8px 0;
+    }
+
+    /* --- Slide 5: Closing --- */
+    .slide-closing {
+        background-color: #1e293b;
+    }
+    .slide-closing h2 {
+        font-size: 56px;
+        font-weight: 700;
+        color: #f8fafc;
+        margin-bottom: 24px;
+    }
+    .slide-closing p {
+        font-size: 24px;
+        color: #94a3b8;
+    }
+    .cta-button {
+        margin-top: 40px;
+        padding: 16px 48px;
+        background-color: #3b82f6;
+        color: #ffffff;
+        font-size: 22px;
+        font-weight: 600;
+        border-radius: 12px;
+    }
+</style>
+</head>
+<body>
+
+<section class="slide slide-title active">
+    <h1>html-to-pptx</h1>
+    <p>Convert any HTML slide deck into an editable PowerPoint file, pixel-perfectly.</p>
+</section>
+
+<section class="slide slide-content">
+    <h2>How It Works</h2>
+    <div class="columns">
+        <div class="column">
+            <h3>1. Measure</h3>
+            <p>A headless browser loads your HTML and measures every visible element: position, size, colors, fonts, borders, and images.</p>
+        </div>
+        <div class="column">
+            <h3>2. Render</h3>
+            <p>Each measurement is mapped to the closest PowerPoint shape: text boxes, picture shapes, and filled rectangles with precise coordinates.</p>
+        </div>
+    </div>
+</section>
+
+<section class="slide slide-cards">
+    <h2>Features</h2>
+    <div class="card-grid">
+        <div class="card">
+            <div class="icon">&#x1f3a8;</div>
+            <h3>Pixel-Perfect</h3>
+            <p>DOM measurements ensure positions and sizes match the original HTML layout.</p>
+        </div>
+        <div class="card">
+            <div class="icon">&#x270f;&#xfe0f;</div>
+            <h3>Fully Editable</h3>
+            <p>Every element becomes a native PPTX shape — text, images, and backgrounds are all editable.</p>
+        </div>
+        <div class="card">
+            <div class="icon">&#x26a1;</div>
+            <h3>Fast</h3>
+            <p>Headless Chromium processes complex decks in seconds, not minutes.</p>
+        </div>
+    </div>
+</section>
+
+<section class="slide slide-list">
+    <h2>What Gets Converted</h2>
+    <ul>
+        <li>Text with fonts, colors, bold, italic, and alignment</li>
+        <li>Background colors with alpha transparency</li>
+        <li>Rounded corners via OOXML adjustment guides</li>
+        <li>Base64-embedded images as native picture shapes</li>
+        <li>Borders and accent bars as separate shapes</li>
+        <li>CSS text-transform (uppercase, lowercase, capitalize)</li>
+        <li>Hyperlinks preserved on text runs</li>
+    </ul>
+</section>
+
+<section class="slide slide-closing">
+    <h2>Get Started</h2>
+    <p>pip install html-to-pptx</p>
+    <div class="cta-button">github.com/Design-Arena/html-to-pptx</div>
+</section>
+
+</body>
+</html>
