@@ -61,6 +61,11 @@ MAX_HTML_SIZE_MB = 10
 PLAYWRIGHT_TIMEOUT_MS = 30_000
 FONT_LOAD_WAIT_MS = 1_000
 
+OPAQUE_THRESHOLD = 0.99
+MIN_ELEMENT_SIZE_INCHES = 0.01
+ACCENT_BAR_WIDTH_MULTIPLIER = 1.5
+MIN_ACCENT_BORDER_WIDTH_PX = 2
+
 
 # ---------------------------------------------------------------------------
 # DOM measurement script (injected into the page via Playwright)
@@ -433,7 +438,7 @@ def _render_bg_shape(
         effective_alpha = bg_alpha * opacity
         shape.fill.solid()
         shape.fill.fore_color.rgb = bg_color
-        if effective_alpha < 0.99:
+        if effective_alpha < OPAQUE_THRESHOLD:
             _apply_fill_alpha(shape, effective_alpha)
     else:
         shape.fill.background()
@@ -448,10 +453,10 @@ def _render_bg_shape(
 
     left_border_color = el.get("borderLeftColor")
     left_border_width = el.get("borderLeftWidth", 0)
-    if left_border_color and left_border_width > 2:
+    if left_border_color and left_border_width > MIN_ACCENT_BORDER_WIDTH_PX:
         left_result = _css_color_to_rgb(left_border_color)
         if left_result:
-            bar_w = left_border_width * PIXELS_TO_INCHES_X * 1.5
+            bar_w = left_border_width * PIXELS_TO_INCHES_X * ACCENT_BAR_WIDTH_MULTIPLIER
             bar = slide.shapes.add_shape(
                 MSO_SHAPE.RECTANGLE,
                 Inches(x_in), Inches(y_in),
@@ -503,37 +508,33 @@ def _render_text_element(
     }.get(el.get("textAlign", "left"), PP_ALIGN.LEFT)
 
     radius_px = _parse_border_radius_px(el)
+    use_rounded_shape = has_bg and radius_px > 0
 
-    if has_bg and radius_px > 0:
-        shape = slide.shapes.add_shape(
+    if use_rounded_shape:
+        container = slide.shapes.add_shape(
             MSO_SHAPE.ROUNDED_RECTANGLE,
             Inches(x_in), Inches(y_in),
             Inches(w_in), Inches(h_in),
         )
         _set_corner_radius(
-            shape, radius_px, el.get("width", 100), el.get("height", 100),
+            container, radius_px, el.get("width", 100), el.get("height", 100),
         )
-        bg_result = _css_color_to_rgb(el["backgroundColor"])
-        if bg_result:
-            shape.fill.solid()
-            shape.fill.fore_color.rgb = bg_result[0]
-            if bg_result[1] * opacity < 0.99:
-                _apply_fill_alpha(shape, bg_result[1] * opacity)
-        shape.line.fill.background()
-        tf = shape.text_frame
+        container.line.fill.background()
     else:
-        txbox = slide.shapes.add_textbox(
+        container = slide.shapes.add_textbox(
             Inches(x_in), Inches(y_in),
             Inches(w_in), Inches(h_in),
         )
-        if has_bg:
-            bg_result = _css_color_to_rgb(el["backgroundColor"])
-            if bg_result:
-                txbox.fill.solid()
-                txbox.fill.fore_color.rgb = bg_result[0]
-                if bg_result[1] * opacity < 0.99:
-                    _apply_fill_alpha(txbox, bg_result[1] * opacity)
-        tf = txbox.text_frame
+
+    if has_bg:
+        bg_result = _css_color_to_rgb(el["backgroundColor"])
+        if bg_result:
+            container.fill.solid()
+            container.fill.fore_color.rgb = bg_result[0]
+            if bg_result[1] * opacity < OPAQUE_THRESHOLD:
+                _apply_fill_alpha(container, bg_result[1] * opacity)
+
+    tf = container.text_frame
 
     tf.word_wrap = True
     tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
@@ -584,7 +585,7 @@ def _render_text_element(
         try:
             primary_run.hyperlink.address = href
         except Exception:
-            pass
+            logger.warning("Failed to set hyperlink: %s", href)
 
 
 # ---------------------------------------------------------------------------
@@ -623,7 +624,7 @@ def _render_measured_element(slide: Any, el: dict) -> None:
     w_in = min(w_in, SLIDE_WIDTH_INCHES - x_in)
     h_in = min(h_in, SLIDE_HEIGHT_INCHES - y_in)
 
-    if w_in < 0.01 or h_in < 0.01:
+    if w_in < MIN_ELEMENT_SIZE_INCHES or h_in < MIN_ELEMENT_SIZE_INCHES:
         return
 
     is_image = el.get("isImage", False)

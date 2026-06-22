@@ -16,7 +16,9 @@ Or use the two-stage API for more control::
     prs.save("deck.pptx")
 """
 
+from importlib.metadata import version
+
 from html_to_pptx.converter import convert, extract_measurements, render_pptx
 
 __all__ = ["convert", "extract_measurements", "render_pptx"]
-__version__ = "0.1.0"
+__version__ = version("html-to-pptx")

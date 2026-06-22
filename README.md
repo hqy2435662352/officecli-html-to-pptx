@@ -171,6 +171,7 @@ results/deck/
 ## Limitations
 
 - **External images** are not fetched — use base64 `data:` URIs for embedded images
+- **CSS `background-image`** on containers is not converted — only `<img>` tags with base64 `src` become picture shapes
 - **CSS gradients** are captured as the computed `backgroundColor` (solid), not as gradient fills
 - **Animations and transitions** are not represented in PPTX
 - **Font availability** — the PPTX references font names from the HTML; if those fonts aren't installed on the machine opening the file, PowerPoint will substitute
