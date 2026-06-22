@@ -94,14 +94,22 @@ See [`examples/demo.html`](examples/demo.html) for a full five-slide deck.
 | HTML feature | PPTX output |
 |---|---|
 | Text with fonts, colors, weight, style | Editable text boxes with matching font properties |
+| **Mixed inline content** (`<p>text <strong>bold</strong> more</p>`) | Multi-run paragraphs with per-run styling |
+| **CSS linear-gradient backgrounds** | OOXML gradient fills with angle and stop positions |
+| **Gradient text** (`-webkit-background-clip: text`) | Gradient text fill (or solid fallback) |
+| **Inline `<svg>` elements** | Rasterized to PNG via Playwright screenshot |
 | Background colors | Solid fills (with alpha transparency) |
-| Rounded corners (`border-radius`) | OOXML adjustment guides on rounded rectangles |
+| Rounded corners (`border-radius`, including `%`) | OOXML adjustment guides on rounded rectangles |
+| **Rounded images** (`border-radius` on `<img>`) | Rounded-rect geometry swap on picture shapes |
 | Base64-embedded images (`data:image/...`) | Native picture shapes |
-| Borders | Shape outlines with color and width |
+| Borders (with alpha) | Shape outlines with color, width, and opacity |
 | Left-border accent bars | Separate narrow rectangle shapes |
 | `text-transform` (uppercase, etc.) | Transformed text content |
 | Hyperlinks | Preserved on text runs |
 | Ordered/unordered lists | Bullet/number prefixes with marker colors |
+| **CSS `::before`/`::after` pseudo-elements** | Synthetic shapes for decorative accents |
+| **RTL text direction** | Correct paragraph alignment |
+| **`<br>` tags in inline runs** | Multi-paragraph text frames |
 | Element opacity | OOXML alpha on fill colors |
 
 ## How it works
@@ -171,8 +179,8 @@ results/deck/
 ## Limitations
 
 - **External images** are not fetched — use base64 `data:` URIs for embedded images
-- **CSS `background-image`** on containers is not converted — only `<img>` tags with base64 `src` become picture shapes
-- **CSS gradients** are captured as the computed `backgroundColor` (solid), not as gradient fills
+- **CSS `background-image: url(...)`** on containers is not converted — only `<img>` tags with base64 `src` and inline `<svg>` elements become picture shapes
+- **Radial gradients** are not supported — only `linear-gradient`
 - **Animations and transitions** are not represented in PPTX
 - **Font availability** — the PPTX references font names from the HTML; if those fonts aren't installed on the machine opening the file, PowerPoint will substitute
 - **Complex CSS layouts** (grid, advanced flexbox) are measured as-rendered, but deeply nested layouts may lose some positioning precision
