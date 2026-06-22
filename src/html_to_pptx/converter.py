@@ -110,7 +110,7 @@ FONT_LOAD_WAIT_MS = 1_000
 # are collapsed to reduce nesting without losing visual information.
 # ---------------------------------------------------------------------------
 
-EXTRACTION_JS = r"""
+EXTRACTION_JS = """
 () => {
     const slides = document.querySelectorAll('.slide');
     const results = [];
@@ -140,9 +140,9 @@ EXTRACTION_JS = r"""
             if (node.nodeType === Node.TEXT_NODE) {
                 // Collapse internal whitespace runs to single spaces (browser behavior)
                 // but preserve boundary spaces between inline siblings
-                let t = node.textContent.replace(/\s+/g, ' ');
-                if (ni === 0) t = t.replace(/^\s+/, '');
-                if (ni === nodes.length - 1) t = t.replace(/\s+$/, '');
+                let t = node.textContent.replace(/\\s+/g, ' ');
+                if (ni === 0) t = t.replace(/^\\s+/, '');
+                if (ni === nodes.length - 1) t = t.replace(/\\s+$/, '');
                 if (!t) continue;
                 runs.push({
                     text: t,
@@ -817,7 +817,7 @@ def _render_bg_shape(
         border_result = _css_color_to_rgb(border_color_str)
         if border_result and border_result[1] > 0.15:
             shape.line.color.rgb = border_result[0]
-            shape.line.width = Pt(max(border_width * 0.75, 0.5))
+            shape.line.width = Pt(max(border_width * CSS_PX_TO_PT, 0.5))
             if border_result[1] < 0.99:
                 ln = shape._element.find(".//" + qn("a:ln"))
                 if ln is not None:

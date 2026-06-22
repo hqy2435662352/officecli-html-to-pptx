@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; }
+    .slide {
+        width: 1920px;
+        height: 1080px;
+        display: none;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        font-family: 'Inter', sans-serif;
+    }
+    .slide.active { display: flex; }
+</style>
+</head>
+<body>
+
+<!-- Slide 1: Mixed inline content + bullets -->
+<section class="slide active" style="background-color: #0f172a; padding: 80px 120px; align-items: flex-start;">
+    <h2 style="font-size: 48px; color: #f8fafc; margin-bottom: 32px;">Learning Objectives</h2>
+    <p style="font-size: 24px; color: #cbd5e1; margin-bottom: 24px;">
+        By the end of this presentation, <strong style="color: #38bdf8;">you will be able to</strong> understand the key concepts.
+    </p>
+    <ul style="list-style: disc; padding-left: 40px;">
+        <li style="font-size: 22px; color: #e2e8f0; margin-bottom: 12px;">Describe the cardiovascular responses</li>
+        <li style="font-size: 22px; color: #e2e8f0; margin-bottom: 12px;">Explain the underlying mechanisms</li>
+        <li style="font-size: 22px; color: #e2e8f0; margin-bottom: 12px;">Identify patients at high risk</li>
+    </ul>
+</section>
+
+<!-- Slide 2: Line breaks and presenter info -->
+<section class="slide" style="background-color: #1e293b; padding: 80px 120px; align-items: flex-start;">
+    <h2 style="font-size: 48px; color: #f8fafc; margin-bottom: 32px;">Presenter</h2>
+    <p style="font-size: 24px; color: #94a3b8;">
+        Presented by: <strong style="color: #38bdf8;">Dr. Amna</strong><br>
+        MCPS Resident<br>
+        Under Supervision of: <strong style="color: #38bdf8;">Dr. Fahad</strong>
+    </p>
+</section>
+
+<!-- Slide 3: Cards with borders -->
+<section class="slide" style="background-color: #0f172a; padding: 80px 120px; align-items: flex-start;">
+    <h2 style="font-size: 48px; color: #f8fafc; margin-bottom: 48px;">Categories</h2>
+    <div style="display: flex; gap: 24px; width: 100%;">
+        <div style="flex: 1; border: 2px solid #d97706; border-radius: 12px; padding: 32px; background-color: rgba(15, 23, 42, 0.8);">
+            <div style="font-size: 14px; color: #d97706; margin-bottom: 8px;">01</div>
+            <h3 style="font-size: 22px; color: #f8fafc; font-weight: 600; margin-bottom: 8px;">Industrial Equipment</h3>
+            <p style="font-size: 16px; color: #94a3b8;">Raw materials and machinery for manufacturing.</p>
+        </div>
+        <div style="flex: 1; border: 2px solid #d97706; border-radius: 12px; padding: 32px; background-color: rgba(15, 23, 42, 0.8);">
+            <div style="font-size: 14px; color: #d97706; margin-bottom: 8px;">02</div>
+            <h3 style="font-size: 22px; color: #f8fafc; font-weight: 600; margin-bottom: 8px;">Medical Devices</h3>
+            <p style="font-size: 16px; color: #94a3b8;">Supplies, PPE, and hygiene products.</p>
+        </div>
+        <div style="flex: 1; border: 2px solid #d97706; border-radius: 12px; padding: 32px; background-color: rgba(15, 23, 42, 0.8);">
+            <div style="font-size: 14px; color: #d97706; margin-bottom: 8px;">03</div>
+            <h3 style="font-size: 22px; color: #f8fafc; font-weight: 600; margin-bottom: 8px;">Oil & Gas</h3>
+            <p style="font-size: 16px; color: #94a3b8;">Industrial supply solutions for the sector.</p>
+        </div>
+    </div>
+</section>
+
+<!-- Slide 4: Emoji/unicode icons -->
+<section class="slide" style="background-color: #f8fafc; padding: 80px 120px; align-items: flex-start;">
+    <h2 style="font-size: 48px; color: #0f172a; margin-bottom: 48px;">Four Pillars</h2>
+    <div style="display: flex; gap: 32px; width: 100%;">
+        <div style="flex: 1; background-color: #1e293b; border-radius: 16px; padding: 32px;">
+            <div style="font-size: 32px; margin-bottom: 12px;">🧠</div>
+            <h3 style="font-size: 22px; color: #f8fafc; font-weight: 600;">Memory & Recall</h3>
+        </div>
+        <div style="flex: 1; background-color: #1e293b; border-radius: 16px; padding: 32px;">
+            <div style="font-size: 32px; margin-bottom: 12px;">🧩</div>
+            <h3 style="font-size: 22px; color: #f8fafc; font-weight: 600;">Logic & Problem Solving</h3>
+        </div>
+        <div style="flex: 1; background-color: #1e293b; border-radius: 16px; padding: 32px;">
+            <div style="font-size: 32px; margin-bottom: 12px;">📐</div>
+            <h3 style="font-size: 22px; color: #f8fafc; font-weight: 600;">Pattern Recognition</h3>
+        </div>
+    </div>
+</section>
+
+</body>
+</html>
