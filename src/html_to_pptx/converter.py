@@ -61,7 +61,7 @@ from lxml import etree
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
-from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
+from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.util import Inches, Pt
 
@@ -90,7 +90,10 @@ PIXELS_TO_INCHES_Y = SLIDE_HEIGHT_INCHES / SLIDE_CANVAS_HEIGHT_PX
 _LAYOUT_SCALE = SLIDE_WIDTH_INCHES / (SLIDE_CANVAS_WIDTH_PX / 96.0)
 CSS_PX_TO_PT = 0.75 * _LAYOUT_SCALE
 
-MIN_FONT_SIZE_PT = 8
+# 1 CSS px ≈ 0.5pt on this canvas, so small UI text (e.g. 14px tags → 7pt) must
+# be allowed below the old 8pt floor or it renders larger than the source and
+# overflows its box. Keep a low floor for legibility only.
+MIN_FONT_SIZE_PT = 5
 MAX_FONT_SIZE_PT = 72
 
 MAX_HTML_SIZE_MB = 10
@@ -134,10 +137,22 @@ EXTRACTION_JS = """
     function collectInlineRuns(el) {
         const runs = [];
         const parentStyle = getComputedStyle(el);
+        const pre = parentStyle.whiteSpace && parentStyle.whiteSpace.indexOf('pre') === 0;
         const nodes = el.childNodes;
         for (let ni = 0; ni < nodes.length; ni++) {
             const node = nodes[ni];
             if (node.nodeType === Node.TEXT_NODE) {
+                // In white-space:pre*, newlines and runs of spaces are significant
+                // (e.g. a terminal/code block). Preserve them: emit '\\n' runs at
+                // line breaks and keep the raw text (including indentation).
+                if (pre) {
+                    const segs = node.textContent.split('\\n');
+                    for (let si = 0; si < segs.length; si++) {
+                        if (si > 0) runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none' });
+                        if (segs[si].length) runs.push({ text: segs[si], color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: parentStyle.textTransform });
+                    }
+                    continue;
+                }
                 // Collapse internal whitespace runs to single spaces (browser behavior)
                 // but preserve boundary spaces between inline siblings
                 let t = node.textContent.replace(/\\s+/g, ' ');
@@ -222,7 +237,25 @@ EXTRACTION_JS = """
         if (style.display === 'none' || style.visibility === 'hidden') return null;
         if (parseFloat(style.opacity) === 0) return null;
 
+        // A CSS rotate makes getBoundingClientRect return the (larger) enclosing
+        // box. Detect the angle, then measure the element with its own transform
+        // neutralized so we get the true unrotated box; PPTX re-applies the angle
+        // about the shape center. (Restored immediately to avoid side effects.)
+        let ownRotation = 0;
+        const _tf = style.transform;
+        if (_tf && _tf.indexOf('matrix') === 0) {
+            const mm = _tf.match(/matrix\\(([^)]+)\\)/);
+            if (mm) {
+                const p = mm[1].split(',').map(parseFloat);
+                const ang = Math.atan2(p[1], p[0]) * 180 / Math.PI;
+                if (Math.abs(ang) > 0.5) ownRotation = ang;
+            }
+        }
+        let _savedT = null;
+        if (ownRotation) { _savedT = el.style.transform; el.style.transform = 'none'; el.getBoundingClientRect(); }
+
         const rect = el.getBoundingClientRect();
+        if (ownRotation) { el.style.transform = _savedT; }
         const relX = rect.left - slideRect.left;
         const relY = rect.top - slideRect.top;
 
@@ -279,8 +312,22 @@ EXTRACTION_JS = """
             fontStyle: style.fontStyle,
             textAlign: style.textAlign,
             lineHeight: style.lineHeight,
+            letterSpacing: (style.letterSpacing === 'normal' ? 0 : (parseFloat(style.letterSpacing) || 0)),
             direction: style.direction,
+            position: style.position,
+            display: style.display,
+            justifyContent: style.justifyContent,
+            alignItems: style.alignItems,
+            writingMode: style.writingMode,
+            rotation: ownRotation,
             opacity: parseFloat(style.opacity),
+            paddingLeft: parseFloat(style.paddingLeft) || 0,
+            paddingRight: parseFloat(style.paddingRight) || 0,
+            paddingTop: parseFloat(style.paddingTop) || 0,
+            paddingBottom: parseFloat(style.paddingBottom) || 0,
+            objectFit: isImg ? style.objectFit : null,
+            naturalWidth: isImg ? (el.naturalWidth || 0) : 0,
+            naturalHeight: isImg ? (el.naturalHeight || 0) : 0,
             borderRadius: style.borderRadius,
             borderColor: hasBorder ? style.borderColor : null,
             borderWidth: hasBorder ? parseFloat(style.borderWidth) : 0,
@@ -368,7 +415,21 @@ EXTRACTION_JS = """
         const isContainer = !data.text && !isImg && !isSvg && !hasVisibleBg && !hasBorder &&
                            data.backgroundImage === null && !data.inlineRuns;
         if (isContainer && data.children.length === 1 && depth > 0) {
-            return data.children[0];
+            const child = data.children[0];
+            // A pure wrapper is collapsed away, but its visual effects must be
+            // folded into the surviving child, or they are silently lost:
+            //  - opacity (e.g. a faint hero-image wrapper at opacity:0.18)
+            //  - border-radius + overflow:hidden clipping (rounded image frames)
+            if (data.opacity < 1) {
+                child.opacity = (child.opacity == null ? 1 : child.opacity) * data.opacity;
+            }
+            const childHasRadius = child.borderRadius && child.borderRadius !== '0px'
+                && child.borderRadius !== '0';
+            if (!childHasRadius && data.borderRadius && data.borderRadius !== '0px'
+                && data.borderRadius !== '0') {
+                child.borderRadius = data.borderRadius;
+            }
+            return child;
         }
 
         return data;
@@ -442,6 +503,38 @@ def _css_color_to_rgb(css_color: str) -> tuple[RGBColor, float] | None:
     return None
 
 
+# Default backdrop used when a slide has no resolvable background color.
+_DEFAULT_BACKDROP = RGBColor(0xFF, 0xFF, 0xFF)
+
+
+def _blend_over(color: RGBColor, alpha: float, backdrop: RGBColor) -> RGBColor:
+    """Alpha-composite ``color`` at ``alpha`` over an opaque ``backdrop``.
+
+    LibreOffice (and PowerPoint's PDF export) do not honor per-gradient-stop
+    ``<a:alpha>`` and are unreliable with solid-fill / run-color alpha, so
+    translucency is flattened to an equivalent opaque color at conversion time.
+    This makes the PPTX render identically to the source HTML everywhere.
+    """
+    alpha = max(0.0, min(1.0, alpha))
+    r = round(color[0] * alpha + backdrop[0] * (1 - alpha))
+    g = round(color[1] * alpha + backdrop[1] * (1 - alpha))
+    b = round(color[2] * alpha + backdrop[2] * (1 - alpha))
+    return RGBColor(int(r), int(g), int(b))
+
+
+def _resolve_backdrop(slide_data: dict) -> RGBColor:
+    """Best-effort opaque backdrop color for a slide (for flattening alpha)."""
+    grad = slide_data.get("backgroundImage", "")
+    if grad:
+        first = _first_gradient_color(grad)
+        if first is not None:
+            return first
+    bg = _css_color_to_rgb(slide_data.get("backgroundColor", ""))
+    if bg is not None:
+        return bg[0]
+    return _DEFAULT_BACKDROP
+
+
 _GRADIENT_ANGLE_RE = re.compile(r"linear-gradient\(\s*([\d.]+)deg")
 _GRADIENT_DIR_RE = re.compile(r"linear-gradient\(\s*to\s+([\w\s]+?)\s*,")
 
@@ -462,6 +555,14 @@ def _parse_css_gradient(
     Handles both opaque and transparent stops. Returns None if not a gradient.
     """
     if not css_val or "linear-gradient" not in css_val:
+        return None
+    # Only a single linear-gradient is representable. A radial/conic gradient, or
+    # a multi-layered background (comma-separated gradients, e.g. a radial glow
+    # over a base gradient), would otherwise have all its rgba stops scraped into
+    # one bogus linear gradient — fall back to the solid background color instead.
+    if "radial-gradient" in css_val or "conic-gradient" in css_val:
+        return None
+    if css_val.count("linear-gradient") > 1:
         return None
     stops: list[tuple[RGBColor, float, float]] = []
     for m in _RGB_RE.finditer(css_val):
@@ -493,29 +594,42 @@ def _gradient_angle_emu(css_val: str) -> int:
     return int(ooxml_deg * 60000)
 
 
-def _apply_gradient_fill(xml_ancestor, css_val: str) -> bool:
+def _apply_gradient_fill(xml_ancestor, css_val: str, backdrop: RGBColor | None = None) -> bool:
     """Apply a CSS linear-gradient by manipulating OOXML directly.
 
     Args:
         xml_ancestor: The lxml element to search for <a:gradFill> —
             typically shape._element or slide.background._element.
         css_val: CSS linear-gradient string.
+        backdrop: When given, translucent stops are alpha-composited over this
+            opaque color and emitted opaque. LibreOffice ignores per-stop
+            ``<a:alpha>``, so flattening is the only reliable way to reproduce a
+            translucent gradient overlay (e.g. the faint orange quote card).
     """
     stops = _parse_css_gradient(css_val)
     if not stops:
         return False
     angle = _gradient_angle_emu(css_val)
+    if backdrop is not None:
+        stops = [
+            (_blend_over(color, alpha, backdrop), pos, 1.0) if alpha < 0.99
+            else (color, pos, alpha)
+            for color, pos, alpha in stops
+        ]
 
     # Find or create the <a:gradFill> element
     grad_fill = xml_ancestor.find(".//" + qn("a:gradFill"))
     if grad_fill is None:
-        # Find the properties container (spPr for shapes, bgPr for backgrounds)
-        props = (
-            xml_ancestor.find(qn("p:spPr"))
-            or xml_ancestor.find(qn("p:bgPr"))
-            or xml_ancestor.find(".//" + qn("a:spPr"))
-            or xml_ancestor
-        )
+        # Find the properties container (spPr for shapes, bgPr for backgrounds).
+        # Use explicit "is not None" checks: lxml elements raise a FutureWarning
+        # on truth-testing, and an empty element is falsy, so `or` is unsafe.
+        props = xml_ancestor.find(qn("p:spPr"))
+        if props is None:
+            props = xml_ancestor.find(qn("p:bgPr"))
+        if props is None:
+            props = xml_ancestor.find(".//" + qn("a:spPr"))
+        if props is None:
+            props = xml_ancestor
         # Remove any existing fill
         for tag in ("a:solidFill", "a:noFill", "a:pattFill", "a:blipFill"):
             for old in props.findall(qn(tag)):
@@ -593,12 +707,16 @@ def _first_gradient_color(css_val: str) -> RGBColor | None:
     return stops[0][0]
 
 
-def _resolve_font_color(el: dict) -> RGBColor:
+def _resolve_font_color(el: dict, backdrop: RGBColor | None = None) -> RGBColor:
     """Determine the visible text color, handling gradient-text fallback.
 
     CSS gradient text uses -webkit-text-fill-color: transparent with a
     background-image gradient. PPTX can't do gradient text, so we use
     the first gradient stop color as a solid approximation.
+
+    Translucent text (e.g. ``color: rgba(232,119,46,0.12)`` for a giant faint
+    index number) is flattened over ``backdrop`` — run-color alpha is not
+    honored by LibreOffice, so it would otherwise render fully opaque.
     """
     if el.get("isGradientText"):
         grad_color = _first_gradient_color(el.get("backgroundImage", ""))
@@ -606,7 +724,12 @@ def _resolve_font_color(el: dict) -> RGBColor:
             return grad_color
 
     result = _css_color_to_rgb(el.get("color", "rgb(255,255,255)"))
-    return result[0] if result else RGBColor(0xFF, 0xFF, 0xFF)
+    if not result:
+        return RGBColor(0xFF, 0xFF, 0xFF)
+    color, alpha = result
+    if alpha < 0.99 and backdrop is not None:
+        return _blend_over(color, alpha, backdrop)
+    return color
 
 
 def _parse_font_family(css_font: str) -> str:
@@ -615,18 +738,192 @@ def _parse_font_family(css_font: str) -> str:
     return first.strip("'\"")
 
 
+# Fonts that ship with Windows/Office (and are Microsoft-metric-compatible on
+# macOS/LibreOffice), so we can rely on them rendering without substitution.
+_SAFE_FONTS = {
+    "arial", "arial black", "calibri", "cambria", "candara", "consolas",
+    "constantia", "corbel", "courier new", "georgia", "times new roman",
+    "trebuchet ms", "verdana", "segoe ui", "tahoma", "garamond",
+    "book antiqua", "century gothic", "palatino linotype", "gill sans",
+    "franklin gothic medium", "lucida sans", "impact",
+}
+
+# Explicit web-font -> metric/style-compatible safe equivalent. Grouped so the
+# substitute stays in the SAME visual family (display-serif, humanist-sans,
+# geometric-sans, monospace); keeping the family keeps glyph advance widths
+# close, which stops headings from reflowing onto an extra line.
+_FONT_EQUIVALENTS = {
+    # ---- display / body serifs ----
+    "playfair display": "Georgia",
+    "playfair": "Georgia",
+    "merriweather": "Georgia",
+    "lora": "Georgia",
+    "pt serif": "Georgia",
+    "noto serif": "Georgia",
+    "source serif pro": "Cambria",
+    "source serif 4": "Cambria",
+    "roboto slab": "Cambria",
+    "dm serif display": "Georgia",
+    "dm serif text": "Georgia",
+    "cormorant": "Cambria",
+    "cormorant garamond": "Cambria",
+    "eb garamond": "Garamond",
+    "crimson text": "Garamond",
+    "crimson pro": "Garamond",
+    "libre baskerville": "Georgia",
+    "bitter": "Georgia",
+    "spectral": "Cambria",
+    "frank ruhl libre": "Georgia",
+    # ---- humanist / grotesque sans ----
+    "inter": "Segoe UI",
+    "roboto": "Arial",
+    "open sans": "Segoe UI",
+    "lato": "Calibri",
+    "noto sans": "Segoe UI",
+    "source sans pro": "Segoe UI",
+    "source sans 3": "Segoe UI",
+    "work sans": "Segoe UI",
+    "dm sans": "Segoe UI",
+    "manrope": "Segoe UI",
+    "ibm plex sans": "Segoe UI",
+    "pt sans": "Segoe UI",
+    "rubik": "Segoe UI",
+    "karla": "Segoe UI",
+    "mulish": "Segoe UI",
+    "barlow": "Segoe UI",
+    "titillium web": "Segoe UI",
+    "figtree": "Segoe UI",
+    "plus jakarta sans": "Segoe UI",
+    "ubuntu": "Segoe UI",
+    "helvetica": "Arial",
+    "helvetica neue": "Arial",
+    "nunito": "Calibri",
+    "nunito sans": "Calibri",
+    # ---- geometric sans ----
+    "montserrat": "Century Gothic",
+    "poppins": "Century Gothic",
+    "raleway": "Century Gothic",
+    "quicksand": "Century Gothic",
+    "josefin sans": "Century Gothic",
+    "comfortaa": "Century Gothic",
+    # ---- monospace ----
+    "jetbrains mono": "Consolas",
+    "fira code": "Consolas",
+    "fira mono": "Consolas",
+    "source code pro": "Consolas",
+    "roboto mono": "Consolas",
+    "ibm plex mono": "Consolas",
+    "space mono": "Consolas",
+    "ubuntu mono": "Consolas",
+    "inconsolata": "Consolas",
+    "menlo": "Consolas",
+    "monaco": "Consolas",
+    "courier": "Courier New",
+}
+
+# CSS generic keyword -> concrete safe default (same family class).
+_GENERIC_FALLBACK = {
+    "serif": "Georgia",
+    "sans-serif": "Calibri",
+    "monospace": "Consolas",
+    "cursive": "Segoe Script",
+    "system-ui": "Segoe UI",
+    "-apple-system": "Segoe UI",
+    "blinkmacsystemfont": "Segoe UI",
+    "ui-sans-serif": "Segoe UI",
+    "ui-serif": "Georgia",
+    "ui-monospace": "Consolas",
+}
+
+
+def _resolve_pptx_font(css_font: str) -> str:
+    """Pick a rendering-safe font that stays in the source's visual family.
+
+    Walks the CSS font-family stack in declared order and returns the first of:
+      1. a family already known to be installed everywhere, else
+      2. a known web font mapped to a metric-compatible safe equivalent, else
+      3. the CSS generic keyword (serif/sans-serif/monospace) default.
+    Falls back to Calibri. Staying in the same family keeps advance widths close
+    so a substituted heading does not wrap onto an unwanted extra line.
+    """
+    if not css_font:
+        return "Calibri"
+    generic_seen: str | None = None
+    for raw in css_font.split(","):
+        name = raw.strip().strip("'\"")
+        if not name:
+            continue
+        low = name.lower()
+        if low in _SAFE_FONTS:
+            return name
+        if low in _FONT_EQUIVALENTS:
+            return _FONT_EQUIVALENTS[low]
+        if low in _GENERIC_FALLBACK and generic_seen is None:
+            generic_seen = _GENERIC_FALLBACK[low]
+    return generic_seen or "Calibri"
+
+
 # ---------------------------------------------------------------------------
 # Image handling
 # ---------------------------------------------------------------------------
 
 
+def _apply_image_opacity(pic, opacity: float) -> None:
+    """Make a picture translucent via ``<a:alphaModFix>`` in its blipFill.
+
+    Used for faint background/hero images (e.g. an image wrapper at
+    ``opacity: 0.18``) so overlaid text stays readable, matching the source.
+    """
+    if opacity >= 0.99:
+        return
+    blip = pic._element.find(".//" + qn("a:blip"))
+    if blip is None:
+        return
+    for old in blip.findall(qn("a:alphaModFix")):
+        blip.remove(old)
+    amod = etree.SubElement(blip, qn("a:alphaModFix"))
+    amod.set("amt", str(int(max(0.0, min(1.0, opacity)) * 100000)))
+
+
+def _apply_object_fit_cover(pic, box_w_px: float, box_h_px: float,
+                            nat_w: float, nat_h: float) -> None:
+    """Emulate CSS ``object-fit: cover`` by cropping (never stretching).
+
+    ``add_picture`` with explicit width+height stretches the image to the box,
+    which distorts any image whose aspect ratio differs from the box (e.g. a
+    square hero/product image placed in a wide frame). CSS ``cover`` instead
+    scales to fill and crops the overflow, so we replicate that with a centered
+    crop on the longer axis — the picture keeps the box geometry but is no longer
+    distorted.
+    """
+    if nat_w <= 0 or nat_h <= 0 or box_w_px <= 0 or box_h_px <= 0:
+        return
+    box_ar = box_w_px / box_h_px
+    img_ar = nat_w / nat_h
+    if abs(img_ar - box_ar) < 1e-3:
+        return
+    if img_ar > box_ar:  # image too wide -> crop left/right
+        crop = (1 - box_ar / img_ar) / 2
+        pic.crop_left = crop
+        pic.crop_right = crop
+    else:  # image too tall -> crop top/bottom
+        crop = (1 - img_ar / box_ar) / 2
+        pic.crop_top = crop
+        pic.crop_bottom = crop
+
+
 def _add_image_from_data_uri(slide, data_uri: str, left, top, width, height,
                              border_radius_px: float = 0,
-                             width_px: float = 0, height_px: float = 0):
+                             width_px: float = 0, height_px: float = 0,
+                             opacity: float = 1.0,
+                             object_fit: str | None = None,
+                             natural_w: float = 0, natural_h: float = 0):
     """Decode a base64 data URI and add it as a picture shape.
 
     When border_radius_px > 0, clips the image to a rounded rectangle
     by swapping the shape geometry from 'rect' to 'roundRect'.
+    When opacity < 1, the picture is made translucent to match the source.
+    When object_fit == 'cover', the picture is cropped (not stretched) to fill.
     """
     match = re.match(r"data:image/(\w+);base64,(.*)", data_uri, re.DOTALL)
     if not match:
@@ -644,6 +941,9 @@ def _add_image_from_data_uri(slide, data_uri: str, left, top, width, height,
         tmp.close()
         pic = slide.shapes.add_picture(tmp.name, left, top, width, height)
 
+        if object_fit == "cover":
+            _apply_object_fit_cover(pic, width_px, height_px, natural_w, natural_h)
+
         if border_radius_px > 0 and width_px > 0 and height_px > 0:
             sp_pr = pic._element.find(qn("p:spPr"))
             if sp_pr is not None:
@@ -651,6 +951,8 @@ def _add_image_from_data_uri(slide, data_uri: str, left, top, width, height,
                 if prst_geom is not None:
                     prst_geom.set("prst", "roundRect")
                     _set_corner_radius(pic, border_radius_px, width_px, height_px)
+
+        _apply_image_opacity(pic, opacity)
 
         return pic
     finally:
@@ -751,6 +1053,239 @@ def _set_corner_radius(
     gd.set("fmla", f"val {adj_val}")
 
 
+def _resolve_alignment(
+    el: dict, is_single_line: bool, has_visual_bg: bool,
+):
+    """Derive (horizontal PP_ALIGN, vertical MSO_ANCHOR) from the element's CSS.
+
+    Generalizes text placement instead of special-casing element types:
+      * Flex/grid containers with direct text place that text via
+        ``justify-content`` (main axis) and ``align-items`` (cross axis) — e.g.
+        a 60×60 logo tile centering "DT", or a centered hero badge.
+      * Otherwise horizontal follows ``text-align``.
+      * Vertical is MIDDLE for flex/grid center, for any element whose box only
+        holds one line (chips, pills, buttons, stat tiles — their symmetric
+        padding centers the single line), else TOP.
+    """
+    is_rtl = el.get("direction") == "rtl"
+    text_align = el.get("textAlign", "right" if is_rtl else "left")
+    h = {
+        "center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT, "left": PP_ALIGN.LEFT,
+        "justify": PP_ALIGN.JUSTIFY,
+        "start": PP_ALIGN.RIGHT if is_rtl else PP_ALIGN.LEFT,
+        "end": PP_ALIGN.LEFT if is_rtl else PP_ALIGN.RIGHT,
+    }.get(text_align, PP_ALIGN.RIGHT if is_rtl else PP_ALIGN.LEFT)
+
+    display = el.get("display", "") or ""
+    is_flex = "flex" in display or "grid" in display
+    v = MSO_ANCHOR.TOP
+
+    if is_flex:
+        jc = el.get("justifyContent", "") or ""
+        if "center" in jc or "space" in jc:
+            h = PP_ALIGN.CENTER
+        elif jc in ("flex-end", "end", "right"):
+            h = PP_ALIGN.RIGHT
+        elif jc in ("flex-start", "start", "left"):
+            h = PP_ALIGN.LEFT
+        ai = el.get("alignItems", "") or ""
+        if "center" in ai:
+            v = MSO_ANCHOR.MIDDLE
+        elif ai in ("flex-end", "end"):
+            v = MSO_ANCHOR.BOTTOM
+    elif (
+        has_visual_bg and is_single_line and text_align in ("start", "left", "")
+        and el.get("tag") not in ("td", "th")
+        and "table" not in display
+    ):
+        # A background chip whose box hugs its text (symmetric padding) reads
+        # centered in the source even though text-align defaults to left. Table
+        # cells also have a background but must keep their column alignment.
+        h = PP_ALIGN.CENTER
+
+    if v == MSO_ANCHOR.TOP and is_single_line:
+        v = MSO_ANCHOR.MIDDLE
+    return h, v
+
+
+def _line_height_ratio(el: dict) -> float | None:
+    """CSS line-height as a unitless multiple of the font size, or None.
+
+    PowerPoint's default line spacing (~1.2) is looser than tight display
+    line-heights (e.g. ``line-height: 0.92`` on a big headline), which makes a
+    multi-line heading grow taller than its box and overlap the element below.
+    Reproducing the CSS ratio keeps line count and vertical extent faithful.
+    """
+    lh = el.get("lineHeight", "normal")
+    fs = el.get("fontSize", 0)
+    if not fs or not lh or lh == "normal":
+        return None
+    try:
+        px = float(str(lh).replace("px", "").strip())
+    except ValueError:
+        return None
+    ratio = px / fs
+    if 0.5 <= ratio <= 3.0:
+        return ratio
+    return None
+
+
+def _apply_line_spacing(paragraph, el: dict) -> None:
+    """Set exact line spacing (in points) to match the CSS line-height.
+
+    A float ``line_spacing`` in PPTX multiplies the font's *natural* line height
+    (~1.2×), not the font size, so passing the CSS ratio (e.g. 0.92) still comes
+    out ~1.1× too tall and a multi-line heading creeps into the element below.
+    Converting the measured px line-height to an absolute point value reproduces
+    the CSS box exactly.
+    """
+    lh = el.get("lineHeight", "normal")
+    fs = el.get("fontSize", 0)
+    if not lh or lh == "normal":
+        return
+    try:
+        px = float(str(lh).replace("px", "").strip())
+    except ValueError:
+        return
+    ratio = px / fs if fs else 0
+    if not (0.5 <= ratio <= 3.0):
+        return
+    pt = px * PIXELS_TO_INCHES_Y * 72.0
+    if pt > 0:
+        paragraph.line_spacing = Pt(pt)
+
+
+# --- Single-line width fitting -------------------------------------------------
+# A single-line element must never wrap or spill past its box. Because we can't
+# embed the exact web font, a substituted font's advance widths differ slightly;
+# we measure the rendered width (Pillow if available, else a per-family heuristic)
+# and shrink the point size just enough to fit. This guarantees "one line stays
+# one line AND fits" even when metrics don't match perfectly.
+try:  # Pillow is optional; fall back to a heuristic estimator without it.
+    from PIL import ImageFont as _PILImageFont
+    _HAVE_PIL = True
+except Exception:  # pragma: no cover
+    _HAVE_PIL = False
+
+_MAC_FONT_DIRS = [
+    "/System/Library/Fonts/Supplemental",
+    "/System/Library/Fonts",
+    "/Library/Fonts",
+    os.path.expanduser("~/Library/Fonts"),
+]
+
+# Map a resolved PPTX family to a locally-available metric proxy for measurement.
+_MEASURE_FONT_FILE = {
+    ("georgia", False): "Georgia.ttf", ("georgia", True): "Georgia Bold.ttf",
+    ("cambria", False): "Georgia.ttf", ("cambria", True): "Georgia Bold.ttf",
+    ("garamond", False): "Georgia.ttf", ("garamond", True): "Georgia Bold.ttf",
+    ("times new roman", False): "Times New Roman.ttf",
+    ("times new roman", True): "Times New Roman Bold.ttf",
+    ("arial", False): "Arial.ttf", ("arial", True): "Arial Bold.ttf",
+    ("calibri", False): "Arial.ttf", ("calibri", True): "Arial Bold.ttf",
+    ("segoe ui", False): "Arial.ttf", ("segoe ui", True): "Arial Bold.ttf",
+    ("century gothic", False): "Arial.ttf", ("century gothic", True): "Arial Bold.ttf",
+    ("verdana", False): "Verdana.ttf", ("verdana", True): "Verdana Bold.ttf",
+    ("consolas", False): "Courier New.ttf", ("consolas", True): "Courier New Bold.ttf",
+    ("courier new", False): "Courier New.ttf", ("courier new", True): "Courier New Bold.ttf",
+}
+
+# Fallback average glyph-advance as a fraction of em, by family class. Slightly
+# generous so the estimate never under-shoots (which would allow an overflow).
+_HEURISTIC_ADVANCE = {"serif": 0.52, "sans": 0.53, "mono": 0.60}
+_font_path_cache: dict[tuple[str, bool], str | None] = {}
+_pil_font_cache: dict[tuple[str, int], object] = {}
+
+
+def _find_measure_font(family: str, bold: bool) -> str | None:
+    key = (family.lower(), bold)
+    if key in _font_path_cache:
+        return _font_path_cache[key]
+    fn = _MEASURE_FONT_FILE.get(key) or _MEASURE_FONT_FILE.get((family.lower(), False))
+    candidates = [fn] if fn else []
+    candidates.append("Arial Bold.ttf" if bold else "Arial.ttf")
+    for name in candidates:
+        for d in _MAC_FONT_DIRS:
+            p = os.path.join(d, name)
+            if os.path.isfile(p):
+                _font_path_cache[key] = p
+                return p
+    _font_path_cache[key] = None
+    return None
+
+
+def _family_class(family: str) -> str:
+    low = family.lower()
+    if low in ("consolas", "courier new", "menlo", "monaco"):
+        return "mono"
+    if low in ("georgia", "cambria", "garamond", "times new roman", "book antiqua"):
+        return "serif"
+    return "sans"
+
+
+def _estimate_text_width_in(
+    text: str, size_pt: float, family: str, bold: bool, letter_spacing_px: float,
+) -> float | None:
+    """Estimate rendered width (inches) of a single line at ``size_pt``."""
+    if not text:
+        return 0.0
+    extra_pt = max(0, len(text) - 1) * letter_spacing_px  # px≈pt for width math
+    if _HAVE_PIL:
+        path = _find_measure_font(family, bold)
+        if path:
+            px = max(4, int(round(size_pt)))
+            ck = (path, px)
+            font = _pil_font_cache.get(ck)
+            if font is None:
+                try:
+                    font = _PILImageFont.truetype(path, px)
+                    _pil_font_cache[ck] = font
+                except Exception:
+                    font = None
+            if font is not None:
+                try:
+                    w_px = font.getlength(text)
+                    width_pt = w_px * (size_pt / px) + extra_pt
+                    return width_pt / 72.0
+                except Exception:
+                    pass
+    # Heuristic fallback
+    adv = _HEURISTIC_ADVANCE[_family_class(family)]
+    width_pt = len(text) * adv * size_pt + extra_pt
+    return width_pt / 72.0
+
+
+def _fit_font_size_single_line(
+    text: str, size_pt: float, family: str, bold: bool,
+    letter_spacing_px: float, avail_in: float,
+) -> float:
+    """Shrink ``size_pt`` so ``text`` fits ``avail_in`` on one line (never grows)."""
+    if avail_in <= 0.05 or not text.strip():
+        return size_pt
+    width_in = _estimate_text_width_in(text, size_pt, family, bold, letter_spacing_px)
+    if not width_in or width_in <= avail_in:
+        return size_pt
+    # 0.98 safety margin so rounding/kerning differences can't re-introduce overflow.
+    scaled = size_pt * (avail_in / width_in) * 0.98
+    return max(MIN_FONT_SIZE_PT, scaled)
+
+
+def _apply_text_padding(tf, el: dict, extra_left_px: float = 0.0) -> None:
+    """Match CSS padding by insetting the text inside its box.
+
+    python-pptx text frames default to ~0.1in/0.05in internal margins; the
+    element box we place is the CSS border box, so without this the text hugs the
+    box edge (e.g. bulleted text overprints its ``::before`` dot, card labels
+    touch the card edge). Setting the frame margins to the measured padding keeps
+    the box geometry identical while placing the glyphs where the browser did.
+    """
+    left_px = max(el.get("paddingLeft", 0), extra_left_px)
+    tf.margin_left = Inches(left_px * PIXELS_TO_INCHES_X)
+    tf.margin_right = Inches(el.get("paddingRight", 0) * PIXELS_TO_INCHES_X)
+    tf.margin_top = Inches(el.get("paddingTop", 0) * PIXELS_TO_INCHES_Y)
+    tf.margin_bottom = Inches(el.get("paddingBottom", 0) * PIXELS_TO_INCHES_Y)
+
+
 def _apply_fill_alpha(shape_or_txbox, alpha: float) -> None:
     """Set fill opacity via OOXML alpha child element.
 
@@ -766,6 +1301,173 @@ def _apply_fill_alpha(shape_or_txbox, alpha: float) -> None:
         alpha_el.set("val", str(int(alpha * 100000)))
 
 
+def _apply_rotation(shape, el: dict) -> None:
+    """Rotate a shape/picture to match a CSS transform:rotate (degrees, CW)."""
+    rot = el.get("rotation", 0) or 0
+    if abs(rot) > 0.5:
+        try:
+            shape.rotation = float(rot)
+        except Exception:
+            pass
+
+
+def _apply_vertical_text(tf, el: dict) -> None:
+    """Map CSS writing-mode:vertical-* to a vertical PPTX text body."""
+    wm = el.get("writingMode", "") or ""
+    if not wm.startswith("vertical"):
+        return
+    try:
+        bodyPr = tf._txBody.find(qn("a:bodyPr"))
+        if bodyPr is not None:
+            # vert270 = bottom-to-top (matches vertical-rl side labels / rotate180)
+            bodyPr.set("vert", "vert270")
+    except Exception:
+        pass
+
+
+def _conic_angle(tok: str) -> float | None:
+    tok = tok.strip()
+    try:
+        if tok.endswith("%"):
+            return float(tok[:-1]) * 3.6
+        if tok.endswith("deg"):
+            return float(tok[:-3])
+        if tok.endswith("turn"):
+            return float(tok[:-4]) * 360.0
+        return float(tok)
+    except ValueError:
+        return None
+
+
+def _parse_conic_gradient(css: str):
+    """Parse a conic-gradient into [(RGBColor, start_deg, end_deg), ...]."""
+    if not css or "conic-gradient" not in css:
+        return None
+    i = css.find("conic-gradient(") + len("conic-gradient(")
+    depth, end = 1, len(css)
+    for j in range(i, len(css)):
+        if css[j] == "(":
+            depth += 1
+        elif css[j] == ")":
+            depth -= 1
+            if depth == 0:
+                end = j
+                break
+    body = css[i:end]
+    parts, buf, d = [], "", 0
+    for ch in body:
+        if ch == "(":
+            d += 1
+        elif ch == ")":
+            d -= 1
+        if ch == "," and d == 0:
+            parts.append(buf); buf = ""
+        else:
+            buf += ch
+    if buf.strip():
+        parts.append(buf)
+
+    segs: list[list] = []
+    cursor = 0.0
+    for part in parts:
+        m = re.match(r"\s*(rgba?\([^)]*\)|#[0-9a-fA-F]{3,6})", part)
+        if not m:
+            continue
+        cres = _css_color_to_rgb(m.group(1))
+        if not cres:
+            continue
+        nums = [t for t in part[m.end():].split() if t]
+        start = _conic_angle(nums[0]) if len(nums) >= 1 else cursor
+        end_a = _conic_angle(nums[1]) if len(nums) >= 2 else None
+        if start is None:
+            start = cursor
+        segs.append([cres[0], start, end_a])
+        cursor = end_a if end_a is not None else start
+    for k in range(len(segs)):
+        if segs[k][2] is None or segs[k][2] <= segs[k][1]:
+            segs[k][2] = segs[k + 1][1] if k + 1 < len(segs) else 360.0
+    return segs or None
+
+
+def _render_conic_gradient(slide, el: dict, x_in, y_in, w_in, h_in) -> bool:
+    """Rasterize a conic-gradient (pie/donut ring) to a picture — OOXML has none."""
+    if not _HAVE_PIL:
+        return False
+    segs = _parse_conic_gradient(el.get("backgroundImage", ""))
+    if not segs:
+        return False
+    try:
+        from io import BytesIO
+
+        from PIL import Image, ImageDraw
+    except Exception:
+        return False
+    S = 700
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    for color, a0, a1 in segs:
+        # PIL angles start at 3 o'clock; CSS conic starts at 12 o'clock → -90.
+        d.pieslice([0, 0, S - 1, S - 1], a0 - 90, a1 - 90,
+                   fill=(int(color[0]), int(color[1]), int(color[2]), 255))
+    radius_px = _parse_border_radius_px(el)
+    if radius_px > 0 and radius_px >= 0.5 * min(el.get("width", 0), el.get("height", 0)):
+        mask = Image.new("L", (S, S), 0)
+        ImageDraw.Draw(mask).ellipse([0, 0, S - 1, S - 1], fill=255)
+        img.putalpha(mask)
+    buf = BytesIO()
+    img.save(buf, "PNG")
+    uri = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    _add_image_from_data_uri(
+        slide, uri, Inches(x_in), Inches(y_in), Inches(w_in), Inches(h_in),
+    )
+    return True
+
+
+def _find_top_accent(el: dict, radius_px: float) -> dict | None:
+    """A thin, full-width, text-free colored child flush with the card's top edge
+    (e.g. a ::before accent strip) — rendered specially so it inherits the card's
+    rounded top corners instead of poking square corners past them."""
+    ew, eh = el.get("width", 0), el.get("height", 0)
+    if ew <= 0 or eh <= 0:
+        return None
+    ex, ey = el.get("x", 0), el.get("y", 0)
+    for ch in el.get("children", []):
+        if ch.get("_skip") or ch.get("children"):
+            continue
+        if ch.get("text", "").strip() or _any_descendant_has_text(ch):
+            continue
+        has_fill = (
+            _css_color_to_rgb(ch.get("backgroundColor", "")) is not None
+            or bool(_parse_css_gradient(ch.get("backgroundImage", "")))
+        )
+        if not has_fill:
+            continue
+        chh, cw = ch.get("height", 0), ch.get("width", 0)
+        rel_x, rel_y = ch.get("x", 0) - ex, ch.get("y", 0) - ey
+        if abs(rel_y) > 3 or chh > eh * 0.25 or chh > radius_px * 2 + 6:
+            continue
+        if cw < ew * 0.85 or rel_x > ew * 0.1:
+            continue
+        return ch
+    return None
+
+
+def _fill_accent(shape, el: dict, backdrop: RGBColor | None) -> None:
+    """Fill a shape with an accent element's solid or gradient background."""
+    if _parse_css_gradient(el.get("backgroundImage", "")):
+        _apply_gradient_fill(shape._element, el["backgroundImage"], backdrop)
+        return
+    res = _css_color_to_rgb(el.get("backgroundColor", ""))
+    if res:
+        col, a = res
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = (
+            _blend_over(col, a, backdrop) if a < 0.99 and backdrop is not None else col
+        )
+    else:
+        shape.fill.background()
+
+
 def _render_bg_shape(
     slide,
     el: dict,
@@ -774,6 +1476,7 @@ def _render_bg_shape(
     w_in: float,
     h_in: float,
     opacity: float,
+    backdrop: RGBColor | None = None,
 ) -> None:
     """Render a background/border rectangle (optionally rounded)."""
     bg_result = _css_color_to_rgb(el.get("backgroundColor", ""))
@@ -784,16 +1487,71 @@ def _render_bg_shape(
     border_width = el.get("borderWidth", 0)
     has_border = bool(border_color_str) and border_width > 0
 
-    if not has_fill and not has_border and not has_gradient:
+    # A left-border accent (border-left: Npx solid <color>) is a common
+    # decorative bar. On a rounded card a plain rectangle bar would poke square
+    # corners past the rounded edge, so we reproduce it as a same-radius rounded
+    # shape behind the card, with the card inset to the right so only the left
+    # rounded sliver shows (the only way to get a rounded-left accent in PPTX).
+    left_border_color = el.get("borderLeftColor")
+    left_border_width = el.get("borderLeftWidth", 0)
+    left_border_style = el.get("borderLeftStyle")
+    left_result = _css_color_to_rgb(left_border_color) if left_border_color else None
+    has_left_accent = bool(
+        left_result
+        and left_border_width > 0
+        and left_border_style not in (None, "none")
+    )
+
+    if not has_fill and not has_border and not has_gradient and not has_left_accent:
         return
 
     radius_px = _parse_border_radius_px(el)
     shape_type = MSO_SHAPE.ROUNDED_RECTANGLE if radius_px > 0 else MSO_SHAPE.RECTANGLE
 
+    card_x, card_w = x_in, w_in
+    card_y, card_h = y_in, h_in
+    if has_left_accent:
+        accent_color = left_result[0]
+        if left_result[1] < 0.99 and backdrop is not None:
+            accent_color = _blend_over(accent_color, left_result[1], backdrop)
+        bar_w = max(left_border_width * PIXELS_TO_INCHES_X, 0.03)
+        if radius_px > 0:
+            # Rounded accent: full-size rounded rect underneath, card inset right.
+            accent = slide.shapes.add_shape(
+                shape_type, Inches(x_in), Inches(y_in), Inches(w_in), Inches(h_in),
+            )
+            _set_corner_radius(
+                accent, radius_px, el.get("width", 100), el.get("height", 100),
+            )
+            accent.fill.solid()
+            accent.fill.fore_color.rgb = accent_color
+            accent.line.fill.background()
+            card_x = x_in + bar_w
+            card_w = max(w_in - bar_w, 0.05)
+
+    # A top accent bar (e.g. a ::before strip or a thin full-width child at the
+    # card's top edge) drawn as a plain rectangle would poke square corners past
+    # the card's rounded top. Reproduce it the same way as the left accent: a
+    # same-radius rounded rect the full card size UNDER the card, with the card
+    # pushed down by the bar height so only the rounded top sliver shows.
+    if radius_px > 0:
+        top_accent = _find_top_accent(el, radius_px)
+        if top_accent is not None:
+            bar_h = max(top_accent.get("height", 0) * PIXELS_TO_INCHES_Y, 0.03)
+            acc = slide.shapes.add_shape(
+                shape_type, Inches(card_x), Inches(y_in), Inches(card_w), Inches(h_in),
+            )
+            _set_corner_radius(acc, radius_px, el.get("width", 100), el.get("height", 100))
+            _fill_accent(acc, top_accent, backdrop)
+            acc.line.fill.background()
+            card_y = y_in + bar_h
+            card_h = max(h_in - bar_h, 0.05)
+            top_accent["_skip"] = True
+
     shape = slide.shapes.add_shape(
         shape_type,
-        Inches(x_in), Inches(y_in),
-        Inches(w_in), Inches(h_in),
+        Inches(card_x), Inches(card_y),
+        Inches(card_w), Inches(card_h),
     )
 
     if radius_px > 0:
@@ -802,60 +1560,53 @@ def _render_bg_shape(
         )
 
     if has_gradient:
-        _apply_gradient_fill(shape._element, el["backgroundImage"])
+        _apply_gradient_fill(shape._element, el["backgroundImage"], backdrop)
     elif has_fill:
         bg_color, bg_alpha = bg_result
         effective_alpha = bg_alpha * opacity
         shape.fill.solid()
-        shape.fill.fore_color.rgb = bg_color
-        if effective_alpha < 0.99:
-            _apply_fill_alpha(shape, effective_alpha)
+        if effective_alpha < 0.99 and backdrop is not None:
+            shape.fill.fore_color.rgb = _blend_over(bg_color, effective_alpha, backdrop)
+        else:
+            shape.fill.fore_color.rgb = bg_color
+            if effective_alpha < 0.99:
+                _apply_fill_alpha(shape, effective_alpha)
     else:
         shape.fill.background()
 
     if has_border:
         border_result = _css_color_to_rgb(border_color_str)
         if border_result and border_result[1] > 0.15:
-            shape.line.color.rgb = border_result[0]
+            border_color = border_result[0]
+            if border_result[1] < 0.99 and backdrop is not None:
+                border_color = _blend_over(border_color, border_result[1], backdrop)
+            shape.line.color.rgb = border_color
             shape.line.width = Pt(max(border_width * CSS_PX_TO_PT, 0.5))
-            if border_result[1] < 0.99:
-                ln = shape._element.find(".//" + qn("a:ln"))
-                if ln is not None:
-                    srgb = ln.find(".//" + qn("a:srgbClr"))
-                    if srgb is not None:
-                        alpha_el = etree.SubElement(srgb, qn("a:alpha"))
-                        alpha_el.set("val", str(int(border_result[1] * 100000)))
         else:
             shape.line.fill.background()
     else:
         shape.line.fill.background()
 
-    # Accent bar: any visible left-border rendered as a separate filled rectangle
-    left_border_color = el.get("borderLeftColor")
-    left_border_width = el.get("borderLeftWidth", 0)
-    left_border_style = el.get("borderLeftStyle")
-    if (
-        left_border_color
-        and left_border_width > 0
-        and left_border_style not in (None, "none")
-    ):
-        left_result = _css_color_to_rgb(left_border_color)
-        if left_result:
-            bar_w = max(left_border_width * PIXELS_TO_INCHES_X, 0.03)
-            bar = slide.shapes.add_shape(
-                MSO_SHAPE.RECTANGLE,
-                Inches(x_in), Inches(y_in),
-                Inches(bar_w), Inches(h_in),
-            )
-            bar.fill.solid()
-            bar.fill.fore_color.rgb = left_result[0]
-            bar.line.fill.background()
+    _apply_rotation(shape, el)
+
+    # Square left accent bar (non-rounded cards): a thin filled rectangle on top.
+    if has_left_accent and radius_px <= 0:
+        bar_w = max(left_border_width * PIXELS_TO_INCHES_X, 0.03)
+        bar = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE,
+            Inches(x_in), Inches(y_in),
+            Inches(bar_w), Inches(h_in),
+        )
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = accent_color
+        bar.line.fill.background()
 
 
 def _apply_shape_bg(
     shape_or_txbox,
     el: dict,
     opacity: float,
+    backdrop: RGBColor | None = None,
 ) -> None:
     """Apply background fill (solid or gradient) to a shape or textbox."""
     gradient_css = el.get("backgroundImage", "")
@@ -863,7 +1614,7 @@ def _apply_shape_bg(
 
     # Don't apply gradient as bg fill when the gradient is for text coloring
     if not is_gradient_text and _parse_css_gradient(gradient_css):
-        _apply_gradient_fill(shape_or_txbox._element, gradient_css)
+        _apply_gradient_fill(shape_or_txbox._element, gradient_css, backdrop)
         return
 
     bg_result = _css_color_to_rgb(el.get("backgroundColor", ""))
@@ -871,9 +1622,14 @@ def _apply_shape_bg(
         bg_color, bg_alpha = bg_result
         effective_alpha = bg_alpha * opacity
         shape_or_txbox.fill.solid()
-        shape_or_txbox.fill.fore_color.rgb = bg_color
-        if effective_alpha < 0.99:
-            _apply_fill_alpha(shape_or_txbox, effective_alpha)
+        if effective_alpha < 0.99 and backdrop is not None:
+            shape_or_txbox.fill.fore_color.rgb = _blend_over(
+                bg_color, effective_alpha, backdrop,
+            )
+        else:
+            shape_or_txbox.fill.fore_color.rgb = bg_color
+            if effective_alpha < 0.99:
+                _apply_fill_alpha(shape_or_txbox, effective_alpha)
 
 
 def _render_text_element(
@@ -885,6 +1641,8 @@ def _render_text_element(
     h_in: float,
     has_visual_bg: bool,
     opacity: float,
+    backdrop: RGBColor | None = None,
+    extra_left_px: float = 0.0,
 ) -> None:
     """Render a text box with optional background (solid, gradient, or translucent)."""
     # Gradient-text elements use backgroundImage for text coloring, not as a fill
@@ -904,50 +1662,86 @@ def _render_text_element(
     font_size_pt = el.get("fontSize", 20) * CSS_PX_TO_PT
     font_size_pt = max(MIN_FONT_SIZE_PT, min(font_size_pt, MAX_FONT_SIZE_PT))
 
-    min_text_height = font_size_pt * 1.5 / 72
-    h_in = max(h_in, min_text_height)
-
-    font_color = _resolve_font_color(el)
-    font_family = _parse_font_family(el.get("fontFamily", "Calibri"))
+    font_color = _resolve_font_color(el, backdrop)
+    font_family = _resolve_pptx_font(el.get("fontFamily", "Calibri"))
     is_bold = el.get("fontWeight", "400") in ("bold", "600", "700", "800", "900")
     is_italic = el.get("fontStyle", "normal") == "italic"
 
-    is_rtl = el.get("direction") == "rtl"
-    alignment = {
-        "center": PP_ALIGN.CENTER,
-        "right": PP_ALIGN.RIGHT,
-        "left": PP_ALIGN.LEFT,
-        "justify": PP_ALIGN.JUSTIFY,
-        "start": PP_ALIGN.RIGHT if is_rtl else PP_ALIGN.LEFT,
-        "end": PP_ALIGN.LEFT if is_rtl else PP_ALIGN.RIGHT,
-    }.get(el.get("textAlign", "right" if is_rtl else "left"),
-          PP_ALIGN.RIGHT if is_rtl else PP_ALIGN.LEFT)
+    # Single line unless the CSS content box is tall enough for 2+ line boxes.
+    # (Use content height, not border-box height, so padding doesn't misclassify
+    # a padded pill/button as multi-line and let it wrap.)
+    line_unit_px = (_line_height_ratio(el) or 1.3) * el.get("fontSize", 20)
+    content_h_px = el.get("height", 0) - el.get("paddingTop", 0) - el.get("paddingBottom", 0)
+    is_single_line = content_h_px <= line_unit_px * 1.6
+
+    # A single line must fit its box: shrink the point size if the substituted
+    # font is wider than the source font was.
+    if is_single_line:
+        pad_left_px = max(el.get("paddingLeft", 0), extra_left_px)
+        avail_in = w_in - (pad_left_px + el.get("paddingRight", 0)) * PIXELS_TO_INCHES_X
+        font_size_pt = _fit_font_size_single_line(
+            text, font_size_pt, font_family, is_bold,
+            el.get("letterSpacing", 0), avail_in,
+        )
+
+    min_text_height = font_size_pt * 1.5 / 72
+    h_in = max(h_in, min_text_height)
+
+    alignment, vertical_anchor = _resolve_alignment(el, is_single_line, has_visual_bg)
 
     radius_px = _parse_border_radius_px(el)
+    has_border = bool(el.get("borderColor")) and el.get("borderWidth", 0) > 0
+    box_holder = None
 
-    if has_visual_bg and radius_px > 0:
+    if has_visual_bg or has_border:
+        # Any text element that also paints a box (fill and/or border, e.g. a
+        # bordered "stamp") is rendered as an autoshape so the border/fill and any
+        # rotation apply to the same box the text lives in.
         shape = slide.shapes.add_shape(
-            MSO_SHAPE.ROUNDED_RECTANGLE,
+            MSO_SHAPE.ROUNDED_RECTANGLE if radius_px > 0 else MSO_SHAPE.RECTANGLE,
             Inches(x_in), Inches(y_in),
             Inches(w_in), Inches(h_in),
         )
-        _set_corner_radius(shape, radius_px, el.get("width", 100), el.get("height", 100))
-        _apply_shape_bg(shape, el, opacity)
-        shape.line.fill.background()
+        if radius_px > 0:
+            _set_corner_radius(shape, radius_px, el.get("width", 100), el.get("height", 100))
+        if has_visual_bg:
+            _apply_shape_bg(shape, el, opacity, backdrop)
+        else:
+            shape.fill.background()
+        if has_border:
+            br = _css_color_to_rgb(el.get("borderColor", ""))
+            if br and br[1] > 0.15:
+                bc = _blend_over(br[0], br[1], backdrop) if br[1] < 0.99 and backdrop else br[0]
+                shape.line.color.rgb = bc
+                shape.line.width = Pt(max(el.get("borderWidth", 1) * CSS_PX_TO_PT, 0.5))
+            else:
+                shape.line.fill.background()
+        else:
+            shape.line.fill.background()
+        box_holder = shape
         tf = shape.text_frame
     else:
         txbox = slide.shapes.add_textbox(
             Inches(x_in), Inches(y_in),
             Inches(w_in), Inches(h_in),
         )
-        if has_visual_bg:
-            _apply_shape_bg(txbox, el, opacity)
+        box_holder = txbox
         tf = txbox.text_frame
 
-    tf.word_wrap = True
-    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+    # A single-line source element (height ~ one line box) must never wrap onto a
+    # second line under a substituted font — that reflow is the most visible
+    # conversion defect. Disable wrapping for it so a slightly-wider fallback
+    # overhangs invisibly instead of breaking. Genuine multi-line blocks keep
+    # wrapping. auto_size is left off so the authored point size is preserved.
+    tf.word_wrap = not is_single_line
+    tf.auto_size = MSO_AUTO_SIZE.NONE
+    tf.vertical_anchor = vertical_anchor
+    _apply_text_padding(tf, el, extra_left_px)
+    _apply_vertical_text(tf, el)
+    _apply_rotation(box_holder, el)
 
     p = tf.paragraphs[0]
+    _apply_line_spacing(p, el)
 
     marker_color_str = el.get("markerColor")
     has_bullet = text.startswith("\u2022 ") or (
@@ -986,6 +1780,9 @@ def _render_text_element(
         family=font_family,
     )
 
+    # Real gradient text: LibreOffice and PowerPoint both render a run-level
+    # <a:gradFill>, so reproduce the CSS gradient. _resolve_font_color already set
+    # the first stop as a solid base for any viewer that ignores the gradient.
     if el.get("isGradientText") and el.get("backgroundImage"):
         _apply_gradient_text(primary_run, el["backgroundImage"])
 
@@ -1008,6 +1805,7 @@ def _render_inline_runs(
     h_in: float,
     has_bg: bool,
     opacity: float,
+    backdrop: RGBColor | None = None,
 ) -> None:
     """Render a text box with multiple styled runs from inline mixed content.
 
@@ -1041,13 +1839,9 @@ def _render_inline_runs(
             Inches(w_in), Inches(h_in),
         )
         _set_corner_radius(shape, radius_px, el.get("width", 100), el.get("height", 100))
-        bg_result = _css_color_to_rgb(el.get("backgroundColor", ""))
-        if bg_result:
-            shape.fill.solid()
-            shape.fill.fore_color.rgb = bg_result[0]
-            if bg_result[1] * opacity < 0.99:
-                _apply_fill_alpha(shape, bg_result[1] * opacity)
+        _apply_shape_bg(shape, el, opacity, backdrop)
         shape.line.fill.background()
+        box_holder = shape
         tf = shape.text_frame
     else:
         txbox = slide.shapes.add_textbox(
@@ -1055,25 +1849,56 @@ def _render_inline_runs(
             Inches(w_in), Inches(h_in),
         )
         if has_bg:
-            bg_result = _css_color_to_rgb(el.get("backgroundColor", ""))
-            if bg_result:
-                txbox.fill.solid()
-                txbox.fill.fore_color.rgb = bg_result[0]
-                if bg_result[1] * opacity < 0.99:
-                    _apply_fill_alpha(txbox, bg_result[1] * opacity)
+            _apply_shape_bg(txbox, el, opacity, backdrop)
+        box_holder = txbox
         tf = txbox.text_frame
 
-    tf.word_wrap = True
-    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+    # Explicit <br> line breaks arrive as '\n' runs. When the author hard-broke
+    # the lines, honor exactly those breaks and disable wrapping so a substituted
+    # font can't add extra lines. A heading/logo that is one line in the source
+    # (mixed inline color spans, no <br>) must also stay one line — treat it like
+    # a single-line text leaf: no wrap + width-fit. Only genuine flowing
+    # paragraphs (multiple lines, no breaks) keep wrapping.
+    has_hard_breaks = any(rd.get("text") == "\n" for rd in runs_data)
+    line_unit_px = (_line_height_ratio(el) or 1.3) * el.get("fontSize", 20)
+    content_h_px = el.get("height", 0) - el.get("paddingTop", 0) - el.get("paddingBottom", 0)
+    is_single_line = not has_hard_breaks and content_h_px <= line_unit_px * 1.6
+
+    # Uniform shrink factor so a one-line mixed-run heading fits its box width.
+    run_scale = 1.0
+    if is_single_line:
+        avail_in = w_in - (el.get("paddingLeft", 0) + el.get("paddingRight", 0)) * PIXELS_TO_INCHES_X
+        total_in = 0.0
+        for rd in runs_data:
+            t = rd.get("text", "")
+            if not t.strip():
+                continue
+            tr = rd.get("textTransform", "none")
+            t = t.upper() if tr == "uppercase" else t.lower() if tr == "lowercase" else t.title() if tr == "capitalize" else t
+            sz = max(MIN_FONT_SIZE_PT, min(rd.get("fontSize", el.get("fontSize", 20)) * CSS_PX_TO_PT, MAX_FONT_SIZE_PT))
+            fam = _resolve_pptx_font(rd.get("fontFamily", el.get("fontFamily", "Calibri")))
+            bold = rd.get("fontWeight", "400") in ("bold", "600", "700", "800", "900")
+            est = _estimate_text_width_in(t, sz, fam, bold, el.get("letterSpacing", 0))
+            total_in += est or 0.0
+        if total_in > avail_in > 0.05:
+            run_scale = (avail_in / total_in) * 0.98
+
+    tf.word_wrap = not (has_hard_breaks or is_single_line)
+    tf.auto_size = MSO_AUTO_SIZE.NONE
+    _apply_text_padding(tf, el)
+    _apply_vertical_text(tf, el)
+    _apply_rotation(box_holder, el)
 
     p = tf.paragraphs[0]
     p.alignment = alignment
+    _apply_line_spacing(p, el)
 
     for run_data in runs_data:
         text = run_data.get("text", "")
         if text == "\n":
             p = tf.add_paragraph()
             p.alignment = alignment
+            _apply_line_spacing(p, el)
             continue
         if not text.strip():
             continue
@@ -1087,7 +1912,8 @@ def _render_inline_runs(
             text = text.title()
 
         run_size = run_data.get("fontSize", el.get("fontSize", 20)) * CSS_PX_TO_PT
-        run_size = max(MIN_FONT_SIZE_PT, min(run_size, MAX_FONT_SIZE_PT))
+        run_size = max(MIN_FONT_SIZE_PT, min(run_size, MAX_FONT_SIZE_PT)) * run_scale
+        run_size = max(MIN_FONT_SIZE_PT, run_size)
 
         run_is_gradient = run_data.get("isGradientText", False)
         run_bg_image = run_data.get("backgroundImage", "")
@@ -1096,18 +1922,19 @@ def _render_inline_runs(
         if run_is_gradient and run_bg_image:
             run_color = _first_gradient_color(run_bg_image) or RGBColor(0xFF, 0xFF, 0xFF)
         elif color_result:
-            run_color = color_result[0]
+            run_color, run_alpha = color_result
+            if run_alpha < 0.99 and backdrop is not None:
+                run_color = _blend_over(run_color, run_alpha, backdrop)
         else:
-            run_color = _resolve_font_color(el)
+            run_color = _resolve_font_color(el, backdrop)
 
         run_bold = run_data.get("fontWeight", "400") in ("bold", "600", "700", "800", "900")
         run_italic = run_data.get("fontStyle", "normal") == "italic"
-        run_family = _parse_font_family(run_data.get("fontFamily", el.get("fontFamily", "Calibri")))
+        run_family = _resolve_pptx_font(run_data.get("fontFamily", el.get("fontFamily", "Calibri")))
 
         r = p.add_run()
         r.text = text
         _apply_font(r, size_pt=run_size, color=run_color, bold=run_bold, italic=run_italic, family=run_family)
-
         if run_is_gradient and run_bg_image:
             _apply_gradient_text(r, run_bg_image)
 
@@ -1124,7 +1951,9 @@ def _render_inline_runs(
 # ---------------------------------------------------------------------------
 
 
-def _render_measured_element(slide, el: dict) -> None:
+def _render_measured_element(
+    slide, el: dict, backdrop: RGBColor | None = None, inherited_opacity: float = 1.0,
+) -> None:
     """Render a single measured element onto a PPTX slide.
 
     Traversal strategy:
@@ -1136,6 +1965,9 @@ def _render_measured_element(slide, el: dict) -> None:
     - Non-leaf with background/gradient → render shape, recurse children
     - Pure container → recurse children only
     """
+    if el.get("_skip"):  # overlay baked into an underlying image
+        return
+
     x_in = el["x"] * PIXELS_TO_INCHES_X
     y_in = el["y"] * PIXELS_TO_INCHES_Y
     w_in = el["width"] * PIXELS_TO_INCHES_X
@@ -1170,7 +2002,10 @@ def _render_measured_element(slide, el: dict) -> None:
     has_text = bool(el.get("text", "").strip())
     has_inline_runs = bool(el.get("inlineRuns"))
     children = el.get("children", [])
-    opacity = el.get("opacity", 1.0)
+    # A CSS parent opacity visually multiplies its descendants. Containers are
+    # not always collapsed (e.g. a top-level faint image wrapper), so fold the
+    # inherited opacity in here and pass it down, or it is silently dropped.
+    opacity = el.get("opacity", 1.0) * inherited_opacity
 
     # Detect standalone left-border accents (common decorative pattern)
     has_left_accent = (
@@ -1179,43 +2014,100 @@ def _render_measured_element(slide, el: dict) -> None:
         and bool(_css_color_to_rgb(el.get("borderLeftColor", "")))
     )
 
+    # Backdrop handed to descendants for alpha flattening: an element with its own
+    # background (e.g. a navy card on a cream slide) becomes the backdrop for its
+    # children, so a translucent pill inside it flattens over navy, not the slide.
+    child_backdrop = backdrop
+    _bgc = _css_color_to_rgb(el.get("backgroundColor", ""))
+    if _bgc is not None:
+        _c, _a = _bgc
+        eff = _a * opacity
+        child_backdrop = (
+            _c if eff >= 0.999 or backdrop is None
+            else _blend_over(_c, eff, backdrop)
+        )
+    elif has_gradient:
+        _gc = _first_gradient_color(el.get("backgroundImage", ""))
+        if _gc is not None:
+            child_backdrop = _gc
+
     if (is_image or el.get("isSvg")) and el.get("src", "").startswith("data:image/"):
-        _add_image_from_data_uri(
+        pic = _add_image_from_data_uri(
             slide, el["src"],
             Inches(x_in), Inches(y_in),
             Inches(w_in), Inches(h_in),
             border_radius_px=_parse_border_radius_px(el),
             width_px=el.get("width", 0),
             height_px=el.get("height", 0),
+            opacity=opacity,
+            object_fit=el.get("objectFit"),
+            natural_w=el.get("naturalWidth", 0),
+            natural_h=el.get("naturalHeight", 0),
         )
+        if pic is not None:
+            _apply_rotation(pic, el)
         return
 
     # Unreasterized SVGs: skip (no python-pptx SVG support)
     if el.get("isSvg"):
         return
 
+    # conic-gradient (pie/donut) — rasterize to a picture, then draw children
+    # (e.g. the center hole + label) on top.
+    if "conic-gradient" in (el.get("backgroundImage") or ""):
+        _render_conic_gradient(slide, el, x_in, y_in, w_in, h_in)
+        for child in children:
+            _render_measured_element(slide, child, child_backdrop, opacity)
+        return
+
     if has_inline_runs:
         if has_visual_bg or has_border or has_left_accent:
-            _render_bg_shape(slide, el, x_in, y_in, w_in, h_in, opacity)
-        _render_inline_runs(slide, el, x_in, y_in, w_in, h_in, has_visual_bg, opacity)
+            _render_bg_shape(slide, el, x_in, y_in, w_in, h_in, opacity, backdrop)
+        _render_inline_runs(slide, el, x_in, y_in, w_in, h_in, has_visual_bg, opacity, backdrop)
         for child in children:
             if child.get("tag") not in (
                 "span", "strong", "em", "b", "i", "a", "code", "mark",
                 "sub", "sup", "small", "u", "s", "del",
             ):
-                _render_measured_element(slide, child)
+                _render_measured_element(slide, child, child_backdrop, opacity)
         return
 
     is_text_leaf = has_text and not _any_descendant_has_text(el)
     if is_text_leaf:
-        _render_text_element(slide, el, x_in, y_in, w_in, h_in, has_visual_bg, opacity)
+        # A leading, in-flow decorative child (e.g. an inline flag dot before a
+        # city name: <h4><span class="flag-dot"></span>Tokyo</h4>) occupies
+        # horizontal space in the browser, so the text must start after it or the
+        # dot overprints the first letter. Absolutely-positioned accents (bullet
+        # ::before) sit in the padding and are handled by padding instead.
+        extra_left_px = 0.0
+        el_left = el.get("x", 0)
+        el_mid_y = el.get("y", 0) + el.get("height", 0) / 2
+        for child in children:
+            if child.get("text", "").strip() or _any_descendant_has_text(child):
+                continue
+            if child.get("position") in ("absolute", "fixed"):
+                continue
+            cx = child.get("x", 0)
+            cright = cx + child.get("width", 0)
+            c_top, c_bot = child.get("y", 0), child.get("y", 0) + child.get("height", 0)
+            near_left = cx <= el_left + el.get("width", 0) * 0.4
+            vertically_on_line = c_top <= el_mid_y <= c_bot
+            if near_left and cright > el_left and vertically_on_line:
+                extra_left_px = max(extra_left_px, cright - el_left + 8)
+        _render_text_element(
+            slide, el, x_in, y_in, w_in, h_in, has_visual_bg, opacity, backdrop,
+            extra_left_px,
+        )
+        # Render the decorative, text-free children themselves (e.g. bullet dots).
+        for child in children:
+            _render_measured_element(slide, child, child_backdrop, opacity)
         return
 
     if has_visual_bg or has_border or has_left_accent:
-        _render_bg_shape(slide, el, x_in, y_in, w_in, h_in, opacity)
+        _render_bg_shape(slide, el, x_in, y_in, w_in, h_in, opacity, backdrop)
 
     for child in children:
-        _render_measured_element(slide, child)
+        _render_measured_element(slide, child, child_backdrop, opacity)
 
 
 # ---------------------------------------------------------------------------
@@ -1335,6 +2227,92 @@ async def extract_measurements(html_path: str) -> list[dict]:
     return measurements
 
 
+def _overlay_paint(el: dict) -> tuple[int, int, int, float] | None:
+    """If ``el`` is a translucent fill overlay (no text/image), return (r,g,b,a)."""
+    if el.get("text", "").strip() or el.get("inlineRuns"):
+        return None
+    if el.get("isImage") or el.get("isSvg"):
+        return None
+    if not el.get("isGradientText"):
+        grad = _parse_css_gradient(el.get("backgroundImage", ""))
+        if grad:
+            n = len(grad)
+            r = sum(c[0] for c, _, _ in grad) // n
+            g = sum(c[1] for c, _, _ in grad) // n
+            b = sum(c[2] for c, _, _ in grad) // n
+            a = sum(al for _, _, al in grad) / n
+            return (r, g, b, a) if a < 0.985 else None
+    bg = _css_color_to_rgb(el.get("backgroundColor", ""))
+    if bg and bg[1] < 0.985:
+        return (bg[0][0], bg[0][1], bg[0][2], bg[1])
+    return None
+
+
+def _rect_of(el: dict) -> tuple[float, float, float, float]:
+    return (el.get("x", 0), el.get("y", 0), el.get("width", 0), el.get("height", 0))
+
+
+def _coextensive(a, b, thresh: float = 0.9) -> bool:
+    """True if rects a and b cover >= thresh of each other's area."""
+    ax, ay, aw, ah = a; bx, by, bw, bh = b
+    if aw <= 0 or ah <= 0 or bw <= 0 or bh <= 0:
+        return False
+    ix = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+    iy = max(0, min(ay + ah, by + bh) - max(ay, by))
+    inter = ix * iy
+    return inter >= thresh * aw * ah and inter >= thresh * bw * bh
+
+
+def _bake_full_bleed_overlays(slide_data: dict) -> None:
+    """Composite a full-bleed translucent overlay onto the image beneath it.
+
+    A hero pattern is <img class="slide-bg">…<div class="scrim"> where the scrim
+    is a translucent gradient that darkens the photo. Flattening the scrim to an
+    opaque color would erase the photo, and LibreOffice ignores gradient-stop
+    alpha, so instead we bake the overlay into the image pixels (Pillow) and skip
+    drawing the overlay — reproducing the darkened photo in every viewer.
+    """
+    if not _HAVE_PIL:
+        return
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+    except Exception:
+        return
+
+    order = list(_walk_elements(slide_data.get("elements", [])))
+    images = [e for e in order if e.get("isImage") and str(e.get("src", "")).startswith("data:image/")]
+    if not images:
+        return
+    for i, el in enumerate(order):
+        paint = _overlay_paint(el)
+        if paint is None:
+            continue
+        ov_rect = _rect_of(el)
+        # find an earlier-painted, ~coextensive image (drawn behind this overlay)
+        target = None
+        for img in images:
+            if order.index(img) < i and _coextensive(_rect_of(img), ov_rect):
+                target = img
+        if target is None:
+            continue
+        m = re.match(r"data:image/(\w+);base64,(.*)", target["src"], re.DOTALL)
+        if not m:
+            continue
+        try:
+            base = Image.open(BytesIO(base64.b64decode(m.group(2)))).convert("RGBA")
+            r, g, b, a = paint
+            ov = Image.new("RGBA", base.size, (r, g, b, int(round(a * 255))))
+            out = Image.alpha_composite(base, ov).convert("RGB")
+            buf = BytesIO()
+            out.save(buf, "JPEG", quality=88)
+            target["src"] = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+            el["_skip"] = True
+        except Exception:
+            logger.debug("overlay bake failed", exc_info=True)
+
+
 def render_pptx(measurements: list[dict]) -> Presentation:
     """Convert DOM measurements into a python-pptx Presentation.
 
@@ -1365,8 +2343,10 @@ def render_pptx(measurements: list[dict]) -> Presentation:
                 fill.solid()
                 fill.fore_color.rgb = bg_color
 
+        _bake_full_bleed_overlays(slide_data)
+        backdrop = _resolve_backdrop(slide_data)
         for el in slide_data.get("elements", []):
-            _render_measured_element(slide, el)
+            _render_measured_element(slide, el, backdrop)
 
     return prs
 

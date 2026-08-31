@@ -94,23 +94,36 @@ See [`examples/demo.html`](examples/demo.html) for a full five-slide deck.
 | HTML feature | PPTX output |
 |---|---|
 | Text with fonts, colors, weight, style | Editable text boxes with matching font properties |
+| **Font substitution** (web fonts like Inter, Playfair, Roboto) | Mapped to a metric-compatible, install-safe font in the **same family** so headings don't reflow |
+| **Single-line fit** | One-line headings/pills/buttons never wrap — the point size auto-shrinks to fit the box |
+| **CSS `line-height`** | Exact paragraph line spacing (multi-line headings keep their height) |
+| **CSS padding** | Reproduced as text-frame insets (bulleted/labelled text aligns correctly) |
+| **Text/box/gradient alpha** | Flattened over the correct backdrop (nearest ancestor bg), so translucency renders in every viewer |
+| **Translucent image overlays / scrims** | Baked into the underlying image so the photo stays visible |
 | **Mixed inline content** (`<p>text <strong>bold</strong> more</p>`) | Multi-run paragraphs with per-run styling |
 | **CSS linear-gradient backgrounds** | OOXML gradient fills with angle and stop positions |
-| **Gradient text** (`-webkit-background-clip: text`) | Gradient text fill (or solid fallback) |
+| **CSS `conic-gradient`** (pies/donuts) | Rasterized to a picture with true segments |
+| **Gradient text** (`-webkit-background-clip: text`) | Gradient text fill with a solid first-stop fallback |
 | **Inline `<svg>` elements** | Rasterized to PNG via Playwright screenshot |
-| Background colors | Solid fills (with alpha transparency) |
+| **HTML tables** (`<table>`) | Cell-accurate text with per-column alignment preserved |
+| Background colors | Solid fills (with alpha flattening) |
 | Rounded corners (`border-radius`, including `%`) | OOXML adjustment guides on rounded rectangles |
-| **Rounded images** (`border-radius` on `<img>`) | Rounded-rect geometry swap on picture shapes |
+| **Rounded images** (`border-radius` on `<img>` or wrapper) | Rounded-rect geometry swap on picture shapes |
+| **`object-fit: cover`** | Centered crop (no distortion) instead of stretching |
 | Base64-embedded images (`data:image/...`) | Native picture shapes |
 | Borders (with alpha) | Shape outlines with color, width, and opacity |
-| Left-border accent bars | Separate narrow rectangle shapes |
+| **Left/top accent bars** (`border-left`, `::before` strips) | Rounded to match the card's corners (offset under-component) |
+| **`transform: rotate()`** | Shape rotation about the element center |
+| **`writing-mode: vertical-*`** | Vertical PPTX text body |
+| **Flex/grid alignment** (`justify-content`, `align-items`) | Horizontal + vertical text anchoring |
 | `text-transform` (uppercase, etc.) | Transformed text content |
 | Hyperlinks | Preserved on text runs |
-| Ordered/unordered lists | Bullet/number prefixes with marker colors |
+| Ordered/unordered lists (incl. custom bullet dots) | Bullet/number prefixes and decorative markers |
 | **CSS `::before`/`::after` pseudo-elements** | Synthetic shapes for decorative accents |
+| **`white-space: pre`** (terminals/code) | Preserved line breaks and indentation |
 | **RTL text direction** | Correct paragraph alignment |
 | **`<br>` tags in inline runs** | Multi-paragraph text frames |
-| Element opacity | OOXML alpha on fill colors |
+| Element opacity (incl. inherited) | OOXML alpha / picture transparency |
 
 ## How it works
 
@@ -180,9 +193,9 @@ results/deck/
 
 - **External images** are not fetched — use base64 `data:` URIs for embedded images
 - **CSS `background-image: url(...)`** on containers is not converted — only `<img>` tags with base64 `src` and inline `<svg>` elements become picture shapes
-- **Radial gradients** are not supported — only `linear-gradient`
+- **Radial / multi-layered gradients** are not drawn — they fall back to the solid background color (single `linear-gradient` and `conic-gradient` are supported)
 - **Animations and transitions** are not represented in PPTX
-- **Font availability** — the PPTX references font names from the HTML; if those fonts aren't installed on the machine opening the file, PowerPoint will substitute
+- **Font availability** — web fonts are mapped to a metric-compatible font in the same family (serif→Georgia, humanist sans→Segoe UI, geometric sans→Century Gothic, mono→Consolas, …). For pixel-exact display type, embed the font in PowerPoint yourself
 - **Complex CSS layouts** (grid, advanced flexbox) are measured as-rendered, but deeply nested layouts may lose some positioning precision
 
 ## Development
