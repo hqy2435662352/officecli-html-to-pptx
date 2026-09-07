@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import subprocess
@@ -18,6 +19,11 @@ pytestmark = pytest.mark.skipif(
     shutil.which("officecli") is None,
     reason="OfficeCLI is required for the OfficeCLI compiler tests",
 )
+
+_SVG_DATA_URI = "data:image/svg+xml;base64," + base64.b64encode(
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">'
+    b'<rect width="20" height="10" fill="#e60012"/></svg>'
+).decode("ascii")
 
 
 def _run_json(*args: str) -> dict:
@@ -76,6 +82,28 @@ def _author_html() -> str:
 </body></html>"""
 
 
+def _picture_deck_html() -> str:
+    image_counts = (4, 4, 2, 2, 2, 2, 2, 0)
+    slides = []
+    for slide_index, image_count in enumerate(image_counts):
+        images = "".join(
+            f'<img src="{_SVG_DATA_URI}" alt="product {slide_index}-{image_index}" '
+            f'style="position:absolute;left:{20 + image_index * 120}px;'
+            f'top:30px;width:100px;height:70px;object-fit:contain">'
+            for image_index in range(image_count)
+        )
+        active = " active" if slide_index == 0 else ""
+        slides.append(f'<section class="slide{active}">{images}</section>')
+    return """<!doctype html>
+<html><head><style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  .slide { width: 960px; height: 540px; display: none; position: relative;
+           background: #ffffff; }
+  .slide.active { display: block; }
+</style></head><body>""" + "".join(slides) + "</body></html>"
+
+
 @pytest.mark.asyncio
 async def test_public_author_compiler_emits_native_shapes_and_text(tmp_path: Path):
     html_path = tmp_path / "author.html"
@@ -113,6 +141,59 @@ async def test_public_author_compiler_emits_native_shapes_and_text(tmp_path: Pat
     names = [item["format"]["name"] for item in objects]
     assert len(names) == len(set(names))
     assert all(name.startswith("slide-001-") for name in names)
+
+
+@pytest.mark.asyncio
+async def test_public_author_compiler_emits_svg_data_uri_as_picture(
+    tmp_path: Path,
+):
+    html_path = tmp_path / "author.html"
+    output_path = tmp_path / "output.pptx"
+    html_path.write_text(
+        _author_html().replace(
+            '<div class="accent"></div>',
+            f'<img class="accent" src="{_SVG_DATA_URI}" alt="red mark">',
+        ),
+        encoding="utf-8",
+    )
+
+    result = await compile_officecli(
+        str(html_path), "author", str(output_path), slide_indices=[0]
+    )
+
+    assert result.manifest["object_kind_counts"]["picture"] == 1
+    document = _run_json("get", str(output_path), "/slide[1]/picture[1]")
+    picture = document["data"]["results"][0]
+    assert picture["type"] == "picture"
+    assert picture["format"]["name"].startswith("slide-001-picture-")
+    assert picture["format"]["contentType"].startswith("image/")
+    assert picture["format"]["alt"] == "red mark"
+    if picture["format"]["contentType"] == "image/png":
+        assert picture["format"]["fileSize"] > 67
+    assert _points(picture["format"]["x"]) == pytest.approx(624)
+    assert _points(picture["format"]["y"]) == pytest.approx(72)
+    assert _points(picture["format"]["width"]) == pytest.approx(6)
+    assert _points(picture["format"]["height"]) == pytest.approx(180)
+
+
+@pytest.mark.asyncio
+async def test_public_author_compiler_preserves_four_and_eighteen_picture_inventory(
+    tmp_path: Path,
+):
+    html_path = tmp_path / "author.html"
+    output_path = tmp_path / "output.pptx"
+    html_path.write_text(_picture_deck_html(), encoding="utf-8")
+
+    result = await compile_officecli(str(html_path), "author", str(output_path))
+
+    assert result.slide_count == 8
+    assert result.manifest["object_kind_counts"] == {"picture": 18}
+    pictures = _run_json("query", str(output_path), "picture")["data"]["results"]
+    assert len(pictures) == 18
+    first_slide = _run_json(
+        "get", str(output_path), "/slide[1]", "--depth", "1"
+    )["data"]["results"][0]
+    assert sum(child["type"] == "picture" for child in first_slide["children"]) == 4
 
 
 @pytest.mark.asyncio
@@ -163,7 +244,7 @@ async def test_public_author_compiler_does_not_overwrite_existing_output(
 
 
 @pytest.mark.asyncio
-async def test_unsupported_picture_has_source_diagnostic_and_no_output(
+async def test_undecodable_picture_has_source_diagnostic_and_no_output(
     tmp_path: Path,
 ):
     html_path = tmp_path / "author.html"
@@ -183,6 +264,6 @@ async def test_unsupported_picture_has_source_diagnostic_and_no_output(
         )
 
     assert "source slide 1" in str(error.value)
-    assert "unsupported_picture" in error.value.diagnostics[0].code
+    assert "undecodable_picture" in error.value.diagnostics[0].code
     assert error.value.diagnostics[0].source_object
     assert not output_path.exists()

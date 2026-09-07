@@ -118,6 +118,7 @@ EXTRACTION_JS = """
     const slides = document.querySelectorAll('.slide');
     const results = [];
     let _svgCounter = 0;
+    let _imageCounter = 0;
     const INLINE_TAGS = new Set([
         'span','strong','em','b','i','a','code','mark','sub','sup',
         'small','u','s','del','abbr','cite','q','time','var','kbd',
@@ -287,6 +288,8 @@ EXTRACTION_JS = """
 
         const isImg = tag === 'img';
         const isSvg = tag === 'svg';
+        const imageSource = isImg ? (el.getAttribute('src') || '') : '';
+        const isSvgDataUri = isImg && /^data:image\\/svg\\+xml(?:[;,]|$)/i.test(imageSource);
         const hasVisibleBg = style.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
                              style.backgroundColor !== 'transparent';
         const hasBorder = style.borderWidth && style.borderWidth !== '0px' &&
@@ -340,9 +343,11 @@ EXTRACTION_JS = """
             isGradientText: isGradientText,
             isImage: isImg,
             isSvg: isSvg,
-            src: isImg ? el.getAttribute('src') : null,
+            src: isImg ? imageSource : null,
+            alt: isImg ? el.getAttribute('alt') : null,
             href: tag === 'a' ? el.getAttribute('href') : null,
             markerColor: markerColor,
+            isSvgDataUri: isSvgDataUri,
             children: []
         };
 
@@ -351,6 +356,10 @@ EXTRACTION_JS = """
             const svgId = 'pptx-svg-' + (_svgCounter++);
             el.setAttribute('data-pptx-id', svgId);
             data.svgId = svgId;
+        } else if (isSvgDataUri) {
+            const imageId = 'pptx-image-' + (_imageCounter++);
+            el.setAttribute('data-pptx-id', imageId);
+            data.imageId = imageId;
         }
 
         for (const child of el.children) {
@@ -2142,17 +2151,31 @@ def _walk_elements(elements: list[dict]):
         yield from _walk_elements(el.get("children", []))
 
 
-async def _rasterize_inline_svgs(page, measurements: list[dict]) -> None:
-    """Screenshot inline <svg> elements and patch them as raster images.
+async def _rasterize_inline_svgs(
+    page,
+    measurements: list[dict],
+    *,
+    include_picture_fallbacks: bool = False,
+) -> None:
+    """Prepare deterministic image fallbacks for SVG-backed measurements.
 
-    SVGs can't be added directly to python-pptx. This second pass shows
-    each slide, finds marked SVGs, screenshots them at 2x, and converts
-    the measurement to an image element.
+    Inline SVGs still become raster images for the legacy python-pptx path.
+    SVG data-URI ``<img>`` nodes retain their original ``src`` for the
+    OfficeCLI path and additionally receive a browser-rendered PNG fallback
+    for OfficeCLI versions without direct SVG support. The screenshot is of
+    the measured element, so CSS object-fit behavior is already included.
     """
     for i, slide_data in enumerate(measurements):
         svg_els = [e for e in _walk_elements(slide_data.get("elements", []))
                    if e.get("isSvg") and e.get("svgId")]
-        if not svg_els:
+        image_els = []
+        if include_picture_fallbacks:
+            image_els = [
+                e
+                for e in _walk_elements(slide_data.get("elements", []))
+                if e.get("isSvgDataUri") and e.get("imageId")
+            ]
+        if not svg_els and not image_els:
             continue
 
         await page.evaluate(f"""
@@ -2164,28 +2187,40 @@ async def _rasterize_inline_svgs(page, measurements: list[dict]) -> None:
         """)
         await page.wait_for_timeout(200)
 
-        for el in svg_els:
+        for el in [*svg_els, *image_els]:
+            element_id = el.get("svgId") or el.get("imageId")
             try:
                 handle = await page.query_selector(
-                    f'[data-pptx-id="{el["svgId"]}"]'
+                    f'[data-pptx-id="{element_id}"]'
                 )
                 if not handle:
                     continue
                 png_bytes = await handle.screenshot(type="png")
                 encoded = base64.b64encode(png_bytes).decode()
-                el["isImage"] = True
-                el["isSvg"] = False
-                el["src"] = f"data:image/png;base64,{encoded}"
-                el["children"] = []
+                png_src = f"data:image/png;base64,{encoded}"
+                if el.get("isSvg"):
+                    el["isImage"] = True
+                    el["isSvg"] = False
+                    el["src"] = png_src
+                    el["children"] = []
+                else:
+                    el["rasterFallbackSrc"] = png_src
             except Exception:
-                logger.debug("Failed to rasterize SVG %s", el.get("svgId", "?"))
+                logger.debug("Failed to rasterize SVG %s", element_id or "?")
 
 
-async def extract_measurements(html_path: str) -> list[dict]:
+async def extract_measurements(
+    html_path: str,
+    *,
+    include_picture_fallbacks: bool = False,
+) -> list[dict]:
     """Open an HTML slide deck in headless Chromium and measure every element.
 
     Args:
         html_path: Path to the HTML file.
+        include_picture_fallbacks: Also capture browser-rendered PNG fallbacks
+            for SVG data-URI ``<img>`` nodes. The legacy renderer leaves this
+            disabled; the OfficeCLI compiler enables it when needed.
 
     Returns:
         List of slide measurement dicts, each containing:
@@ -2229,7 +2264,11 @@ async def extract_measurements(html_path: str) -> list[dict]:
 
         measurements = await page.evaluate(EXTRACTION_JS)
 
-        await _rasterize_inline_svgs(page, measurements)
+        await _rasterize_inline_svgs(
+            page,
+            measurements,
+            include_picture_fallbacks=include_picture_fallbacks,
+        )
 
         await browser.close()
 

@@ -1,4 +1,4 @@
-"""OfficeCLI-first compiler for the first native shape/text slice.
+"""OfficeCLI-first compiler for native shape, text, and picture slices.
 
 The legacy :mod:`html_to_pptx.converter` renderer remains untouched.  This
 module reuses its Chromium measurement stage, lowers the resulting plain
@@ -8,6 +8,9 @@ OfficeCLI.
 
 from __future__ import annotations
 
+import base64
+import binascii
+from io import BytesIO
 import json
 import os
 import re
@@ -16,8 +19,13 @@ import subprocess
 import tempfile
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from html import escape as _html_escape
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote_to_bytes
+from xml.etree import ElementTree
+
+from PIL import Image
 
 from .converter import _resolve_pptx_font, extract_measurements
 
@@ -29,6 +37,17 @@ _COLOR_RE = re.compile(
 )
 _HEX_COLOR_RE = re.compile(r"^#?([0-9a-fA-F]{3,8})$")
 _BATCH_INDEX_RE = re.compile(r"\[(\d+)\]")
+_DATA_URI_RE = re.compile(
+    r"^data:(?P<mime>[^;,]+)(?P<meta>(?:;[^,]*)*),(?P<payload>.*)$",
+    re.DOTALL,
+)
+_SVG_CAPABILITY_PROBE = (
+    "data:image/svg+xml;base64," + base64.b64encode(
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6">'
+        b'<rect width="8" height="6" fill="#e60012"/></svg>'
+    ).decode("ascii")
+)
+_OFFICECLI_SVG_SUPPORT: bool | None = None
 _INLINE_TAGS = {
     "span", "strong", "em", "b", "i", "a", "code", "mark", "sub",
     "sup", "small", "u", "s", "del", "abbr", "cite", "q", "time",
@@ -97,6 +116,7 @@ class _ObjectIR:
     bounds: tuple[float, float, float, float]
     props: dict[str, str]
     text: str = ""
+    fallback_props: dict[str, str] | None = None
 
     def as_manifest(self) -> dict[str, Any]:
         return {
@@ -183,6 +203,71 @@ def _run_officecli(
             result.stderr,
         )
     return result
+
+
+def _officecli_supports_svg() -> bool:
+    """Return whether OfficeCLI renders SVG data URIs instead of blank PNGs."""
+    global _OFFICECLI_SVG_SUPPORT
+    if _OFFICECLI_SVG_SUPPORT is not None:
+        return _OFFICECLI_SVG_SUPPORT
+
+    probe_directory = Path(tempfile.mkdtemp(prefix=".officecli-svg-probe-"))
+    probe_pptx = probe_directory / "probe.pptx"
+    probe_png = probe_directory / "probe.png"
+    resident = False
+    read_resident = False
+    supported = False
+    try:
+        _run_officecli(["create", str(probe_pptx)])
+        resident = True
+        commands = [
+            {"command": "set", "path": "/", "props": {"slideSize": "widescreen"}},
+            {"command": "add", "parent": "/", "type": "slide", "props": {"name": "probe-slide"}},
+            {
+                "command": "add",
+                "parent": "/slide[1]",
+                "type": "picture",
+                "props": {
+                    "name": "probe-picture",
+                    "x": "0pt",
+                    "y": "0pt",
+                    "width": "8pt",
+                    "height": "6pt",
+                    "src": _SVG_CAPABILITY_PROBE,
+                },
+            },
+        ]
+        _run_officecli(
+            ["batch", str(probe_pptx)],
+            input_text=json.dumps(commands, separators=(",", ":")),
+        )
+        _run_officecli(["close", str(probe_pptx)], check=False)
+        resident = False
+        read_resident = True
+        details = _run_officecli(
+            ["get", str(probe_pptx), "/slide[1]/picture[1]", "--json"]
+        )
+        try:
+            format_data = json.loads(details.stdout)["data"]["results"][0]["format"]
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+            format_data = {}
+        if format_data.get("contentType") == "image/svg+xml":
+            supported = True
+        else:
+            _run_officecli(
+                ["get", str(probe_pptx), "/slide[1]/picture[1]", "--save", str(probe_png)]
+            )
+            with Image.open(probe_png) as image:
+                supported = image.size != (1, 1) and image.convert("RGBA").getbbox() is not None
+    except (_OfficeCLICommandError, OfficeCLICompilationError, OSError):
+        supported = False
+    finally:
+        if resident or read_resident:
+            _run_officecli(["close", str(probe_pptx)], check=False)
+        shutil.rmtree(probe_directory, ignore_errors=True)
+
+    _OFFICECLI_SVG_SUPPORT = supported
+    return supported
 
 
 def _parse_css_color(value: Any) -> tuple[tuple[int, int, int], float] | None:
@@ -420,6 +505,230 @@ def _diagnostic(
     return OfficeCLICompilationError(message, [item])
 
 
+def _decode_picture_source(
+    element: dict[str, Any],
+    source_slide: int,
+    source_object: str,
+) -> tuple[str, bytes]:
+    source = element.get("src")
+    if not isinstance(source, str) or not source.startswith("data:"):
+        raise _diagnostic(
+            "unsupported_picture_source",
+            f"Unsupported picture source on source slide {source_slide}, {source_object}: only data-URI images are supported.",
+            source_slide,
+            source_object,
+        )
+    match = _DATA_URI_RE.fullmatch(source)
+    if match is None:
+        raise _diagnostic(
+            "undecodable_picture",
+            f"Undecodable picture on source slide {source_slide}, {source_object}: malformed data URI.",
+            source_slide,
+            source_object,
+        )
+
+    mime = match.group("mime").lower()
+    if not mime.startswith("image/"):
+        raise _diagnostic(
+            "unsupported_picture_source",
+            f"Unsupported picture source on source slide {source_slide}, {source_object}: {mime!r} is not an image MIME type.",
+            source_slide,
+            source_object,
+        )
+    payload = match.group("payload")
+    try:
+        if any(part.lower() == "base64" for part in match.group("meta").split(";") if part):
+            data = base64.b64decode(payload.encode("ascii"), validate=True)
+        else:
+            data = unquote_to_bytes(payload)
+    except (UnicodeEncodeError, ValueError, binascii.Error) as exc:
+        raise _diagnostic(
+            "undecodable_picture",
+            f"Undecodable picture on source slide {source_slide}, {source_object}: invalid {mime} data ({exc}).",
+            source_slide,
+            source_object,
+        ) from exc
+    if not data:
+        raise _diagnostic(
+            "undecodable_picture",
+            f"Undecodable picture on source slide {source_slide}, {source_object}: the data URI is empty.",
+            source_slide,
+            source_object,
+        )
+
+    try:
+        if mime == "image/svg+xml":
+            root = ElementTree.fromstring(data)
+            if root.tag.rsplit("}", 1)[-1].lower() != "svg":
+                raise ValueError("root element is not <svg>")
+        else:
+            with Image.open(BytesIO(data)) as image:
+                image.load()
+    except Exception as exc:
+        raise _diagnostic(
+            "undecodable_picture",
+            f"Undecodable picture on source slide {source_slide}, {source_object}: {exc}.",
+            source_slide,
+            source_object,
+        ) from exc
+    return mime, data
+
+
+def _svg_boxed_source(
+    data: bytes,
+    box_width: float,
+    box_height: float,
+    natural_width: float,
+    natural_height: float,
+) -> str:
+    """Wrap an image in an SVG box so CSS ``object-fit: contain`` is native."""
+    scale = min(box_width / natural_width, box_height / natural_height)
+    draw_width = natural_width * scale
+    draw_height = natural_height * scale
+    offset_x = (box_width - draw_width) / 2
+    offset_y = (box_height - draw_height) / 2
+    inner = "data:image/svg+xml;base64," + base64.b64encode(data).decode("ascii")
+    values = (box_width, box_height, offset_x, offset_y, draw_width, draw_height)
+    formatted = [f"{value:.6f}" for value in values]
+    box_w, box_h, x, y, width, height = formatted
+    source = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'xmlns:xlink="http://www.w3.org/1999/xlink" '
+        f'width="{box_w}" height="{box_h}" viewBox="0 0 {box_w} {box_h}">'
+        f'<image x="{x}" y="{y}" width="{width}" height="{height}" '
+        f'preserveAspectRatio="none" href="{_html_escape(inner, quote=True)}" '
+        f'xlink:href="{_html_escape(inner, quote=True)}"/></svg>'
+    )
+    return "data:image/svg+xml;base64," + base64.b64encode(source.encode()).decode("ascii")
+
+
+def _raster_boxed_source(
+    data: bytes,
+    box_width: float,
+    box_height: float,
+) -> str:
+    """Pad a raster image to a box while preserving its native aspect ratio."""
+    canvas_size = (max(1, round(box_width)), max(1, round(box_height)))
+    with Image.open(BytesIO(data)) as source_image:
+        image = source_image.convert("RGBA")
+    image.thumbnail(canvas_size, Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+    offset = (
+        (canvas.width - image.width) // 2,
+        (canvas.height - image.height) // 2,
+    )
+    canvas.alpha_composite(image, dest=offset)
+    output = BytesIO()
+    canvas.save(output, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+
+
+def _intrinsic_dimensions(mime: str, data: bytes) -> tuple[float, float]:
+    if mime == "image/svg+xml":
+        root = ElementTree.fromstring(data)
+        view_box = root.attrib.get("viewBox", "").replace(",", " ").split()
+        if len(view_box) == 4:
+            try:
+                width, height = float(view_box[2]), float(view_box[3])
+                if width > 0 and height > 0:
+                    return width, height
+            except ValueError:
+                pass
+        return (
+            _number(root.attrib.get("width")),
+            _number(root.attrib.get("height")),
+        )
+    with Image.open(BytesIO(data)) as image:
+        return float(image.width), float(image.height)
+
+
+def _picture_props(
+    element: dict[str, Any],
+    bounds: tuple[float, float, float, float],
+    source_slide: int,
+    source_object: str,
+) -> tuple[dict[str, str], dict[str, str] | None]:
+    mime, data = _decode_picture_source(element, source_slide, source_object)
+    fit = str(element.get("objectFit", "fill") or "fill").lower()
+    if fit not in {"fill", "contain", "cover"}:
+        raise _diagnostic(
+            "unsupported_picture_fit",
+            f"Unsupported object-fit on source slide {source_slide}, {source_object}: {fit!r}.",
+            source_slide,
+            source_object,
+        )
+
+    source = str(element["src"])
+    natural_width = _number(element.get("naturalWidth"))
+    natural_height = _number(element.get("naturalHeight"))
+    box_width = _number(element.get("width"))
+    box_height = _number(element.get("height"))
+    if natural_width <= 0 or natural_height <= 0:
+        natural_width, natural_height = _intrinsic_dimensions(mime, data)
+    if fit in {"contain", "cover"} and any(
+        value <= 0 for value in (natural_width, natural_height, box_width, box_height)
+    ):
+        raise _diagnostic(
+            "unsupported_picture_fit",
+            f"Cannot preserve object-fit on source slide {source_slide}, {source_object}: intrinsic image and picture dimensions are required.",
+            source_slide,
+            source_object,
+        )
+    if fit == "contain" and all(
+        value > 0 for value in (natural_width, natural_height, box_width, box_height)
+    ):
+        box_aspect = box_width / box_height
+        image_aspect = natural_width / natural_height
+        if abs(box_aspect - image_aspect) >= 1e-3:
+            if mime == "image/svg+xml":
+                source = _svg_boxed_source(
+                    data, box_width, box_height, natural_width, natural_height
+                )
+            else:
+                source = _raster_boxed_source(data, box_width, box_height)
+
+    props: dict[str, str] = {
+        "x": _length(bounds[0]),
+        "y": _length(bounds[1]),
+        "width": _length(bounds[2]),
+        "height": _length(bounds[3]),
+        "src": source,
+    }
+    if fit == "cover" and all(
+        value > 0 for value in (natural_width, natural_height, box_width, box_height)
+    ):
+        box_aspect = box_width / box_height
+        image_aspect = natural_width / natural_height
+        if abs(box_aspect - image_aspect) >= 1e-3:
+            if image_aspect > box_aspect:
+                crop = (1 - box_aspect / image_aspect) / 2
+                props["cropLeft"] = f"{crop:.8f}"
+                props["cropRight"] = f"{crop:.8f}"
+            else:
+                crop = (1 - image_aspect / box_aspect) / 2
+                props["cropTop"] = f"{crop:.8f}"
+                props["cropBottom"] = f"{crop:.8f}"
+
+    opacity = _number(element.get("opacity"), 1.0)
+    if opacity < 0.999:
+        props["opacity"] = f"{max(0.0, min(1.0, opacity)):.4f}"
+    rotation = _number(element.get("rotation"))
+    if abs(rotation) > 0.01:
+        props["rotation"] = f"{rotation:.3f}"
+    alt = str(element.get("alt", "") or "")
+    if alt:
+        props["alt"] = alt
+
+    fallback_source = element.get("rasterFallbackSrc")
+    if not isinstance(fallback_source, str) or not fallback_source:
+        return props, None
+    fallback_props = dict(props)
+    fallback_props["src"] = fallback_source
+    for key in ("cropLeft", "cropRight", "cropTop", "cropBottom"):
+        fallback_props.pop(key, None)
+    return props, fallback_props
+
+
 def _lower_slide(source_index: int, slide_data: dict[str, Any]) -> _SlideIR:
     width = _number(slide_data.get("width"))
     height = _number(slide_data.get("height"))
@@ -456,10 +765,14 @@ def _lower_slide(source_index: int, slide_data: dict[str, Any]) -> _SlideIR:
         text: str,
         props: dict[str, str],
         bounds: tuple[float, float, float, float],
+        fallback_props: dict[str, str] | None = None,
     ) -> None:
         name = f"slide-{source_slide:03d}-{kind}-{len(result.objects) + 1:03d}"
         object_props = dict(props)
         object_props["name"] = name
+        if fallback_props is not None:
+            fallback_props = dict(fallback_props)
+            fallback_props["name"] = name
         if text:
             object_props["text"] = text
             # Chromium measured these nodes as one visual line.  OfficeCLI and
@@ -474,7 +787,16 @@ def _lower_slide(source_index: int, slide_data: dict[str, Any]) -> _SlideIR:
             ):
                 object_props.setdefault("autoFit", "shrink")
         result.objects.append(
-            _ObjectIR(kind, name, source_slide, source_object, bounds, object_props, text)
+            _ObjectIR(
+                kind,
+                name,
+                source_slide,
+                source_object,
+                bounds,
+                object_props,
+                text,
+                fallback_props,
+            )
         )
 
     def walk(
@@ -485,12 +807,23 @@ def _lower_slide(source_index: int, slide_data: dict[str, Any]) -> _SlideIR:
         tag = str(element.get("tag", "element") or "element").lower()
         text = _text_of(element)
         if element.get("isImage") or element.get("isSvg") or tag in {"img", "svg"}:
-            raise _diagnostic(
-                "unsupported_picture",
-                f"Unsupported visible object on source slide {source_slide}, {source_object}: pictures are deferred to the picture slice.",
+            picture_bounds = _bounds(element, scale_x, scale_y)
+            picture_props, fallback_props = _picture_props(
+                element,
+                picture_bounds,
                 source_slide,
                 source_object,
             )
+            add_object(
+                element,
+                source_object,
+                "picture",
+                "",
+                picture_props,
+                picture_bounds,
+                fallback_props,
+            )
+            return
         if tag == "table":
             raise _diagnostic(
                 "unsupported_table",
@@ -616,6 +949,7 @@ def _select_measurements(
 
 def _batch_for_slides(
     slides: Sequence[_SlideIR],
+    raster_fallbacks: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, Any]], list[_ObjectIR | None]]:
     commands: list[dict[str, Any]] = [
         {"command": "set", "path": "/", "props": {"slideSize": "widescreen"}}
@@ -632,27 +966,39 @@ def _batch_for_slides(
         )
         sources.append(None)
         for obj in slide.objects:
+            props = (
+                obj.fallback_props
+                if obj.name in raster_fallbacks and obj.fallback_props is not None
+                else obj.props
+            )
             commands.append(
                 {
                     "command": "add",
                     "parent": f"/slide[{output_index}]",
                     "type": obj.kind,
-                    "props": obj.props,
+                    "props": props,
                 }
             )
             sources.append(obj)
     return commands, sources
 
 
+def _source_for_command_error(
+    error: _OfficeCLICommandError,
+    sources: Sequence[_ObjectIR | None],
+) -> _ObjectIR | None:
+    match = _BATCH_INDEX_RE.search(error.stdout + "\n" + error.stderr)
+    if not match:
+        return None
+    batch_index = int(match.group(1))
+    return sources[batch_index - 1] if 0 < batch_index <= len(sources) else None
+
+
 def _failure_from_command(
     error: _OfficeCLICommandError,
     sources: Sequence[_ObjectIR | None],
 ) -> OfficeCLICompilationError:
-    batch_index: int | None = None
-    match = _BATCH_INDEX_RE.search(error.stdout + "\n" + error.stderr)
-    if match:
-        batch_index = int(match.group(1))
-    source = sources[batch_index - 1] if batch_index and batch_index <= len(sources) else None
+    source = _source_for_command_error(error, sources)
     details = (error.stderr or error.stdout).strip() or f"exit code {error.returncode}"
     message = f"OfficeCLI {error.operation} failed"
     if source is not None:
@@ -706,12 +1052,34 @@ async def compile_officecli(
     if not destination.parent.exists():
         raise FileNotFoundError(f"Output directory does not exist: {destination.parent}")
 
-    measurements = await extract_measurements(input_html)
+    measurements = await extract_measurements(
+        input_html,
+        include_picture_fallbacks=True,
+    )
     selected = _select_measurements(measurements, slide_indices)
     slides = [_lower_slide(index, data) for index, data in selected]
-    commands, sources = _batch_for_slides(slides)
-    command_json = json.dumps(commands, ensure_ascii=False, separators=(",", ":"))
     manifest = _manifest(slides)
+    raster_fallbacks: set[str] = set()
+    svg_pictures = [
+        obj
+        for slide in slides
+        for obj in slide.objects
+        if obj.kind == "picture"
+        and obj.props.get("src", "").lower().startswith("data:image/svg+xml")
+    ]
+    if svg_pictures and not _officecli_supports_svg():
+        missing_fallback = next(
+            (obj for obj in svg_pictures if obj.fallback_props is None),
+            None,
+        )
+        if missing_fallback is not None:
+            raise _diagnostic(
+                "picture_fallback_unavailable",
+                f"No deterministic raster fallback is available for the SVG picture on source slide {missing_fallback.source_slide}, {missing_fallback.source_object}.",
+                missing_fallback.source_slide,
+                missing_fallback.source_object,
+            )
+        raster_fallbacks.update(obj.name for obj in svg_pictures)
 
     temp_fd, temp_name = tempfile.mkstemp(
         prefix=f".{destination.stem}-", suffix=".pptx", dir=str(destination.parent)
@@ -721,17 +1089,34 @@ async def compile_officecli(
     temporary.unlink()
     resident = False
     try:
-        try:
-            _run_officecli(["create", str(temporary)])
-            resident = True
-            _run_officecli(["batch", str(temporary)], input_text=command_json)
-            _run_officecli(["validate", str(temporary)])
-        except _OfficeCLICommandError as error:
-            raise _failure_from_command(error, sources) from error
-        finally:
-            if resident:
-                _run_officecli(["close", str(temporary)], check=False)
-                resident = False
+        while True:
+            commands, sources = _batch_for_slides(slides, raster_fallbacks)
+            command_json = json.dumps(commands, ensure_ascii=False, separators=(",", ":"))
+            retry_with_fallback = False
+            try:
+                _run_officecli(["create", str(temporary)])
+                resident = True
+                _run_officecli(["batch", str(temporary)], input_text=command_json)
+                _run_officecli(["validate", str(temporary)])
+            except _OfficeCLICommandError as error:
+                source = _source_for_command_error(error, sources)
+                if (
+                    error.operation == "batch"
+                    and source is not None
+                    and source.fallback_props is not None
+                    and source.name not in raster_fallbacks
+                ):
+                    raster_fallbacks.add(source.name)
+                    retry_with_fallback = True
+                else:
+                    raise _failure_from_command(error, sources) from error
+            finally:
+                if resident:
+                    _run_officecli(["close", str(temporary)], check=False)
+                    resident = False
+            if not retry_with_fallback:
+                break
+            temporary.unlink(missing_ok=True)
         if destination.exists():
             raise FileExistsError(f"Output already exists: {destination}")
         os.replace(temporary, destination)
