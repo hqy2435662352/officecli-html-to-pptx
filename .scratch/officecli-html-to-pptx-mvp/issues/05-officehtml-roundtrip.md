@@ -23,4 +23,3 @@
 - [ ] Supported fills, outlines, fonts, and alignments are equivalent.
 - [ ] `data-path` is documented and tested as source identity only, not as an automatic write-back promise.
 - [ ] Both PPTX outputs pass OfficeCLI validation.
-

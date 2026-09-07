@@ -24,4 +24,3 @@
 - [ ] No new overflow exists outside the explicit reference allowlist.
 - [ ] Side-by-side Author HTML/PPTX screenshots are generated and reviewed for all eight slides.
 - [ ] The output does not introduce theme shadows or other effects absent from Author HTML.
-

@@ -18,4 +18,3 @@
 - [ ] Algeria slide 1 contains all four expected product pictures.
 - [ ] The full-deck acceptance target is fixed at 18 picture objects.
 - [ ] OfficeCLI validation passes and the picture inventory is queryable through the public acceptance seam.
-

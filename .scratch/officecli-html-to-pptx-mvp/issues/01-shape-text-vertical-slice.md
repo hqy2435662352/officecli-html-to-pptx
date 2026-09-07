@@ -19,4 +19,3 @@
 - [ ] OfficeCLI validation passes.
 - [ ] Failure diagnostics identify the source slide and DOM object.
 - [ ] The end-to-end test calls only the public compiler seam and asserts on OfficeCLI-observable PPTX behavior.
-

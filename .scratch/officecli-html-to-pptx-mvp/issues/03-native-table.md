@@ -18,4 +18,3 @@
 - [ ] A non-unit `rowspan` or `colspan` fails as unsupported and never falls back to fake table shapes.
 - [ ] OfficeCLI table query returns one 9×5 native table.
 - [ ] OfficeCLI validation passes through the public compiler seam.
-
