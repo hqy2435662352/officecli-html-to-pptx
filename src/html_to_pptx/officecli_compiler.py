@@ -1,9 +1,10 @@
-"""OfficeCLI-first compiler for native shape, text, and picture slices.
+"""OfficeCLI-first compiler for native PowerPoint object slices.
 
 The legacy :mod:`html_to_pptx.converter` renderer remains untouched.  This
 module reuses its Chromium measurement stage, lowers the resulting plain
 dictionaries into a small presentation-object IR, and sends one JSON batch to
-OfficeCLI.
+OfficeCLI.  The explicit ``officehtml`` profile consumes OfficeCLI's
+fixed-coordinate object projection for object-level round trips.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from urllib.parse import unquote_to_bytes
 from xml.etree import ElementTree
 
 from PIL import Image
+from lxml import html as _lxml_html
 
 from .converter import _resolve_pptx_font, extract_measurements
 
@@ -53,6 +55,17 @@ _INLINE_TAGS = {
     "sup", "small", "u", "s", "del", "abbr", "cite", "q", "time",
     "var", "kbd",
 }
+_CSS_LENGTH_RE = re.compile(
+    r"^\s*(-?(?:\d+(?:\.\d*)?|\.\d+))\s*(pt|px|cm|mm|in|emu)?\s*$",
+    re.IGNORECASE,
+)
+_BORDER_RE = re.compile(
+    r"^\s*(?P<width>-?(?:\d+(?:\.\d*)?|\.\d+)(?:pt|px|cm|mm|in|emu)?)\s+"
+    r"(?P<style>solid|dashed|dotted|double|none|hidden)\s+"
+    r"(?P<color>#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)|[a-zA-Z]+)\s*$",
+    re.IGNORECASE,
+)
+_OFFICEHTML_PATH_KIND_RE = re.compile(r"/(table|picture|shape)\[", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -370,6 +383,534 @@ def _number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _officehtml_style(element: Any) -> dict[str, str]:
+    """Read the inline CSS emitted by OfficeCLI 1.0.147.
+
+    OfficeHTML is a decompiler projection, not an authoring stylesheet.  Its
+    slide-owned object geometry and formatting are serialized inline, which
+    lets the reverse profile parse it without running a second browser layout
+    pass or treating the viewer shell as slide content.
+    """
+    value = element.get("style", "") if element is not None else ""
+    styles: dict[str, str] = {}
+    for declaration in str(value).split(";"):
+        if ":" not in declaration:
+            continue
+        name, raw_value = declaration.split(":", 1)
+        name = name.strip().lower()
+        if name:
+            styles[name] = raw_value.strip()
+    return styles
+
+
+def _officehtml_length(value: Any, default: float = 0.0) -> float:
+    """Convert an OfficeHTML CSS length to points."""
+    if value is None:
+        return default
+    match = _CSS_LENGTH_RE.fullmatch(str(value))
+    if match is None:
+        return default
+    amount = float(match.group(1))
+    unit = (match.group(2) or "pt").lower()
+    return {
+        "pt": amount,
+        "px": amount * 0.75,
+        "cm": amount * 72 / 2.54,
+        "mm": amount * 72 / 25.4,
+        "in": amount * 72,
+        "emu": amount / 12_700,
+    }[unit]
+
+
+def _officehtml_box_values(value: Any) -> tuple[float, float, float, float]:
+    parts = [part for part in str(value or "").split() if part]
+    if not parts:
+        return 0.0, 0.0, 0.0, 0.0
+    values = [_officehtml_length(part) for part in parts]
+    if len(values) == 1:
+        return values[0], values[0], values[0], values[0]
+    if len(values) == 2:
+        return values[0], values[1], values[0], values[1]
+    if len(values) == 3:
+        return values[0], values[1], values[2], values[1]
+    return tuple(values[:4])  # type: ignore[return-value]
+
+
+def _officehtml_padding(styles: dict[str, str]) -> tuple[float, float, float, float]:
+    values = list(_officehtml_box_values(styles.get("padding")))
+    names = ("top", "right", "bottom", "left")
+    for index, name in enumerate(names):
+        property_name = f"padding-{name}"
+        if property_name in styles:
+            values[index] = _officehtml_length(styles[property_name])
+    return tuple(values)  # type: ignore[return-value]
+
+
+def _officehtml_border(
+    styles: dict[str, str], side: str = "",
+) -> tuple[str | None, float, str | None]:
+    property_name = f"border-{side}" if side else "border"
+    shorthand = styles.get(property_name)
+    if shorthand:
+        match = _BORDER_RE.fullmatch(shorthand)
+        if match:
+            return (
+                match.group("color"),
+                _officehtml_length(match.group("width")),
+                match.group("style").lower(),
+            )
+    prefix = f"border-{side}-" if side else "border-"
+    color = styles.get(prefix + "color")
+    width = _officehtml_length(styles.get(prefix + "width"))
+    style = styles.get(prefix + "style")
+    return color, width, style.lower() if style else None
+
+
+def _officehtml_background(styles: dict[str, str]) -> tuple[str | None, str | None]:
+    image_value = styles.get("background-image")
+    if image_value and image_value.lower() not in {"none", "transparent"}:
+        return None, image_value
+    value = styles.get("background-color") or styles.get("background")
+    if not value or value.lower() in {"transparent", "none"}:
+        return None, None
+    if "gradient(" in value or "url(" in value:
+        return None, value
+    return value, None
+
+
+def _officehtml_class_tokens(element: Any) -> set[str]:
+    return set(str(element.get("class", "") or "").split())
+
+
+def _officehtml_bounds(element: Any) -> tuple[float, float, float, float]:
+    styles = _officehtml_style(element)
+    return tuple(
+        _officehtml_length(styles.get(name))
+        for name in ("left", "top", "width", "height")
+    )  # type: ignore[return-value]
+
+
+def _officehtml_text(element: Any) -> str:
+    paragraphs = element.xpath(
+        ".//*[contains(concat(' ', normalize-space(@class), ' '), ' para ')]"
+    )
+    if not paragraphs:
+        values = [str(value) for value in element.itertext()]
+    else:
+        values = ["".join(str(value) for value in para.itertext()) for para in paragraphs]
+    result: list[str] = []
+    for value in values:
+        value = value.replace("\u00a0", " ").strip()
+        if value:
+            result.append(value)
+    return "\n".join(result)
+
+
+def _officehtml_text_node(element: Any) -> Any | None:
+    paragraphs = element.xpath(
+        ".//*[contains(concat(' ', normalize-space(@class), ' '), ' para ')]"
+    )
+    for paragraph in paragraphs:
+        if _officehtml_text(paragraph):
+            spans = paragraph.xpath(".//span")
+            return spans[0] if spans else paragraph
+    return None
+
+
+def _officehtml_line_height(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    if normalized == "normal":
+        return None
+    if _CSS_LENGTH_RE.fullmatch(normalized):
+        return normalized
+    try:
+        ratio = float(normalized)
+    except ValueError:
+        return None
+    return str(ratio)
+
+
+def _officehtml_rotation(styles: dict[str, str]) -> float:
+    transform = styles.get("transform", "")
+    match = re.search(r"rotate\(\s*(-?[\d.]+)deg\s*\)", transform)
+    return float(match.group(1)) if match else 0.0
+
+
+def _officehtml_text_fields(
+    element: Any,
+    styles: dict[str, str],
+    fallback: dict[str, str],
+) -> dict[str, Any]:
+    text_node = _officehtml_text_node(element)
+    text_styles = _officehtml_style(text_node) if text_node is not None else {}
+    paragraphs = element.xpath(
+        ".//*[contains(concat(' ', normalize-space(@class), ' '), ' para ')]"
+    )
+    paragraph_styles = _officehtml_style(paragraphs[0]) if paragraphs else {}
+    merged = dict(fallback)
+    merged.update(styles)
+    merged.update(paragraph_styles)
+    merged.update(text_styles)
+    padding_top, padding_right, padding_bottom, padding_left = _officehtml_padding(styles)
+    shape_text = element.xpath(
+        ".//*[contains(concat(' ', normalize-space(@class), ' '), ' shape-text ')]"
+    )
+    shape_tokens = _officehtml_class_tokens(shape_text[0]) if shape_text else set()
+    valign = "center" if "valign-center" in shape_tokens else (
+        "bottom" if "valign-bottom" in shape_tokens else "top"
+    )
+    return {
+        "text": _officehtml_text(element),
+        "color": merged.get("color"),
+        "fontSize": _officehtml_length(merged.get("font-size")),
+        "fontFamily": merged.get("font-family", ""),
+        "fontWeight": merged.get("font-weight", "400"),
+        "fontStyle": merged.get("font-style", "normal"),
+        "textAlign": merged.get("text-align", "left"),
+        "lineHeight": _officehtml_line_height(merged.get("line-height")),
+        "direction": merged.get("direction", "ltr"),
+        "alignItems": valign,
+        "verticalAlign": merged.get("vertical-align", "top"),
+        "writingMode": "horizontal-tb",
+        "rotation": _officehtml_rotation(styles),
+        "opacity": _officehtml_length(styles.get("opacity"), 1.0),
+        "paddingLeft": padding_left,
+        "paddingRight": padding_right,
+        "paddingTop": padding_top,
+        "paddingBottom": padding_bottom,
+    }
+
+
+def _officehtml_base_element(
+    element: Any,
+    slide_styles: dict[str, str],
+    *,
+    tag: str,
+    text_element: Any | None = None,
+) -> dict[str, Any]:
+    styles = _officehtml_style(element)
+    bounds = _officehtml_bounds(element)
+    background, background_image = _officehtml_background(styles)
+    border_color, border_width, border_style = _officehtml_border(styles)
+    fallback = {
+        "font-family": slide_styles.get("font-family", ""),
+        "font-size": slide_styles.get("font-size", "18pt"),
+        "color": slide_styles.get("color", "#000000"),
+    }
+    text_source = text_element if text_element is not None else element
+    fields = _officehtml_text_fields(text_source, styles, fallback)
+    fields.update(
+        {
+            "tag": tag,
+            "x": bounds[0],
+            "y": bounds[1],
+            "width": bounds[2],
+            "height": bounds[3],
+            "backgroundColor": background,
+            "backgroundImage": background_image,
+            "borderColor": border_color,
+            "borderWidth": border_width,
+            "borderStyle": border_style,
+            "borderRadius": styles.get("border-radius", "0pt"),
+            "borderLeftColor": None,
+            "borderLeftWidth": 0.0,
+            "borderLeftStyle": None,
+        }
+    )
+    return fields
+
+
+def _officehtml_shape(element: Any, slide_styles: dict[str, str]) -> dict[str, Any]:
+    result = _officehtml_base_element(element, slide_styles, tag="shape")
+    result["dataPath"] = element.get("data-path")
+    result["officeHtmlKind"] = "shape"
+    return result
+
+
+def _officehtml_picture(
+    element: Any,
+    slide_styles: dict[str, str],
+    *,
+    source_slide: int,
+) -> dict[str, Any]:
+    result = _officehtml_base_element(element, slide_styles, tag="img")
+    images = element.xpath(".//img[@src]")
+    if not images:
+        raise _diagnostic(
+            "undecodable_picture",
+            f"OfficeHTML picture {element.get('data-path')!r} has no image source.",
+            source_slide,
+            str(element.get("data-path") or "picture"),
+        )
+    image = images[0]
+    image_styles = _officehtml_style(image)
+    result.update(
+        {
+            "dataPath": element.get("data-path"),
+            "isImage": True,
+            "isSvg": False,
+            "src": image.get("src"),
+            "alt": image.get("alt"),
+            "objectFit": image_styles.get("object-fit", "fill"),
+            "naturalWidth": 0,
+            "naturalHeight": 0,
+            "backgroundColor": None,
+            "backgroundImage": None,
+        }
+    )
+    return result
+
+
+def _officehtml_cell(
+    element: Any,
+    *,
+    row_index: int,
+    column_index: int,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    slide_styles: dict[str, str],
+    source_slide: int,
+) -> dict[str, Any]:
+    source = element.get("data-cell-path")
+    if not source:
+        raise _diagnostic(
+            "missing_table_cell_path",
+            f"OfficeHTML table cell at row {row_index}, column {column_index} has no data-cell-path.",
+            source_slide,
+            f"row[{row_index}]/cell[{column_index}]",
+        )
+    result = _officehtml_base_element(element, slide_styles, tag="td")
+    styles = _officehtml_style(element)
+    result.update(
+        {
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+            "dataCellPath": source,
+            "rowSpan": _number(element.get("rowspan"), 1),
+            "colSpan": _number(element.get("colspan"), 1),
+            "cellBorderTopColor": None,
+            "cellBorderTopWidth": 0.0,
+            "cellBorderTopStyle": None,
+            "cellBorderRightColor": None,
+            "cellBorderRightWidth": 0.0,
+            "cellBorderRightStyle": None,
+            "cellBorderBottomColor": None,
+            "cellBorderBottomWidth": 0.0,
+            "cellBorderBottomStyle": None,
+            "cellBorderLeftColor": None,
+            "cellBorderLeftWidth": 0.0,
+            "cellBorderLeftStyle": None,
+        }
+    )
+    for side in ("top", "right", "bottom", "left"):
+        color, border_width, border_style = _officehtml_border(styles, side)
+        result[f"cellBorder{side.capitalize()}Color"] = color
+        result[f"cellBorder{side.capitalize()}Width"] = border_width
+        result[f"cellBorder{side.capitalize()}Style"] = border_style
+    return result
+
+
+def _officehtml_table(
+    element: Any,
+    slide_styles: dict[str, str],
+    *,
+    source_slide: int,
+) -> dict[str, Any]:
+    source = element.get("data-path")
+    if not source:
+        raise _diagnostic(
+            "missing_table_path",
+            "OfficeHTML table container has no data-path.",
+            source_slide,
+            "table",
+        )
+    table = element.xpath(".//table[1]")
+    if not table:
+        raise _diagnostic("invalid_table_matrix", "OfficeHTML table container has no table element.", source_slide, source)
+    table_element = table[0]
+    bounds = _officehtml_bounds(element)
+    columns = [
+        _officehtml_length(_officehtml_style(column).get("width"))
+        for column in table_element.xpath("./colgroup/col")
+    ]
+    rows = table_element.xpath(".//tr")
+    if not rows:
+        raise _diagnostic("invalid_table_matrix", "OfficeHTML table has no rows.", source_slide, source)
+    row_heights = [
+        _officehtml_length(_officehtml_style(row).get("height"), bounds[3] / len(rows))
+        for row in rows
+    ]
+    cell_rows: list[dict[str, Any]] = []
+    column_count = 0
+    for row_index, row in enumerate(rows, start=1):
+        cells = row.xpath("./td|./th")
+        column_count = max(column_count, len(cells))
+        cell_rows.append({"tag": "tr", "height": row_heights[row_index - 1], "children": cells})
+    if column_count <= 0:
+        raise _diagnostic(
+            "invalid_table_matrix",
+            f"OfficeHTML table {source} has no cells.",
+            source_slide,
+            source,
+        )
+    if not columns:
+        columns = [bounds[2] / column_count for _ in range(column_count)]
+    if len(columns) != column_count:
+        raise _diagnostic(
+            "invalid_table_matrix",
+            f"OfficeHTML table {source} has {len(columns)} columns but rows contain {column_count} cells.",
+            source_slide,
+            source,
+        )
+
+    normalized_rows: list[dict[str, Any]] = []
+    current_y = bounds[1]
+    for row_index, row_data in enumerate(cell_rows, start=1):
+        current_x = bounds[0]
+        normalized_cells: list[dict[str, Any]] = []
+        cells = row_data["children"]
+        if len(cells) != column_count:
+            raise _diagnostic(
+                "invalid_table_matrix",
+                f"OfficeHTML table {source} row {row_index} has {len(cells)} cells; expected {column_count}.",
+                source_slide,
+                source,
+            )
+        for column_index, cell in enumerate(cells, start=1):
+            width = columns[column_index - 1]
+            normalized_cells.append(
+                _officehtml_cell(
+                    cell,
+                    row_index=row_index,
+                    column_index=column_index,
+                    x=current_x,
+                    y=current_y,
+                    width=width,
+                    height=row_data["height"],
+                    slide_styles=slide_styles,
+                    source_slide=source_slide,
+                )
+            )
+            current_x += width
+        normalized_rows.append(
+            {
+                "tag": "tr",
+                "height": row_data["height"],
+                "children": normalized_cells,
+            }
+        )
+        current_y += row_data["height"]
+
+    result = _officehtml_base_element(element, slide_styles, tag="table")
+    result.update(
+        {
+            "dataPath": source,
+            "tag": "table",
+            "x": bounds[0],
+            "y": bounds[1],
+            "width": bounds[2],
+            "height": bounds[3],
+            "children": normalized_rows,
+            "backgroundImage": None,
+        }
+    )
+    return result
+
+
+def _officehtml_owned_children(element: Any) -> Iterable[Any]:
+    """Yield top-level slide-owned nodes, excluding chrome and pathless layers."""
+    for child in element:
+        if not isinstance(child.tag, str):
+            continue
+        if child.get("data-path"):
+            yield child
+            continue
+        if child.tag.lower() in {"script", "style", "link", "meta"}:
+            continue
+        yield from _officehtml_owned_children(child)
+
+
+def _parse_officehtml_measurements(input_html: str) -> list[dict[str, Any]]:
+    """Parse OfficeCLI's fixed-coordinate object projection.
+
+    ``data-path`` is retained as source identity and debugging metadata only;
+    it is never used as a write-back address.  Only top-level nodes carrying
+    that attribute enter the slide-owned measurement DTO.  This deliberately
+    excludes the OfficeCLI viewer shell and pathless master/layout projections.
+    """
+    path = Path(input_html).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(input_html)
+    try:
+        root = _lxml_html.fromstring(path.read_bytes())
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Unable to parse OfficeHTML input {input_html!r}: {exc}") from exc
+
+    slides = root.xpath(
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' slide ')]"
+    )
+    if not slides:
+        raise ValueError("No slides found. Ensure the OfficeHTML contains .slide elements.")
+
+    measurements: list[dict[str, Any]] = []
+    for slide_number, slide in enumerate(slides, start=1):
+        slide_styles = _officehtml_style(slide)
+        slide_width = _officehtml_length(slide_styles.get("width"), SLIDE_WIDTH_PT)
+        slide_height = _officehtml_length(slide_styles.get("height"), SLIDE_HEIGHT_PT)
+        background, background_image = _officehtml_background(slide_styles)
+        elements: list[dict[str, Any]] = []
+        for element in _officehtml_owned_children(slide):
+            source = str(element.get("data-path") or "")
+            path_lower = source.lower()
+            classes = _officehtml_class_tokens(element)
+            path_kind_match = _OFFICEHTML_PATH_KIND_RE.search(path_lower)
+            path_kind = path_kind_match.group(1) if path_kind_match else None
+            if path_kind == "table" or (
+                path_kind is None and "table-container" in classes
+            ):
+                elements.append(
+                    _officehtml_table(
+                        element, slide_styles, source_slide=slide_number
+                    )
+                )
+            elif path_kind == "picture" or (
+                path_kind is None and "picture" in classes
+            ):
+                elements.append(
+                    _officehtml_picture(
+                        element, slide_styles, source_slide=slide_number
+                    )
+                )
+            elif path_kind == "shape" or (
+                path_kind is None and "shape" in classes
+            ):
+                elements.append(_officehtml_shape(element, slide_styles))
+            else:
+                raise _diagnostic(
+                    "unsupported_object_kind",
+                    f"Unsupported OfficeHTML object on {source or 'a pathless node'}.",
+                    slide_number,
+                    source or None,
+                )
+        measurements.append(
+            {
+                "index": len(measurements),
+                "width": slide_width,
+                "height": slide_height,
+                "backgroundColor": background,
+                "backgroundImage": background_image,
+                "elements": elements,
+            }
+        )
+    return measurements
+
+
 def _is_bold(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return value >= 600
@@ -402,10 +943,19 @@ def _border_radius(element: dict[str, Any]) -> float:
 def _line_spacing(element: dict[str, Any]) -> str | None:
     font_size = _number(element.get("fontSize"))
     line_height = str(element.get("lineHeight", "") or "")
-    match = re.fullmatch(r"\s*([\d.]+)px\s*", line_height)
-    if not match or font_size <= 0:
+    if font_size <= 0:
         return None
-    ratio = float(match.group(1)) / font_size
+    unitless = re.fullmatch(r"\s*([\d.]+)\s*", line_height)
+    if unitless:
+        ratio = float(unitless.group(1))
+    else:
+        match = re.fullmatch(r"\s*([\d.]+)(?:px|pt)\s*", line_height)
+        if not match:
+            return None
+        line_height_value = float(match.group(1))
+        if line_height.lower().strip().endswith("px"):
+            line_height_value *= 0.75
+        ratio = line_height_value / font_size
     if abs(ratio - 1.0) < 0.01:
         return None
     return f"{ratio:.3f}x"
@@ -961,7 +1511,10 @@ def _lower_table(
 
     for row_index, cells in enumerate(row_cells, start=1):
         for column_index, cell in enumerate(cells, start=1):
-            cell_source = f"{source_object}/tr[{row_index}]/tc[{column_index}]"
+            cell_source = str(
+                cell.get("dataCellPath")
+                or f"{source_object}/tr[{row_index}]/tc[{column_index}]"
+            )
             row_span = _number(cell.get("rowSpan"), 1)
             col_span = _number(cell.get("colSpan"), 1)
             if row_span != 1 or col_span != 1:
@@ -1022,7 +1575,10 @@ def _lower_table(
     table_cells: list[_TableCellIR] = []
     for row_index, cells in enumerate(row_cells, start=1):
         for column_index, cell in enumerate(cells, start=1):
-            cell_source = f"{source_object}/tr[{row_index}]/tc[{column_index}]"
+            cell_source = str(
+                cell.get("dataCellPath")
+                or f"{source_object}/tr[{row_index}]/tc[{column_index}]"
+            )
             cell_name = f"{name}-cell-r{row_index:03d}-c{column_index:03d}"
             cell_bounds = _bounds(cell, scale_x, scale_y)
             table_cells.append(
@@ -1055,7 +1611,12 @@ def _lower_table(
     )
 
 
-def _lower_slide(source_index: int, slide_data: dict[str, Any]) -> _SlideIR:
+def _lower_slide(
+    source_index: int,
+    slide_data: dict[str, Any],
+    *,
+    profile: str = "author",
+) -> _SlideIR:
     width = _number(slide_data.get("width"))
     height = _number(slide_data.get("height"))
     source_slide = source_index + 1
@@ -1203,6 +1764,11 @@ def _lower_slide(source_index: int, slide_data: dict[str, Any]) -> _SlideIR:
             and left_border is not None
         )
         has_shape = fill is not None or (border is not None and border_width > 0)
+        if profile == "officehtml" and not text and not has_shape:
+            # A slide-owned OfficeHTML shape is an explicit PowerPoint object
+            # even when its fill is transparent and its text body is empty.
+            # Pathless master/layout projections never reach this function.
+            has_shape = bool(element.get("dataPath"))
 
         child_backdrop = inherited_backdrop
         if fill is not None:
@@ -1248,7 +1814,12 @@ def _lower_slide(source_index: int, slide_data: dict[str, Any]) -> _SlideIR:
 
     for position, element in enumerate(slide_data.get("elements", []) or [], start=1):
         tag = str(element.get("tag", "element") or "element").lower()
-        walk(element, _source_path(source_slide, "", tag, position), backdrop)
+        source_object = (
+            str(element.get("dataPath"))
+            if profile == "officehtml" and element.get("dataPath")
+            else _source_path(source_slide, "", tag, position)
+        )
+        walk(element, source_object, backdrop)
     return result
 
 
@@ -1386,16 +1957,17 @@ async def compile_officecli(
     *,
     slide_indices: Sequence[int] | None = None,
 ) -> OfficeCLICompilationResult:
-    """Compile Author HTML to a validated native-object PPTX with OfficeCLI.
+    """Compile Author HTML or OfficeCLI HTML to a validated native PPTX.
 
     ``slide_indices`` is zero-based and exists so the first tracer-bullet can
     compile Algeria slide 8 as a one-slide deck.  Omitting it compiles every
-    measured slide; later slices can extend the same public seam without
-    changing the legacy renderer.
+    measured slide.  The ``officehtml`` profile consumes OfficeCLI 1.0.147's
+    fixed-coordinate projection; its ``data-path`` values remain source
+    identity metadata and are not write-back instructions.
     """
-    if profile != "author":
+    if profile not in {"author", "officehtml"}:
         raise ValueError(
-            f"Unsupported input profile {profile!r}; this slice accepts only 'author'."
+            f"Unsupported input profile {profile!r}; choose 'author' or 'officehtml'."
         )
     destination = Path(output_pptx).expanduser()
     if destination.exists():
@@ -1403,12 +1975,18 @@ async def compile_officecli(
     if not destination.parent.exists():
         raise FileNotFoundError(f"Output directory does not exist: {destination.parent}")
 
-    measurements = await extract_measurements(
-        input_html,
-        include_picture_fallbacks=True,
-    )
+    if profile == "author":
+        measurements = await extract_measurements(
+            input_html,
+            include_picture_fallbacks=True,
+        )
+    else:
+        measurements = _parse_officehtml_measurements(input_html)
     selected = _select_measurements(measurements, slide_indices)
-    slides = [_lower_slide(index, data) for index, data in selected]
+    slides = [
+        _lower_slide(index, data, profile=profile)
+        for index, data in selected
+    ]
     manifest = _manifest(slides)
     raster_fallbacks: set[str] = set()
     svg_pictures = [
