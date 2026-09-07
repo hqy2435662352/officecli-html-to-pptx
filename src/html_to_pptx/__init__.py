@@ -19,6 +19,20 @@ Or use the two-stage API for more control::
 from importlib.metadata import version
 
 from html_to_pptx.converter import convert, extract_measurements, render_pptx
+from html_to_pptx.officecli_compiler import (
+    CompilationDiagnostic,
+    OfficeCLICompilationError,
+    OfficeCLICompilationResult,
+    compile_officecli,
+)
 
-__all__ = ["convert", "extract_measurements", "render_pptx"]
+__all__ = [
+    "convert",
+    "extract_measurements",
+    "render_pptx",
+    "compile_officecli",
+    "CompilationDiagnostic",
+    "OfficeCLICompilationError",
+    "OfficeCLICompilationResult",
+]
 __version__ = version("html-to-pptx")
