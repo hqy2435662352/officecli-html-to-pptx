@@ -87,11 +87,19 @@ def _normal_text(value: Any) -> str:
     return " ".join(str(value).replace("\u00a0", " ").split())
 
 
-def _measurement_nodes(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    nodes: list[dict[str, Any]] = []
-    for element in elements:
-        nodes.append(element)
-        nodes.extend(_measurement_nodes(element.get("children", []) or []))
+def _measurement_nodes(
+    elements: list[dict[str, Any]],
+    slide_index: int,
+    parent: str = "",
+) -> list[tuple[str, dict[str, Any]]]:
+    nodes: list[tuple[str, dict[str, Any]]] = []
+    for position, element in enumerate(elements, start=1):
+        tag = str(element.get("tag", "element") or "element").lower()
+        path = f"{parent}/{tag}[{position}]" if parent else f"slide[{slide_index}]/{tag}[{position}]"
+        nodes.append((path, element))
+        nodes.extend(
+            _measurement_nodes(element.get("children", []) or [], slide_index, path)
+        )
     return nodes
 
 
@@ -102,21 +110,28 @@ def _measurement_text(element: dict[str, Any]) -> str:
     return str(element.get("text", "") or "")
 
 
-async def _author_visible_text_and_images() -> tuple[str, int]:
+async def _author_visible_text_and_images() -> tuple[str, int, list[str]]:
     measurements = await extract_measurements(
         str(_AUTHOR_HTML),
         include_picture_fallbacks=False,
     )
     nodes = [
         node
-        for slide in measurements
-        for node in _measurement_nodes(slide.get("elements", []))
+        for slide_index, slide in enumerate(measurements, start=1)
+        for _, node in _measurement_nodes(
+            slide.get("elements", []), slide_index
+        )
     ]
     text = _normal_text(" ".join(_measurement_text(node) for node in nodes))
-    image_count = sum(
-        bool(node.get("isImage") or node.get("isSvg")) for node in nodes
-    )
-    return text, image_count
+    picture_paths = [
+        path
+        for slide_index, slide in enumerate(measurements, start=1)
+        for path, node in _measurement_nodes(
+            slide.get("elements", []), slide_index
+        )
+        if node.get("isImage") or node.get("isSvg")
+    ]
+    return text, len(picture_paths), picture_paths
 
 
 def _walk(node: dict[str, Any]) -> list[dict[str, Any]]:
@@ -195,7 +210,9 @@ async def test_algeria_author_compiles_to_the_complete_native_deck(
     repeat = await compile_officecli(
         str(_AUTHOR_HTML), "author", str(tmp_path / "algeria_issue04_repeat.pptx")
     )
-    source_text, source_image_count = await _author_visible_text_and_images()
+    source_text, source_image_count, source_picture_paths = (
+        await _author_visible_text_and_images()
+    )
 
     assert output.is_file()
     assert result.profile == "author"
@@ -332,6 +349,7 @@ async def test_algeria_author_compiles_to_the_complete_native_deck(
         obj["bounds_pt"] != [0.0, 0.0, 960.0, 540.0] for obj in pictures
     )
     picture_names = {obj["name"] for obj in pictures}
+    assert [obj["source_object"] for obj in pictures] == source_picture_paths
     assert all(
         node.get("type") == "picture"
         for node in output_objects
