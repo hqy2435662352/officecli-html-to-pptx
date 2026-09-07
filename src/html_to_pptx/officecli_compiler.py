@@ -455,6 +455,27 @@ def _margin(element: dict[str, Any], scale_x: float, scale_y: float) -> str | No
     return ",".join(_length(value) for value in values)
 
 
+def _tight_single_line_font_scale(
+    element: dict[str, Any],
+    text: str,
+) -> str | None:
+    """Keep measured one-line labels on one line with OfficeCLI font metrics."""
+    if not text or "\n" in text:
+        return None
+    font_size = _number(element.get("fontSize"))
+    element_width = _number(element.get("width"))
+    element_height = _number(element.get("height"))
+    if font_size <= 0 or element_width <= 0 or element_height > font_size * 1.45:
+        return None
+    # A block whose measured width is close to the raw text width is vulnerable
+    # to a substituted PowerPoint font wrapping one glyph.  Leave wider text
+    # boxes and multi-line browser layout at their measured size.
+    density = element_width / (font_size * max(1, len(text)))
+    if density > 0.75:
+        return None
+    return "75" if _is_bold(element.get("fontWeight")) else "60"
+
+
 def _text_props(
     element: dict[str, Any],
     bounds: tuple[float, float, float, float],
@@ -488,6 +509,9 @@ def _text_props(
     margin = _margin(element, scale_x, scale_y)
     if margin is not None:
         props["margin"] = margin
+    font_scale = _tight_single_line_font_scale(element, _text_of(element))
+    if font_scale is not None:
+        props["fontScale"] = font_scale
     line_spacing = _line_spacing(element)
     if line_spacing is not None:
         props["lineSpacing"] = line_spacing
