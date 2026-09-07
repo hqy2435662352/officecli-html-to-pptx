@@ -13,14 +13,16 @@ from typing import Any
 
 import pytest
 
-from html_to_pptx import compile_officecli
+from html_to_pptx import compile_officecli, extract_measurements
 
 
 _DEFAULT_AUTHOR_HTML = (
     Path(r"D:\Opencodeworkspace\html-to-pptx\workspace\algeria\algeria")
     / "Algeria_AC_Product_Portfolio_20260906_v3_pptx.html"
 )
-_AUTHOR_HTML = Path(os.environ.get("HTML_TO_PPTX_ALGERIA_AUTHOR_HTML", _DEFAULT_AUTHOR_HTML))
+_AUTHOR_HTML = Path(
+    os.environ.get("HTML_TO_PPTX_ALGERIA_AUTHOR_HTML", _DEFAULT_AUTHOR_HTML)
+)
 _EXPECTED_TABLES = (
     (),
     ((5, 8), (8, 8), (5, 8), (5, 8)),
@@ -85,6 +87,38 @@ def _normal_text(value: Any) -> str:
     return " ".join(str(value).replace("\u00a0", " ").split())
 
 
+def _measurement_nodes(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    for element in elements:
+        nodes.append(element)
+        nodes.extend(_measurement_nodes(element.get("children", []) or []))
+    return nodes
+
+
+def _measurement_text(element: dict[str, Any]) -> str:
+    runs = element.get("inlineRuns")
+    if runs:
+        return "".join(str(run.get("text", "")) for run in runs)
+    return str(element.get("text", "") or "")
+
+
+async def _author_visible_text_and_images() -> tuple[str, int]:
+    measurements = await extract_measurements(
+        str(_AUTHOR_HTML),
+        include_picture_fallbacks=False,
+    )
+    nodes = [
+        node
+        for slide in measurements
+        for node in _measurement_nodes(slide.get("elements", []))
+    ]
+    text = _normal_text(" ".join(_measurement_text(node) for node in nodes))
+    image_count = sum(
+        bool(node.get("isImage") or node.get("isSvg")) for node in nodes
+    )
+    return text, image_count
+
+
 def _walk(node: dict[str, Any]) -> list[dict[str, Any]]:
     descendants = [node]
     for child in node.get("children", []) or []:
@@ -120,7 +154,15 @@ def _assert_no_unallowlisted_issues(
     shallow_root: dict[str, Any],
 ) -> None:
     lowered = issues.lower()
-    for forbidden in ("shape_off_slide", "missing picture", "table structure", "schema"):
+    for forbidden in (
+        "shape_off_slide",
+        "off-slide",
+        "missing picture",
+        "missing-picture",
+        "table structure",
+        "table-structure",
+        "schema",
+    ):
         assert forbidden not in lowered
 
     id_to_name = {
@@ -130,8 +172,16 @@ def _assert_no_unallowlisted_issues(
         if child.get("type") in {"shape", "textbox"}
         and child.get("format", {}).get("id") is not None
     }
-    issue_paths = re.findall(r"/slide\[(\d+)\]/shape\[@id=(\d+)\]", issues)
-    for slide_index, object_id in issue_paths:
+    issue_lines = [
+        line.strip()
+        for line in issues.splitlines()
+        if re.match(r"^\s+\[[A-Z]\d+\]\s", line)
+    ]
+    for line in issue_lines:
+        assert "text overflow" in line.lower(), line
+        match = re.search(r"/slide\[(\d+)\]/shape\[@id=(\d+)\]", line)
+        assert match is not None, line
+        slide_index, object_id = match.groups()
         name = id_to_name.get((int(slide_index), int(object_id)))
         assert name in _ALLOWED_OVERFLOW_OBJECTS
 
@@ -142,13 +192,21 @@ async def test_algeria_author_compiles_to_the_complete_native_deck(
 ) -> None:
     output = tmp_path / "algeria_issue04.pptx"
     result = await compile_officecli(str(_AUTHOR_HTML), "author", str(output))
+    repeat = await compile_officecli(
+        str(_AUTHOR_HTML), "author", str(tmp_path / "algeria_issue04_repeat.pptx")
+    )
+    source_text, source_image_count = await _author_visible_text_and_images()
 
     assert output.is_file()
     assert result.profile == "author"
     assert not result.diagnostics
+    assert [obj["name"] for obj in repeat.manifest["objects"]] == [
+        obj["name"] for obj in result.manifest["objects"]
+    ]
     assert result.slide_count == 8
     assert result.manifest["slide_count"] == 8
     assert result.manifest["object_kind_counts"]["picture"] == 18
+    assert source_image_count == 18
     assert result.manifest["object_kind_counts"]["table"] == 9
     assert sum(
         obj["rows"]
@@ -261,7 +319,10 @@ async def test_algeria_author_compiles_to_the_complete_native_deck(
         for node in _walk(deep_root)
         for text in _direct_text(node)
     ]
+    assert _normal_text(" ".join(actual_text)) == source_text
     assert Counter(actual_text) == Counter(_manifest_text(result.manifest))
+    assert source_text.count("Φ") == 60
+    assert source_text.count("×") == 212
     assert sum(text.count("Φ") for text in actual_text) == 60
     assert sum(text.count("×") for text in actual_text) == 212
 

@@ -455,23 +455,30 @@ def _margin(element: dict[str, Any], scale_x: float, scale_y: float) -> str | No
     return ",".join(_length(value) for value in values)
 
 
+def _is_measured_single_line_text(element: dict[str, Any], text: str) -> bool:
+    if not text or "\n" in text:
+        return False
+    font_size = _number(element.get("fontSize"))
+    element_height = _number(element.get("height"))
+    return font_size > 0 and element_height <= font_size * 1.45
+
+
 def _tight_single_line_font_scale(
     element: dict[str, Any],
     text: str,
 ) -> str | None:
     """Keep measured one-line labels on one line with OfficeCLI font metrics."""
-    if not text or "\n" in text:
+    if not _is_measured_single_line_text(element, text):
         return None
-    font_size = _number(element.get("fontSize"))
     element_width = _number(element.get("width"))
-    element_height = _number(element.get("height"))
-    if font_size <= 0 or element_width <= 0 or element_height > font_size * 1.45:
+    font_size = _number(element.get("fontSize"))
+    if element_width <= 0:
         return None
     # A block whose measured width is close to the raw text width is vulnerable
     # to a substituted PowerPoint font wrapping one glyph.  Leave wider text
     # boxes and multi-line browser layout at their measured size.
-    density = element_width / (font_size * max(1, len(text)))
-    if density > 0.75:
+    width_per_character_ratio = element_width / (font_size * max(1, len(text)))
+    if width_per_character_ratio > 0.75:
         return None
     return "75" if _is_bold(element.get("fontWeight")) else "60"
 
@@ -1097,13 +1104,7 @@ def _lower_slide(source_index: int, slide_data: dict[str, Any]) -> _SlideIR:
             # Chromium measured these nodes as one visual line.  OfficeCLI and
             # the browser can use slightly different font metrics, so ask the
             # native text body to shrink instead of introducing a new wrap.
-            font_size = _number(element.get("fontSize"))
-            element_height = _number(element.get("height"))
-            if (
-                "\n" not in text
-                and font_size > 0
-                and element_height <= font_size * 1.45
-            ):
+            if _is_measured_single_line_text(element, text):
                 object_props.setdefault("autoFit", "shrink")
         result.objects.append(
             _ObjectIR(
