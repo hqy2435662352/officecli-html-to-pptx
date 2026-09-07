@@ -1053,6 +1053,20 @@ def _set_corner_radius(
     gd.set("fmla", f"val {adj_val}")
 
 
+def _strip_theme_effect(shape) -> None:
+    """Neutralize the theme shape effect that python-pptx's ``add_shape`` injects.
+
+    ``add_shape`` emits ``<p:style><a:effectRef idx="2"/>`` (the theme's "medium" effect, a
+    soft drop shadow). CSS ``box-shadow`` is never authored, so autoshapes must not inherit a
+    theme shadow — otherwise a hairline border renders with an unintended gray halo. An empty
+    ``<a:effectLst/>`` overrides the ``effectRef``.
+    """
+    try:
+        shape.shadow.inherit = False
+    except Exception:  # pragma: no cover - textboxes/pictures have no ShadowFormat
+        pass
+
+
 def _resolve_alignment(
     el: dict, is_single_line: bool, has_visual_bg: bool,
 ):
@@ -1523,6 +1537,7 @@ def _render_bg_shape(
             _set_corner_radius(
                 accent, radius_px, el.get("width", 100), el.get("height", 100),
             )
+            _strip_theme_effect(accent)
             accent.fill.solid()
             accent.fill.fore_color.rgb = accent_color
             accent.line.fill.background()
@@ -1542,6 +1557,7 @@ def _render_bg_shape(
                 shape_type, Inches(card_x), Inches(y_in), Inches(card_w), Inches(h_in),
             )
             _set_corner_radius(acc, radius_px, el.get("width", 100), el.get("height", 100))
+            _strip_theme_effect(acc)
             _fill_accent(acc, top_accent, backdrop)
             acc.line.fill.background()
             card_y = y_in + bar_h
@@ -1558,6 +1574,7 @@ def _render_bg_shape(
         _set_corner_radius(
             shape, radius_px, el.get("width", 100), el.get("height", 100),
         )
+    _strip_theme_effect(shape)
 
     if has_gradient:
         _apply_gradient_fill(shape._element, el["backgroundImage"], backdrop)
@@ -1597,6 +1614,7 @@ def _render_bg_shape(
             Inches(x_in), Inches(y_in),
             Inches(bar_w), Inches(h_in),
         )
+        _strip_theme_effect(bar)
         bar.fill.solid()
         bar.fill.fore_color.rgb = accent_color
         bar.line.fill.background()
@@ -1702,6 +1720,7 @@ def _render_text_element(
             Inches(x_in), Inches(y_in),
             Inches(w_in), Inches(h_in),
         )
+        _strip_theme_effect(shape)
         if radius_px > 0:
             _set_corner_radius(shape, radius_px, el.get("width", 100), el.get("height", 100))
         if has_visual_bg:
@@ -1839,6 +1858,7 @@ def _render_inline_runs(
             Inches(w_in), Inches(h_in),
         )
         _set_corner_radius(shape, radius_px, el.get("width", 100), el.get("height", 100))
+        _strip_theme_effect(shape)
         _apply_shape_bg(shape, el, opacity, backdrop)
         shape.line.fill.background()
         box_holder = shape
