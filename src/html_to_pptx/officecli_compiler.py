@@ -108,6 +108,27 @@ class OfficeCLICompilationResult:
 
 
 @dataclass(frozen=True)
+class _TableCellIR:
+    name: str
+    source_slide: int
+    source_object: str
+    bounds: tuple[float, float, float, float]
+    text: str
+    props: dict[str, str]
+
+    def as_manifest(self) -> dict[str, Any]:
+        return {
+            "kind": "cell",
+            "name": self.name,
+            "source_slide": self.source_slide,
+            "source_object": self.source_object,
+            "bounds_pt": list(self.bounds),
+            "text": self.text,
+            "props": dict(self.props),
+        }
+
+
+@dataclass(frozen=True)
 class _ObjectIR:
     kind: str
     name: str
@@ -117,9 +138,12 @@ class _ObjectIR:
     props: dict[str, str]
     text: str = ""
     fallback_props: dict[str, str] | None = None
+    table_cells: tuple[_TableCellIR, ...] = ()
+    row_heights: tuple[float, ...] = ()
+    column_widths: tuple[float, ...] = ()
 
     def as_manifest(self) -> dict[str, Any]:
-        return {
+        manifest = {
             "kind": self.kind,
             "name": self.name,
             "source_slide": self.source_slide,
@@ -127,6 +151,17 @@ class _ObjectIR:
             "bounds_pt": list(self.bounds),
             "text": self.text,
         }
+        if self.kind == "table":
+            manifest.update(
+                {
+                    "rows": len(self.row_heights),
+                    "columns": len(self.column_widths),
+                    "column_widths_pt": list(self.column_widths),
+                    "row_heights_pt": list(self.row_heights),
+                    "cells": [cell.as_manifest() for cell in self.table_cells],
+                }
+            )
+        return manifest
 
 
 @dataclass
@@ -391,6 +426,15 @@ def _vertical_alignment(element: dict[str, Any]) -> str:
     if value in {"center", "middle"}:
         return "middle"
     if value in {"flex-end", "end"}:
+        return "bottom"
+    return "top"
+
+
+def _cell_vertical_alignment(element: dict[str, Any]) -> str:
+    value = str(element.get("verticalAlign", "") or "").lower()
+    if value in {"center", "middle"}:
+        return "center"
+    if value in {"bottom", "end"}:
         return "bottom"
     return "top"
 
@@ -729,6 +773,257 @@ def _picture_props(
     return props, fallback_props
 
 
+def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    def visit(element: dict[str, Any]) -> None:
+        tag = str(element.get("tag", "") or "").lower()
+        if tag == "tr":
+            rows.append(element)
+            return
+        if tag not in {"table", "thead", "tbody", "tfoot"}:
+            return
+        for child in element.get("children", []) or []:
+            visit(child)
+
+    visit(table)
+    return rows
+
+
+def _table_cell_border(
+    element: dict[str, Any],
+    side: str,
+    scale_x: float,
+    backdrop: tuple[int, int, int],
+    source_slide: int,
+    source_object: str,
+) -> str | None:
+    suffix = side.capitalize()
+    width = _number(element.get(f"cellBorder{suffix}Width"))
+    style = str(element.get(f"cellBorder{suffix}Style", "") or "").lower()
+    if width <= 0 or style in {"", "none", "hidden"}:
+        return None
+    dash = {"solid": "solid", "dotted": "dot", "dashed": "dash"}.get(style)
+    if dash is None:
+        raise _diagnostic(
+            "unsupported_table_border",
+            f"Unsupported table border on source slide {source_slide}, {source_object}: {style!r} is not supported.",
+            source_slide,
+            source_object,
+        )
+    color = _parse_css_color(element.get(f"cellBorder{suffix}Color"))
+    if color is None:
+        return None
+    rgb, alpha = color
+    if alpha < 0.999:
+        rgb = _blend(rgb, alpha, backdrop)
+    return f"{_pt(width, scale_x):.4f}pt {dash} {_hex(rgb)}"
+
+
+def _table_cell_props(
+    element: dict[str, Any],
+    scale_x: float,
+    scale_y: float,
+    backdrop: tuple[int, int, int],
+    source_slide: int,
+    source_object: str,
+) -> dict[str, str]:
+    props: dict[str, str] = {"text": _text_of(element)}
+    fill = _parse_css_color(element.get("backgroundColor"))
+    cell_backdrop = backdrop
+    if fill is None:
+        props["fill"] = "none"
+    else:
+        rgb, alpha = fill
+        effective_alpha = alpha * max(
+            0.0, min(1.0, _number(element.get("opacity"), 1.0))
+        )
+        props["fill"] = _hex(rgb)
+        if effective_alpha < 0.999:
+            props["opacity"] = f"{effective_alpha:.4f}"
+        cell_backdrop = _blend(rgb, effective_alpha, backdrop)
+
+    font_family = str(element.get("fontFamily", "") or "")
+    if font_family:
+        props["font"] = _resolve_pptx_font(font_family)
+    font_size = _number(element.get("fontSize"))
+    if font_size > 0:
+        props["size"] = _length(_pt(font_size, scale_x))
+    text_color = _parse_css_color(element.get("color"))
+    if text_color:
+        rgb, alpha = text_color
+        props["color"] = _hex(rgb if alpha >= 0.999 else _blend(rgb, alpha, cell_backdrop))
+    if _is_bold(element.get("fontWeight")):
+        props["bold"] = "true"
+    if str(element.get("fontStyle", "")).lower() in {"italic", "oblique"}:
+        props["italic"] = "true"
+    props["align"] = _text_alignment(element)
+    props["valign"] = _cell_vertical_alignment(element)
+    props["padding.left"] = _length(_pt(_number(element.get("paddingLeft")), scale_x))
+    props["padding.right"] = _length(_pt(_number(element.get("paddingRight")), scale_x))
+    props["padding.top"] = _length(_pt(_number(element.get("paddingTop")), scale_y))
+    props["padding.bottom"] = _length(_pt(_number(element.get("paddingBottom")), scale_y))
+    direction = str(element.get("direction", "ltr") or "ltr").lower()
+    if direction == "rtl":
+        props["direction"] = "rtl"
+    line_spacing = _line_spacing(element)
+    if line_spacing is not None:
+        props["linespacing"] = line_spacing
+
+    for side in ("top", "right", "bottom", "left"):
+        descriptor = _table_cell_border(
+            element, side, scale_x, cell_backdrop, source_slide, source_object
+        )
+        if descriptor is not None:
+            props[f"border.{side}"] = descriptor
+    return props
+
+
+def _lower_table(
+    element: dict[str, Any],
+    source_slide: int,
+    source_object: str,
+    name: str,
+    scale_x: float,
+    scale_y: float,
+    backdrop: tuple[int, int, int],
+) -> _ObjectIR:
+    bounds = _bounds(element, scale_x, scale_y)
+    if bounds[2] <= 0 or bounds[3] <= 0:
+        raise _diagnostic(
+            "invalid_table_geometry",
+            f"Invalid table geometry on source slide {source_slide}, {source_object}: width and height must be positive.",
+            source_slide,
+            source_object,
+        )
+    if element.get("backgroundImage"):
+        raise _diagnostic(
+            "unsupported_table_effect",
+            f"Unsupported table fill on source slide {source_slide}, {source_object}: image or gradient fills are not supported.",
+            source_slide,
+            source_object,
+        )
+
+    rows = _table_rows(element)
+    if not rows:
+        raise _diagnostic(
+            "invalid_table_matrix",
+            f"Invalid table on source slide {source_slide}, {source_object}: the table has no rows.",
+            source_slide,
+            source_object,
+        )
+    row_cells = [
+        [
+            child
+            for child in row.get("children", []) or []
+            if str(child.get("tag", "") or "").lower() in {"td", "th"}
+        ]
+        for row in rows
+    ]
+    if not row_cells or not row_cells[0]:
+        raise _diagnostic(
+            "invalid_table_matrix",
+            f"Invalid table on source slide {source_slide}, {source_object}: the table has no cells.",
+            source_slide,
+            source_object,
+        )
+
+    for row_index, cells in enumerate(row_cells, start=1):
+        for column_index, cell in enumerate(cells, start=1):
+            cell_source = f"{source_object}/tr[{row_index}]/tc[{column_index}]"
+            row_span = _number(cell.get("rowSpan"), 1)
+            col_span = _number(cell.get("colSpan"), 1)
+            if row_span != 1 or col_span != 1:
+                raise _diagnostic(
+                    "unsupported_table_span",
+                    f"Unsupported merged table cell on source slide {source_slide}, {cell_source}: rowspan and colspan must both be 1.",
+                    source_slide,
+                    cell_source,
+                )
+            if cell.get("backgroundImage"):
+                raise _diagnostic(
+                    "unsupported_table_effect",
+                    f"Unsupported cell fill on source slide {source_slide}, {cell_source}: image or gradient fills are not supported.",
+                    source_slide,
+                    cell_source,
+                )
+
+    column_count = len(row_cells[0])
+    if any(len(cells) != column_count for cells in row_cells):
+        raise _diagnostic(
+            "invalid_table_matrix",
+            f"Invalid table on source slide {source_slide}, {source_object}: every row must have {column_count} cells.",
+            source_slide,
+            source_object,
+        )
+
+    row_heights = tuple(_pt(_number(row.get("height")), scale_y) for row in rows)
+    column_widths = tuple(
+        _pt(_number(cell.get("width")), scale_x) for cell in row_cells[0]
+    )
+    if any(height <= 0 for height in row_heights) or any(
+        width <= 0 for width in column_widths
+    ):
+        raise _diagnostic(
+            "invalid_table_geometry",
+            f"Invalid table geometry on source slide {source_slide}, {source_object}: row heights and column widths must be positive.",
+            source_slide,
+            source_object,
+        )
+
+    table_props: dict[str, str] = {
+        "name": name,
+        "x": _length(bounds[0]),
+        "y": _length(bounds[1]),
+        "width": _length(bounds[2]),
+        "height": _length(bounds[3]),
+        "rows": str(len(rows)),
+        "cols": str(column_count),
+        "colWidths": ",".join(_length(width) for width in column_widths),
+        "style": "none",
+        "firstRow": "false",
+        "lastRow": "false",
+        "firstCol": "false",
+        "lastCol": "false",
+        "bandedRows": "false",
+        "bandedCols": "false",
+    }
+    table_cells: list[_TableCellIR] = []
+    for row_index, cells in enumerate(row_cells, start=1):
+        for column_index, cell in enumerate(cells, start=1):
+            cell_source = f"{source_object}/tr[{row_index}]/tc[{column_index}]"
+            cell_name = f"{name}-cell-r{row_index:03d}-c{column_index:03d}"
+            cell_bounds = _bounds(cell, scale_x, scale_y)
+            table_cells.append(
+                _TableCellIR(
+                    cell_name,
+                    source_slide,
+                    cell_source,
+                    cell_bounds,
+                    _text_of(cell),
+                    _table_cell_props(
+                        cell,
+                        scale_x,
+                        scale_y,
+                        backdrop,
+                        source_slide,
+                        cell_source,
+                    ),
+                )
+            )
+    return _ObjectIR(
+        kind="table",
+        name=name,
+        source_slide=source_slide,
+        source_object=source_object,
+        bounds=bounds,
+        props=table_props,
+        table_cells=tuple(table_cells),
+        row_heights=row_heights,
+        column_widths=column_widths,
+    )
+
+
 def _lower_slide(source_index: int, slide_data: dict[str, Any]) -> _SlideIR:
     width = _number(slide_data.get("width"))
     height = _number(slide_data.get("height"))
@@ -825,12 +1120,19 @@ def _lower_slide(source_index: int, slide_data: dict[str, Any]) -> _SlideIR:
             )
             return
         if tag == "table":
-            raise _diagnostic(
-                "unsupported_table",
-                f"Unsupported visible object on source slide {source_slide}, {source_object}: native tables are deferred to the table slice.",
-                source_slide,
-                source_object,
+            table_name = f"slide-{source_slide:03d}-table-{len(result.objects) + 1:03d}"
+            result.objects.append(
+                _lower_table(
+                    element,
+                    source_slide,
+                    source_object,
+                    table_name,
+                    scale_x,
+                    scale_y,
+                    inherited_backdrop,
+                )
             )
+            return
         if element.get("backgroundImage"):
             raise _diagnostic(
                 "unsupported_effect",
@@ -980,6 +1282,30 @@ def _batch_for_slides(
                 }
             )
             sources.append(obj)
+            if obj.kind != "table":
+                continue
+            table_path = f"/slide[{output_index}]/table[@name={obj.name}]"
+            cell_index = 0
+            for row_index, row_height in enumerate(obj.row_heights, start=1):
+                commands.append(
+                    {
+                        "command": "set",
+                        "path": f"{table_path}/tr[{row_index}]",
+                        "props": {"height": _length(row_height)},
+                    }
+                )
+                sources.append(obj)
+                for column_index in range(1, len(obj.column_widths) + 1):
+                    cell = obj.table_cells[cell_index]
+                    cell_index += 1
+                    commands.append(
+                        {
+                            "command": "set",
+                            "path": f"{table_path}/tr[{row_index}]/tc[{column_index}]",
+                            "props": cell.props,
+                        }
+                    )
+                    sources.append(obj)
     return commands, sources
 
 

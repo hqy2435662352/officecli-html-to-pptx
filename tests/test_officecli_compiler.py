@@ -104,6 +104,46 @@ def _picture_deck_html() -> str:
 </style></head><body>""" + "".join(slides) + "</body></html>"
 
 
+def _table_deck_html() -> str:
+    return """<!doctype html>
+<html><head><style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  .slide { width: 960px; height: 540px; display: none; position: relative;
+           background: #ffffff; }
+  .slide.active { display: block; }
+  table { position: absolute; left: 80px; top: 60px; width: 500px; height: 230px;
+          table-layout: fixed; border-collapse: collapse; font-family: Arial, sans-serif; }
+  th, td { height: 25px; padding: 4px; text-align: center; vertical-align: middle;
+           border: 1px solid #445566; font-size: 12px; }
+  thead tr { height: 30px; }
+  th { height: 30px; background: #112233; color: #ffffff; font-weight: 700; font-style: italic; }
+  th:nth-child(1), td:nth-child(1) { width: 100px; }
+  th:nth-child(2), td:nth-child(2) { width: 120px; }
+  th:nth-child(3), td:nth-child(3) { width: 90px; }
+  th:nth-child(4), td:nth-child(4) { width: 90px; }
+  th:nth-child(5), td:nth-child(5) { width: 100px; }
+  td:first-child { text-align: left; padding-left: 12px; background: #eef2f7; }
+  tr.accent td { color: #e60012; font-weight: 700; }
+</style></head><body>
+  <section class="slide active">
+    <table aria-label="native table">
+      <thead><tr><th>MODEL</th><th>VARIANT</th><th>INDOOR SIZE</th><th>OUTDOOR SIZE</th><th>TCL CODE</th></tr></thead>
+      <tbody>
+        <tr><td>Capacity Class</td><td>12K, one</td><td>12K</td><td>18K</td><td>Z4U20101035061</td></tr>
+        <tr><td>Cooling Capacity</td><td>12000</td><td>18100</td><td>22000</td><td>R32</td></tr>
+        <tr><td>Heating Capacity</td><td>3500</td><td>5250</td><td>6400</td><td>3.52 / 2.58</td></tr>
+        <tr><td>IDU Dimension</td><td>910×305×195</td><td>1005×321×220</td><td>1005×321×220</td><td>B;two</td></tr>
+        <tr><td>ODU Dimension</td><td>795×305×549</td><td>853×349×602</td><td>920×380×699</td><td>R410A</td></tr>
+        <tr><td>Refrigerant</td><td>R32</td><td>R32</td><td>R32</td><td>R32</td></tr>
+        <tr class="accent"><td>CON</td><td>Φ7×2</td><td>Φ5×2</td><td>Φ7×2</td><td>甲</td></tr>
+        <tr class="accent"><td>EVA</td><td>Φ5×1</td><td>Φ7×2</td><td>Φ7×2</td><td>乙</td></tr>
+      </tbody>
+    </table>
+  </section>
+</body></html>"""
+
+
 @pytest.mark.asyncio
 async def test_public_author_compiler_emits_native_shapes_and_text(tmp_path: Path):
     html_path = tmp_path / "author.html"
@@ -141,6 +181,92 @@ async def test_public_author_compiler_emits_native_shapes_and_text(tmp_path: Pat
     names = [item["format"]["name"] for item in objects]
     assert len(names) == len(set(names))
     assert all(name.startswith("slide-001-") for name in names)
+
+
+@pytest.mark.asyncio
+async def test_public_author_compiler_emits_one_editable_native_table(
+    tmp_path: Path,
+):
+    html_path = tmp_path / "author.html"
+    output_path = tmp_path / "output.pptx"
+    html_path.write_text(_table_deck_html(), encoding="utf-8")
+
+    result = await compile_officecli(
+        str(html_path), "author", str(output_path), slide_indices=[0]
+    )
+
+    assert result.slide_count == 1
+    assert result.manifest["object_kind_counts"] == {"table": 1}
+    table_manifest = result.manifest["objects"][0]
+    assert table_manifest["kind"] == "table"
+    assert table_manifest["rows"] == 9
+    assert table_manifest["columns"] == 5
+    assert len(table_manifest["cells"]) == 45
+    assert len({cell["name"] for cell in table_manifest["cells"]}) == 45
+    assert all(cell["source_object"].startswith(table_manifest["source_object"] + "/tr[") for cell in table_manifest["cells"])
+    assert table_manifest["bounds_pt"] == pytest.approx([80, 60, 501, 274])
+
+    slide = _run_json("get", str(output_path), "/slide[1]", "--depth", "1")["data"]["results"][0]
+    assert [child["type"] for child in slide["children"]] == ["table"]
+
+    table = _run_json(
+        "get", str(output_path), "/slide[1]/table[1]", "--depth", "2"
+    )["data"]["results"][0]
+    assert table["type"] == "table"
+    assert table["format"]["rows"] == 9
+    assert table["format"]["cols"] == 5
+    assert len(table["children"]) == 9
+    assert all(len(row["children"]) == 5 for row in table["children"])
+    assert [row["format"]["height"] for row in table["children"]] == [
+        "37pt",
+        "25pt",
+        "37pt",
+        "37pt",
+        "25pt",
+        "37pt",
+        "25pt",
+        "25pt",
+        "25pt",
+    ]
+
+    header = table["children"][0]["children"][0]
+    assert header["text"] == "MODEL"
+    assert header["format"]["fill"] == "#112233"
+    assert header["format"]["font"] == "Arial"
+    assert header["format"]["size"] == "12pt"
+    assert header["format"]["bold"] is True
+    assert header["format"]["italic"] is True
+    assert header["format"]["color"] == "#FFFFFF"
+    assert header["format"]["align"] == "center"
+    assert header["format"]["valign"] == "center"
+    assert header["format"]["padding.left"] == "4pt"
+    assert header["format"]["border.all"] == "1pt solid #445566"
+
+    first_body_cell = table["children"][1]["children"][0]
+    assert first_body_cell["text"] == "Capacity Class"
+    assert first_body_cell["format"]["padding.left"] == "12pt"
+    assert _run_json("query", str(output_path), "table")["data"]["matches"] == 1
+
+
+@pytest.mark.asyncio
+async def test_native_table_rejects_non_unit_cell_spans_without_output(
+    tmp_path: Path,
+):
+    html_path = tmp_path / "author.html"
+    output_path = tmp_path / "output.pptx"
+    html_path.write_text(
+        _table_deck_html().replace("<td>12K, one</td>", '<td colspan="2">12K, one</td>'),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OfficeCLICompilationError) as error:
+        await compile_officecli(
+            str(html_path), "author", str(output_path), slide_indices=[0]
+        )
+
+    assert error.value.diagnostics[0].code == "unsupported_table_span"
+    assert error.value.diagnostics[0].source_object
+    assert not output_path.exists()
 
 
 @pytest.mark.asyncio

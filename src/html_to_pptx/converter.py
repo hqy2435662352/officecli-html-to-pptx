@@ -288,6 +288,8 @@ EXTRACTION_JS = """
 
         const isImg = tag === 'img';
         const isSvg = tag === 'svg';
+        const isTableElement = ['table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th'].includes(tag);
+        const isTableCell = tag === 'td' || tag === 'th';
         const imageSource = isImg ? (el.getAttribute('src') || '') : '';
         const isSvgDataUri = isImg && /^data:image\\/svg\\+xml(?:[;,]|$)/i.test(imageSource);
         const hasVisibleBg = style.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
@@ -321,6 +323,7 @@ EXTRACTION_JS = """
             display: style.display,
             justifyContent: style.justifyContent,
             alignItems: style.alignItems,
+            verticalAlign: style.verticalAlign,
             writingMode: style.writingMode,
             rotation: ownRotation,
             opacity: parseFloat(style.opacity),
@@ -335,9 +338,27 @@ EXTRACTION_JS = """
             borderColor: hasBorder ? style.borderColor : null,
             borderWidth: hasBorder ? parseFloat(style.borderWidth) : 0,
             borderStyle: hasBorder ? style.borderStyle : null,
+            cellBorderTopColor: style.borderTopColor,
+            cellBorderTopWidth: parseFloat(style.borderTopWidth) || 0,
+            cellBorderTopStyle: style.borderTopStyle,
+            cellBorderRightColor: style.borderRightColor,
+            cellBorderRightWidth: parseFloat(style.borderRightWidth) || 0,
+            cellBorderRightStyle: style.borderRightStyle,
+            cellBorderBottomColor: style.borderBottomColor,
+            cellBorderBottomWidth: parseFloat(style.borderBottomWidth) || 0,
+            cellBorderBottomStyle: style.borderBottomStyle,
+            cellBorderLeftColor: style.borderLeftColor,
+            cellBorderLeftWidth: parseFloat(style.borderLeftWidth) || 0,
+            cellBorderLeftStyle: style.borderLeftStyle,
             borderLeftColor: style.borderLeftColor !== style.borderColor ? style.borderLeftColor : null,
             borderLeftWidth: parseFloat(style.borderLeftWidth) || 0,
             borderLeftStyle: style.borderLeftColor !== style.borderColor ? style.borderLeftStyle : null,
+            rowSpan: isTableCell
+                ? (el.hasAttribute('rowspan') ? (parseInt(el.getAttribute('rowspan'), 10) || 0) : 1)
+                : 1,
+            colSpan: isTableCell
+                ? (el.hasAttribute('colspan') ? (parseInt(el.getAttribute('colspan'), 10) || 0) : 1)
+                : 1,
             textTransform: style.textTransform,
             backgroundImage: bgImage,
             isGradientText: isGradientText,
@@ -422,6 +443,7 @@ EXTRACTION_JS = """
         }
 
         const isContainer = !data.text && !isImg && !isSvg && !hasVisibleBg && !hasBorder &&
+                           !isTableElement &&
                            data.backgroundImage === null && !data.inlineRuns;
         if (isContainer && data.children.length === 1 && depth > 0) {
             const child = data.children[0];
