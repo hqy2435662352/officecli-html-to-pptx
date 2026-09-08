@@ -11,7 +11,7 @@ This repository worktree is reserved for the OfficeCLI HTML-to-PPTX compiler MVP
 - Base remote branch: `fork/fix/clear-theme-shape-effects`
 - OfficeCLI compatibility baseline: `1.0.147`
 - Issue 07 remediation base: `a5d979e`.
-- Issue 07 implementation commits: `0d8cba7` and `c766018`.
+- Issue 07 implementation commits: `0d8cba7`, `c766018`, `afd7945`, and `9ab8aba`.
 - Implementation status: Tickets 01–07 are implemented in this worktree; the authoritative Issue 07 gate has completed.
 - Acceptance status: `KNOWN_BASELINE_DIFFERENCE` with Gate 3 visual review PASS for all 8 slides; all non-baseline checks PASS.
 - Ticket frontier: 01–07 are complete for the MVP; future work remains explicitly deferred below.
@@ -255,15 +255,17 @@ Geometry tolerances agreed for the first contract:
 
 The final replay used the external Algeria Author HTML and the public `compile_officecli` seam with the explicit `author` and `officehtml` profiles. The report is:
 
-`C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\acceptance-report.json`
+`C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\acceptance-report.json`
 
 The durable visual review is:
 
-`C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\visual-review.json`
+`C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\visual-review.json`
 
 Results:
 
 - 8 slides, 18 independent pictures, 9 native tables, 86 rows, and 484 cells;
+- the independent native-structure gate passed for both PPTX A and PPTX B,
+  including the expected table distribution and explicit no-whole-slide/no-shape-per-cell checks;
 - PPTX A and PPTX B both passed OfficeCLI validation and their normalized supported manifests matched;
 - the PPTX B issue set was contained in the PPTX A issue set;
 - screenshot generation passed and Gate 3 recorded exactly one `PASS` review for each of the 8 slides;
@@ -272,16 +274,27 @@ Results:
   `(1, slide-001-textbox-012, text_overflow)`,
   `(8, slide-008-textbox-024, text_overflow)`, and
   `(8, slide-008-textbox-028, text_overflow)`;
-- full regression testing passed: `56 passed`; `compileall` and `git diff --check` also passed.
+- full regression testing passed: `67 passed`; `compileall` and `git diff --check` also passed.
+
+The final review remediation also closes the false-pass risks around same-MIME
+picture content fingerprints, pure-text opacity, consecutive/trailing hard-break
+paragraphs, hidden or unused unsupported CSS, descendant CSS affecting canvas
+dimensions, and external `@font-face` resources.  OfficeCLI table-cell
+paragraph properties are projected through its supported cell-level API, with
+heterogeneous paragraph properties rejected explicitly.  The A-to-B line-spacing
+tolerance is limited to the three measured OfficeCLI 1.0.147 projections
+(`0.6x→0.8x`, `0.788x→1.05x`, and `1.6x→1.2x`), while the legacy renderer keeps
+its default measurement semantics through an explicit OfficeCLI extraction mode.
 
 The corresponding deliverables are:
 
-- PPTX A: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\algeria-a.pptx`;
-- OfficeHTML A: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\algeria-a.officehtml.html`;
-- PPTX B: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\algeria-b.pptx`;
-- side-by-side screenshots: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\visuals\side-by-side`.
+- PPTX A: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\algeria-a.pptx`;
+- OfficeHTML A: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\algeria-a.officehtml.html`;
+- PPTX B: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\algeria-b.pptx`;
+- side-by-side screenshots: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\visuals\side-by-side`.
 
-The tested implementation range is `a5d979e..c766018`; the acceptance replay used implementation commit `0d8cba7`, and the follow-up test commit keeps the negative case on the public seam.
+The tested implementation range is `a5d979e..9ab8aba`; the acceptance replay
+used the final review-remediation code at `9ab8aba`.
 
 The table distribution is:
 

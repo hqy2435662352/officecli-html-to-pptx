@@ -37,17 +37,17 @@
 
 Authoritative acceptance replay:
 
-- Report: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\acceptance-report.json`;
-- PPTX A: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\algeria-a.pptx`;
-- OfficeHTML A: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\algeria-a.officehtml.html`;
-- PPTX B: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\algeria-b.pptx`;
-- visual review: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\visual-review.json`;
-- comparison screenshots: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\visuals\side-by-side`.
+- Report: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\acceptance-report.json`;
+- PPTX A: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\algeria-a.pptx`;
+- OfficeHTML A: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\algeria-a.officehtml.html`;
+- PPTX B: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\algeria-b.pptx`;
+- visual review: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\visual-review.json`;
+- comparison screenshots: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\visuals\side-by-side`.
 
-The report status is `KNOWN_BASELINE_DIFFERENCE` with exit code 0. All 16 structural, contract, validation, round-trip, issue-subset, screenshot, and Gate 3 checks are `PASS`; Gate 3 contains one `PASS` result for each slide. The final deck contains 8 slides, 18 independent pictures, 9 native tables, 86 rows, and 484 cells. PPTX A and B each have three identical, explicitly classified OfficeCLI 1.0.147 baseline overflow findings:
+The report status is `KNOWN_BASELINE_DIFFERENCE` with exit code 0. All 18 structural, contract, validation, round-trip, issue-subset, screenshot, and Gate 3 checks are `PASS`; Gate 3 contains one `PASS` result for each slide. The final deck contains 8 slides, 18 independent pictures, 9 native tables, 86 rows, and 484 cells, with the expected native table distribution and no whole-slide picture or shape-per-cell fake table. PPTX A and B each have three identical, explicitly classified OfficeCLI 1.0.147 baseline overflow findings:
 
 - `(1, slide-001-textbox-012, text_overflow)`;
 - `(8, slide-008-textbox-024, text_overflow)`;
 - `(8, slide-008-textbox-028, text_overflow)`.
 
-Verification also includes `56 passed` from the full pytest suite, `compileall PASS`, and `git diff --check` with no whitespace errors. The implementation was committed as `0d8cba7` with the public-seam test follow-up `c766018` on `codex/officecli-html-to-pptx-mvp`; the documented tested range is `a5d979e..c766018`.
+Verification also includes `67 passed` from the full pytest suite, `compileall PASS`, and `git diff --check` with no whitespace errors. The review remediation compares same-MIME picture content fingerprints, preserves pure-text opacity through alpha-bearing text colors, retains consecutive/trailing hard-break paragraphs, ignores unsupported CSS that is unused or hidden, rejects descendant canvas overrides and external `@font-face` sources, and limits line-spacing projection tolerance to the three measured OfficeCLI 1.0.147 pairs. Uniform table-cell paragraph properties are rendered through OfficeCLI's cell-level paragraph API; heterogeneous cell paragraph properties fail explicitly. The implementation was committed as `0d8cba7`, `c766018`, `afd7945`, and `9ab8aba` on `codex/officecli-html-to-pptx-mvp`; the documented tested range is `a5d979e..9ab8aba`.
