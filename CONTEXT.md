@@ -264,6 +264,9 @@ reopened the ticket: the old PASS record missed the visible slide-1 and
 slide-8 differences and the comparator probes exposed four false-pass
 boundaries.  The targeted remediation is now complete.
 
+The code and test remediation is committed as `d864d47`; the tested follow-up
+range is `355630f..d864d47` on `codex/officecli-html-to-pptx-mvp`.
+
 Current evidence:
 
 - final Author PPTX A:

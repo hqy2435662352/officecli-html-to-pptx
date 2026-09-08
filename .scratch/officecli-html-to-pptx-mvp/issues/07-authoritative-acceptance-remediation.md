@@ -45,6 +45,10 @@ The independent reacceptance report
 visual blockers and four comparator false-pass boundaries.  The fixes are
 scoped to those findings:
 
+The code and test remediation is committed as `d864d47` on
+`codex/officecli-html-to-pptx-mvp`; the tested follow-up range is
+`355630f..d864d47`.
+
 - Author CSS-pixel line-height is kept for the reviewed slide-1 title, while
   the established table-cell projection remains unchanged;
 - the slide-1 card labels/model ranges and slide-8 `01–04` numbers retain their
