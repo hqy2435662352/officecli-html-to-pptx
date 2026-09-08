@@ -7,11 +7,14 @@ This repository worktree is reserved for the OfficeCLI HTML-to-PPTX compiler MVP
 - Worktree: `D:\Opencodeworkspace\html-to-pptx\officecli-html-to-pptx-mvp`
 - Branch: `codex/officecli-html-to-pptx-mvp`
 - Remote tracking branch: `fork/codex/officecli-html-to-pptx-mvp`
-- Base commit: `098b4eba118e17894938ca901f002221790f8b0a`
+- Planning base commit: `098b4eba118e17894938ca901f002221790f8b0a`
 - Base remote branch: `fork/fix/clear-theme-shape-effects`
 - OfficeCLI compatibility baseline: `1.0.147`
-- Planning status: spec and six tickets published locally; implementation has not started.
-- Ticket frontier: ticket 01 is the only ticket that can start immediately.
+- Issue 07 remediation base: `a5d979e`.
+- Issue 07 implementation commit: `0d8cba7`.
+- Implementation status: Tickets 01–07 are implemented in this worktree; the authoritative Issue 07 gate has completed.
+- Acceptance status: `KNOWN_BASELINE_DIFFERENCE` with Gate 3 visual review PASS for all 8 slides; all non-baseline checks PASS.
+- Ticket frontier: 01–07 are complete for the MVP; future work remains explicitly deferred below.
 
 The approved planning documents are under `.scratch/officecli-html-to-pptx-mvp/`.
 
@@ -25,7 +28,7 @@ The MVP has one precise outcome:
 
 This work is no longer framed as an OfficeCLI feasibility investigation. OfficeCLI is the project's preferred Office layer. The question for the MVP is whether the smallest useful compiler contract can be implemented and verified, not whether OfficeCLI should be selected.
 
-This planning round is documentation-only. Do not treat the presence of the spec and tickets as authorization to begin implementation outside an assigned ticket.
+The original planning artifacts remain the contract for the MVP. Implementation was executed in this dedicated issue worktree after the assigned ticket was authorized, and Issue 07 records the end-to-end acceptance evidence.
 
 ## Architectural conclusion
 
@@ -114,7 +117,7 @@ Observed baseline:
 - 9 native PowerPoint tables;
 - 86 table rows and 484 cells;
 - OfficeCLI validation passes;
-- 10 known text-overflow findings;
+- 10 historical text-overflow findings from the reference renderer;
 - 0 picture objects.
 
 The zero-picture result is a defect of the old conversion path, not a target. The new MVP must restore the 18 pictures present in Author HTML.
@@ -149,7 +152,7 @@ Do not mechanically reproduce known defects:
 
 - restore the 18 pictures that the old renderer lost;
 - do not add theme shadows that Author HTML did not request;
-- classify the 10 reference overflows as a baseline rather than deliberately reproducing them;
+- classify the historical reference overflows as a baseline rather than deliberately reproducing them; the current compiler baseline is the three Issue 07 tuples recorded below;
 - do not recreate the 16 pathless master/layout projections as slide-owned objects.
 
 ## MVP object surface
@@ -216,9 +219,12 @@ PPTX A and PPTX B are equivalent when their normalized supported-object manifest
 - picture count;
 - table count, dimensions, and cell content;
 - supported fills, outlines, fonts, and alignments;
+- supported shape/text properties, paragraph boundaries, direct runs, and run formatting;
+- picture identity/content fingerprints, intrinsic dimensions, and fitting semantics;
+- native-table geometry, cell formatting, paragraph boundaries, and cell runs;
 - geometry within the specified tolerances.
 
-This does not require identical ZIP bytes, XML order, relationship identifiers, or internal object identifiers.
+This does not require identical ZIP bytes, XML order, generated relationship identifiers, or internal object identifiers.
 
 ## Acceptance baselines
 
@@ -245,6 +251,38 @@ Geometry tolerances agreed for the first contract:
 - supported RGB colors, booleans, and alignment: exact;
 - text: Unicode code-point equality, with only documented display-only OfficeHTML non-breaking-space normalization.
 
+## Issue 07 authoritative acceptance (2026-09-08)
+
+The final replay used the external Algeria Author HTML and the public `compile_officecli` seam with the explicit `author` and `officehtml` profiles. The report is:
+
+`C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\acceptance-report.json`
+
+The durable visual review is:
+
+`C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\visual-review.json`
+
+Results:
+
+- 8 slides, 18 independent pictures, 9 native tables, 86 rows, and 484 cells;
+- PPTX A and PPTX B both passed OfficeCLI validation and their normalized supported manifests matched;
+- the PPTX B issue set was contained in the PPTX A issue set;
+- screenshot generation passed and Gate 3 recorded exactly one `PASS` review for each of the 8 slides;
+- final status was `KNOWN_BASELINE_DIFFERENCE` with CLI exit code 0;
+- the only remaining findings were the three explicit OfficeCLI 1.0.147 baseline tuples:
+  `(1, slide-001-textbox-012, text_overflow)`,
+  `(8, slide-008-textbox-024, text_overflow)`, and
+  `(8, slide-008-textbox-028, text_overflow)`;
+- full regression testing passed: `56 passed`; `compileall` and `git diff --check` also passed.
+
+The corresponding deliverables are:
+
+- PPTX A: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\algeria-a.pptx`;
+- OfficeHTML A: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\algeria-a.officehtml.html`;
+- PPTX B: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\algeria-b.pptx`;
+- side-by-side screenshots: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\visuals\side-by-side`.
+
+The tested implementation range is `a5d979e..0d8cba7`; the documentation update that records this result follows that range.
+
 The table distribution is:
 
 | Slide | Tables |
@@ -270,6 +308,8 @@ The table distribution is:
                05 OfficeHTML round trip
                     ↓
                06 Contract + acceptance gate
+                    ↓
+               07 Authoritative acceptance remediation
 ```
 
 The tickets are tracer bullets rather than horizontal component tickets. The Measurement DTO and PPT Object IR are introduced only as the complete shape/text, picture, and table paths need them. This avoids speculative schemas and guarantees that every completed ticket produces a PPTX that can be opened, queried, and validated.
@@ -277,7 +317,7 @@ The tickets are tracer bullets rather than horizontal component tickets. The Mea
 ## Working rules for future agents
 
 1. Work only in this repository worktree and on `codex/officecli-html-to-pptx-mvp` unless the user explicitly changes the target.
-2. Start from the frontier ticket. At present, only ticket 01 is unblocked.
+2. Start from the next explicitly assigned ticket. Tickets 01–07 are complete for the current MVP; future work must remain within the deferred surface.
 3. Read the full spec and the assigned ticket before changing code.
 4. Preserve the old renderer and existing tests during the MVP.
 5. Use installed OfficeCLI help as the authority for property names and capabilities; the MVP baseline is OfficeCLI 1.0.147.
@@ -292,9 +332,10 @@ The tickets are tracer bullets rather than horizontal component tickets. The Mea
 ## Planning artifacts
 
 - `.scratch/officecli-html-to-pptx-mvp/spec.md` — approved feature specification.
-- `.scratch/officecli-html-to-pptx-mvp/issues/01-shape-text-vertical-slice.md` — current frontier.
-- `.scratch/officecli-html-to-pptx-mvp/issues/02-native-pictures.md` — blocked by 01.
-- `.scratch/officecli-html-to-pptx-mvp/issues/03-native-table.md` — blocked by 01.
-- `.scratch/officecli-html-to-pptx-mvp/issues/04-full-algeria-deck.md` — blocked by 02 and 03.
-- `.scratch/officecli-html-to-pptx-mvp/issues/05-officehtml-roundtrip.md` — blocked by 04.
-- `.scratch/officecli-html-to-pptx-mvp/issues/06-contract-and-acceptance-gate.md` — blocked by 05.
+- `.scratch/officecli-html-to-pptx-mvp/issues/01-shape-text-vertical-slice.md` — complete.
+- `.scratch/officecli-html-to-pptx-mvp/issues/02-native-pictures.md` — complete.
+- `.scratch/officecli-html-to-pptx-mvp/issues/03-native-table.md` — complete.
+- `.scratch/officecli-html-to-pptx-mvp/issues/04-full-algeria-deck.md` — complete.
+- `.scratch/officecli-html-to-pptx-mvp/issues/05-officehtml-roundtrip.md` — complete.
+- `.scratch/officecli-html-to-pptx-mvp/issues/06-contract-and-acceptance-gate.md` — complete.
+- `.scratch/officecli-html-to-pptx-mvp/issues/07-authoritative-acceptance-remediation.md` — completed authoritative gate and evidence.
