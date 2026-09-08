@@ -187,6 +187,99 @@ def test_unapproved_picture_mime_reencoding_is_a_regression() -> None:
     )
 
 
+def test_same_fingerprint_picture_mime_change_is_a_regression() -> None:
+    expected = {
+        "slide_count": 1,
+        "object_kind_counts": {"picture": 1},
+        "objects": [{
+            "kind": "picture",
+            "name": "picture-1",
+            "bounds_pt": [0, 0, 100, 50],
+            "text": "",
+            "properties": {},
+            "metadata": {
+                "picture": {
+                    "mime": "image/png",
+                    "content_fingerprint": "a" * 64,
+                    "intrinsic_size": [20, 10],
+                    "object_fit": "fill",
+                    "bounds_pt": [0, 0, 100, 50],
+                    "fitting": {},
+                }
+            },
+        }],
+    }
+    actual = {
+        **expected,
+        "objects": [{
+            **expected["objects"][0],
+            "metadata": {
+                "picture": {
+                    "content_type": "image/jpeg",
+                    "content_fingerprint": "a" * 64,
+                    "intrinsic_size": [20, 10],
+                    "object_fit": "fill",
+                    "bounds_pt": [0, 0, 100, 50],
+                    "fitting": {},
+                }
+            },
+        }],
+    }
+
+    status, findings = compare_manifests(expected, actual)
+
+    assert status == REGRESSION
+    assert any(item["details"].get("different", {}).get("mime") for item in findings)
+
+
+def test_svg_fallback_aspect_ratio_change_is_a_regression() -> None:
+    expected = {
+        "slide_count": 1,
+        "object_kind_counts": {"picture": 1},
+        "objects": [{
+            "kind": "picture",
+            "name": "picture-1",
+            "bounds_pt": [0, 0, 100, 50],
+            "text": "",
+            "properties": {},
+            "metadata": {
+                "picture": {
+                    "mime": "image/svg+xml",
+                    "content_fingerprint": "a" * 64,
+                    "intrinsic_size": [20, 10],
+                    "object_fit": "fill",
+                    "bounds_pt": [0, 0, 100, 50],
+                    "fitting": {},
+                }
+            },
+        }],
+    }
+    actual = {
+        **expected,
+        "objects": [{
+            **expected["objects"][0],
+            "metadata": {
+                "picture": {
+                    "content_type": "image/png",
+                    "content_fingerprint": "b" * 64,
+                    "intrinsic_size": [999, 999],
+                    "object_fit": "fill",
+                    "bounds_pt": [0, 0, 100, 50],
+                    "fitting": {},
+                }
+            },
+        }],
+    }
+
+    status, findings = compare_manifests(expected, actual)
+
+    assert status == REGRESSION
+    assert any(
+        item["details"].get("different", {}).get("intrinsic_aspect_ratio")
+        for item in findings
+    )
+
+
 def test_svg_to_png_picture_reencoding_is_the_only_allowed_mime_fallback() -> None:
     expected = {
         "slide_count": 1,
@@ -277,6 +370,123 @@ def test_unapproved_paragraph_line_spacing_difference_is_a_regression() -> None:
 
     assert status == REGRESSION
     assert any("paragraph/run formatting" in item["message"] for item in findings)
+
+
+def test_projection_only_allows_authored_paragraph_spacing_to_be_omitted() -> None:
+    paragraph = {
+        "text": "Line",
+        "align": "left",
+        "line_spacing": None,
+        "space_before_pt": 0,
+        "space_after_pt": 0,
+        "direction": "ltr",
+        "runs": [],
+    }
+    expected = {
+        "slide_count": 1,
+        "object_kind_counts": {"textbox": 1},
+        "objects": [{
+            "kind": "textbox",
+            "name": "text",
+            "bounds_pt": [0, 0, 100, 50],
+            "text": "Line",
+            "properties": {},
+            "paragraphs": [paragraph],
+        }],
+    }
+    actual_with_added_spacing = {
+        **expected,
+        "objects": [{
+            **expected["objects"][0],
+            "paragraphs": [{**paragraph, "space_before_pt": 100, "space_after_pt": 100}],
+        }],
+    }
+    expected_with_authored_spacing = {
+        **actual_with_added_spacing,
+        "objects": [{
+            **actual_with_added_spacing["objects"][0],
+            "paragraphs": [{**paragraph, "space_before_pt": 100, "space_after_pt": 100}],
+        }],
+    }
+    actual_with_omitted_spacing = {
+        **expected,
+        "objects": [{
+            **expected["objects"][0],
+            "paragraphs": [paragraph],
+        }],
+    }
+
+    added_status, added_findings = compare_manifests(
+        expected,
+        actual_with_added_spacing,
+        allow_officehtml_projection_defaults=True,
+    )
+    omitted_status, omitted_findings = compare_manifests(
+        expected_with_authored_spacing,
+        actual_with_omitted_spacing,
+        allow_officehtml_projection_defaults=True,
+    )
+
+    assert added_status == REGRESSION
+    assert added_findings
+    assert omitted_status == "PASS"
+    assert not omitted_findings
+
+
+def test_nbsp_normalization_is_limited_to_officehtml_projection() -> None:
+    paragraph = {
+        "text": "A\u00a0B",
+        "align": "left",
+        "line_spacing": None,
+        "space_before_pt": 0,
+        "space_after_pt": 0,
+        "direction": "ltr",
+        "runs": [{
+            "text": "A\u00a0B",
+            "font_family": "Arial",
+            "font_size_pt": 12,
+            "bold": False,
+            "italic": False,
+            "underline": "none",
+            "color": "#000000",
+        }],
+    }
+    expected = {
+        "slide_count": 1,
+        "object_kind_counts": {"textbox": 1},
+        "objects": [{
+            "kind": "textbox",
+            "name": "text",
+            "bounds_pt": [0, 0, 100, 50],
+            "text": "A\u00a0B",
+            "properties": {},
+            "paragraphs": [paragraph],
+        }],
+    }
+    actual = {
+        **expected,
+        "objects": [{
+            **expected["objects"][0],
+            "text": "A B",
+            "paragraphs": [{
+                **paragraph,
+                "text": "A B",
+                "runs": [{**paragraph["runs"][0], "text": "A B"}],
+            }],
+        }],
+    }
+
+    strict_status, strict_findings = compare_manifests(expected, actual)
+    projection_status, projection_findings = compare_manifests(
+        expected,
+        actual,
+        allow_officehtml_projection_defaults=True,
+    )
+
+    assert strict_status == REGRESSION
+    assert strict_findings
+    assert projection_status == "PASS"
+    assert not projection_findings
 
 
 def test_empty_shape_text_defaults_are_tolerated_only_for_officehtml_projection() -> None:

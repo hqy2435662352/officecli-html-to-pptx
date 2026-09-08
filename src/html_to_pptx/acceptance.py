@@ -198,9 +198,10 @@ class AcceptanceReport:
         (destination / "acceptance-report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _normal_text(value: Any) -> str:
-    """Normalize only display whitespace introduced by OfficeHTML."""
-    return str(value or "").replace("\u00a0", " ")
+def _normal_text(value: Any, *, normalize_nbsp: bool = False) -> str:
+    """Return text, optionally normalizing OfficeHTML's display-only NBSP."""
+    text = str(value or "")
+    return text.replace("\u00a0", " ") if normalize_nbsp else text
 
 
 def _issue_subtype(message: str) -> str:
@@ -346,6 +347,7 @@ def _paragraph_signature(
     paragraphs: Iterable[Mapping[str, Any]],
     *,
     run_size_scale: float = 1.0,
+    normalize_nbsp: bool = False,
 ) -> tuple[Any, ...]:
     signature: list[Any] = []
     for paragraph in paragraphs:
@@ -360,7 +362,7 @@ def _paragraph_signature(
         for run in paragraph.get("runs", []) or []:
             runs.append(
                 (
-                    _display_text(run.get("text", "")),
+                    _display_text(run.get("text", ""), normalize_nbsp=normalize_nbsp),
                     str(run.get("font_family", "")),
                     round(float(run.get("font_size_pt", 0.0)) * run_size_scale, 2),
                     bool(run.get("bold")),
@@ -371,7 +373,9 @@ def _paragraph_signature(
             )
         signature.append(
             (
-                _display_text(paragraph.get("text", "")),
+                _display_text(
+                    paragraph.get("text", ""), normalize_nbsp=normalize_nbsp
+                ),
                 str(paragraph.get("align", "left")),
                 spacing,
                 round(float(paragraph.get("space_before_pt", 0.0)), 2),
@@ -391,10 +395,10 @@ def _line_spacing_equivalent(expected: Any, actual: Any) -> bool:
         actual_value = float(actual)
     except (TypeError, ValueError):
         return False
-    # OfficeCLI 1.0.147's HTML projection has three measured, fixed-coordinate
-    # line-spacing projections in the current Algeria golden case.  Keep these
+    # OfficeCLI 1.0.147's HTML projection has one retained fixed-coordinate
+    # line-spacing projection in the current Algeria golden case.  Keep it
     # explicit rather than accepting arbitrary spacing drift in A -> B.
-    known_projections = ((0.6, 0.8), (0.788, 1.05), (1.6, 1.2))
+    known_projections = ((1.6, 1.2),)
     return any(
         abs(expected_value - authored) <= 0.01
         and abs(actual_value - projected) <= 0.01
@@ -419,8 +423,11 @@ def _paragraphs_equivalent(
             if allow_projection_defaults
             else 1.0
         ),
+        normalize_nbsp=allow_projection_defaults,
     )
-    actual_signature = _paragraph_signature(actual_list)
+    actual_signature = _paragraph_signature(
+        actual_list, normalize_nbsp=allow_projection_defaults
+    )
     if expected_signature == actual_signature:
         return True
     # OfficeHTML can materialize one empty default paragraph for an otherwise
@@ -429,17 +436,19 @@ def _paragraphs_equivalent(
     # collapsed (for example, four authored paragraphs cannot become one).
     if allow_projection_defaults and len(expected_list) == len(actual_list) == 1:
         if all(
-            not _display_text(paragraph.get("text", "")).strip()
+            not _display_text(
+                paragraph.get("text", ""), normalize_nbsp=allow_projection_defaults
+            ).strip()
             for paragraph in [expected_list[0], actual_list[0]]
         ):
             return True
     if allow_projection_defaults and allow_single_empty_projection:
         if not expected_list and len(actual_list) == 1 and not _display_text(
-            actual_list[0].get("text", "")
+            actual_list[0].get("text", ""), normalize_nbsp=True
         ).strip():
             return True
         if not actual_list and len(expected_list) == 1 and not _display_text(
-            expected_list[0].get("text", "")
+            expected_list[0].get("text", ""), normalize_nbsp=True
         ).strip():
             return True
     if not allow_projection_defaults or len(expected_signature) != len(actual_signature):
@@ -456,11 +465,26 @@ def _paragraphs_equivalent(
             or left[6] != right[6]
         ):
             return False
-        if left[3] != 0.0 and right[3] != 0.0:
+        # OfficeHTML may omit authored paragraph spacing, which reads back as
+        # zero.  The reverse direction (zero in the source becoming non-zero)
+        # is a real round-trip change and must remain a regression.
+        if not _projection_spacing_equivalent(left[3], right[3]):
             return False
-        if left[4] != 0.0 and right[4] != 0.0:
+        if not _projection_spacing_equivalent(left[4], right[4]):
             return False
     return True
+
+
+def _projection_spacing_equivalent(expected: Any, actual: Any) -> bool:
+    """Allow only authored non-zero spacing being omitted by OfficeHTML."""
+    try:
+        expected_value = float(expected)
+        actual_value = float(actual)
+    except (TypeError, ValueError):
+        return expected == actual
+    if abs(expected_value - actual_value) <= 0.01:
+        return True
+    return abs(expected_value) > 0.01 and abs(actual_value) <= 0.01
 
 
 def _property_mismatches(
@@ -495,14 +519,29 @@ def _property_mismatches(
             "autoFit",
             "fontScale",
             "margin",
-            "spaceAfter",
-            "spaceBefore",
         }:
             continue
         if key not in actual:
+            if (
+                allow_projection_defaults
+                and key in {"spaceAfter", "spaceBefore"}
+                and _projection_spacing_equivalent(
+                    _property_length_in_points(expected_value), 0.0
+                )
+            ):
+                continue
             missing[key] = expected_value
             continue
         actual_value = actual[key]
+        if (
+            allow_projection_defaults
+            and key in {"spaceAfter", "spaceBefore"}
+            and _projection_spacing_equivalent(
+                _property_length_in_points(expected_value),
+                _property_length_in_points(actual_value),
+            )
+        ):
+            continue
         if key in {"x", "y", "width", "height"}:
             try:
                 if abs(_points(expected_value) - _points(actual_value)) <= 1.0:
@@ -542,9 +581,22 @@ def _normalize_color(value: Any) -> str | None:
     return match.group(0).upper() if match else text
 
 
-def _display_text(value: Any) -> str:
-    """Normalize only OfficeHTML's display-only NBSP serialization."""
-    return str(value or "").replace("\u00a0", " ")
+def _property_length_in_points(value: Any) -> float:
+    """Convert a spacing property to points for projection comparison."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return _points(value)
+    except (TypeError, ValueError):
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            return float("nan")
+
+
+def _display_text(value: Any, *, normalize_nbsp: bool = False) -> str:
+    """Return display text with an explicit OfficeHTML projection boundary."""
+    return _normal_text(value, normalize_nbsp=normalize_nbsp)
 
 
 def _officecli_properties(format_data: Mapping[str, Any]) -> dict[str, Any]:
@@ -759,12 +811,12 @@ def _picture_metadata_mismatches(
     expected: Mapping[str, Any],
     actual: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Compare picture identity and fitting while allowing OfficeCLI re-encoding.
+    """Compare picture identity and fitting while allowing one explicit fallback.
 
-    OfficeCLI may rasterize an SVG or wrap a ``contain`` image before embedding
-    it.  The source and readback fingerprints therefore need not be identical,
-    but both manifests must carry a real content fingerprint, positive
-    intrinsic dimensions, and the same placement/fitting contract.
+    OfficeCLI may rasterize an SVG to PNG before embedding it.  That is the
+    only permitted MIME/fingerprint change.  The fallback must still preserve
+    the source image's aspect ratio; same-encoding metadata changes are never
+    projection defaults.
     """
     missing: list[str] = []
     different: dict[str, Any] = {}
@@ -786,17 +838,35 @@ def _picture_metadata_mismatches(
             and not (expected[key] in {"contain", "cover"} and actual[key] == "fill")
         ):
             different[key] = {"expected": expected[key], "actual": actual[key]}
+    def picture_type(container: Mapping[str, Any]) -> str:
+        return str(container.get("mime") or container.get("content_type") or "").lower()
+
+    def valid_intrinsic_size(value: Any) -> tuple[float, float] | None:
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            return None
+        try:
+            width, height = (float(item) for item in value)
+        except (TypeError, ValueError):
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return width, height
+
     for label, container in (("expected", expected), ("actual", actual)):
+        if not picture_type(container):
+            missing.append(f"{label}.mime")
         fingerprint = container.get("source_fingerprint") or container.get("content_fingerprint")
         if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
             missing.append(f"{label}.content_fingerprint")
-        intrinsic = container.get("intrinsic_size")
-        if (
-            not isinstance(intrinsic, (list, tuple))
-            or len(intrinsic) != 2
-            or any(float(value) <= 0 for value in intrinsic)
-        ):
+        if valid_intrinsic_size(container.get("intrinsic_size")) is None:
             missing.append(f"{label}.intrinsic_size")
+    expected_type = picture_type(expected)
+    actual_type = picture_type(actual)
+    if expected_type and actual_type and expected_type != actual_type:
+        fallback_allowed = (expected_type, actual_type) == ("image/svg+xml", "image/png")
+        if not fallback_allowed:
+            different["mime"] = {"expected": expected_type, "actual": actual_type}
+
     expected_fingerprint = expected.get("content_fingerprint") or expected.get(
         "source_fingerprint"
     )
@@ -810,12 +880,6 @@ def _picture_metadata_mismatches(
         and re.fullmatch(r"[0-9a-f]{64}", actual_fingerprint)
         and expected_fingerprint != actual_fingerprint
     ):
-        expected_type = str(
-            expected.get("mime") or expected.get("content_type") or ""
-        ).lower()
-        actual_type = str(
-            actual.get("mime") or actual.get("content_type") or ""
-        ).lower()
         # SVG-to-PNG rasterization is the one intentional OfficeCLI fallback.
         # A changed image in the same encoding, or an unrelated MIME change,
         # must fail instead of being accepted merely because both fingerprints
@@ -825,6 +889,30 @@ def _picture_metadata_mismatches(
                 "expected": expected_fingerprint,
                 "actual": actual_fingerprint,
             }
+
+    expected_intrinsic = valid_intrinsic_size(expected.get("intrinsic_size"))
+    actual_intrinsic = valid_intrinsic_size(actual.get("intrinsic_size"))
+    if expected_intrinsic is not None and actual_intrinsic is not None:
+        if expected_type == actual_type:
+            if not _approx_equal(expected_intrinsic, actual_intrinsic, 0.5):
+                different["intrinsic_size"] = {
+                    "expected": list(expected_intrinsic),
+                    "actual": list(actual_intrinsic),
+                }
+        elif (expected_type, actual_type) == ("image/svg+xml", "image/png"):
+            # The compiler records the measured PNG fallback dimensions when
+            # available.  Synthetic/legacy manifests without that field fall
+            # back to the source SVG dimensions, which still catches a changed
+            # fallback aspect ratio rather than accepting any PNG.
+            fallback_intrinsic = valid_intrinsic_size(expected.get("fallback_intrinsic_size"))
+            reference_intrinsic = fallback_intrinsic or expected_intrinsic
+            expected_ratio = reference_intrinsic[0] / reference_intrinsic[1]
+            actual_ratio = actual_intrinsic[0] / actual_intrinsic[1]
+            if abs(expected_ratio - actual_ratio) > max(0.01, abs(expected_ratio) * 0.01):
+                different["intrinsic_aspect_ratio"] = {
+                    "expected": expected_ratio,
+                    "actual": actual_ratio,
+                }
     return {"missing": missing, "different": different} if missing or different else {}
 
 
@@ -871,15 +959,23 @@ def compare_manifests(
             mismatch("object kind differs", object=name, expected=left.get("kind"), actual=right.get("kind"))
         if not _approx_equal(left.get("bounds_pt", ()), right.get("bounds_pt", ()), 1.0):
             mismatch("object bounds differ by more than 1pt", object=name)
-        if _normal_text(left.get("text")) != _normal_text(right.get("text")):
+        if _normal_text(
+            left.get("text"), normalize_nbsp=allow_officehtml_projection_defaults
+        ) != _normal_text(
+            right.get("text"), normalize_nbsp=allow_officehtml_projection_defaults
+        ):
             mismatch("object text differs", object=name)
         property_details = _property_mismatches(
             left.get("properties", {}),
             right.get("properties", {}),
             has_paragraphs=bool(left.get("paragraphs") or right.get("paragraphs")),
             empty_text=(
-                not _normal_text(left.get("text"))
-                and not _normal_text(right.get("text"))
+                not _normal_text(
+                    left.get("text"), normalize_nbsp=allow_officehtml_projection_defaults
+                )
+                and not _normal_text(
+                    right.get("text"), normalize_nbsp=allow_officehtml_projection_defaults
+                )
                 and not left.get("paragraphs")
                 and not right.get("paragraphs")
             ),
@@ -907,8 +1003,12 @@ def compare_manifests(
             expected_properties=left.get("properties", {}),
             allow_single_empty_projection=(
                 allow_officehtml_projection_defaults
-                and not _normal_text(left.get("text"))
-                and not _normal_text(right.get("text"))
+                and not _normal_text(
+                    left.get("text"), normalize_nbsp=allow_officehtml_projection_defaults
+                )
+                and not _normal_text(
+                    right.get("text"), normalize_nbsp=allow_officehtml_projection_defaults
+                )
                 and (
                     (
                         not left.get("paragraphs")
@@ -964,7 +1064,11 @@ def compare_manifests(
                     left_cell.get("bounds_pt", ()), right_cell.get("bounds_pt", ()), 1.0
                 ):
                     mismatch("table cell bounds differ by more than 1pt", object=name, cell=index)
-                if _normal_text(left_cell.get("text")) != _normal_text(right_cell.get("text")):
+                if _normal_text(
+                    left_cell.get("text"), normalize_nbsp=allow_officehtml_projection_defaults
+                ) != _normal_text(
+                    right_cell.get("text"), normalize_nbsp=allow_officehtml_projection_defaults
+                ):
                     mismatch("table cell text differs", object=name, cell=index)
                 cell_property_details = _property_mismatches(
                     left_cell.get("props", {}), right_cell.get("props", {})
@@ -982,8 +1086,14 @@ def compare_manifests(
                     allow_projection_defaults=allow_officehtml_projection_defaults,
                     allow_single_empty_projection=(
                         allow_officehtml_projection_defaults
-                        and not _normal_text(left_cell.get("text"))
-                        and not _normal_text(right_cell.get("text"))
+                        and not _normal_text(
+                            left_cell.get("text"),
+                            normalize_nbsp=allow_officehtml_projection_defaults,
+                        )
+                        and not _normal_text(
+                            right_cell.get("text"),
+                            normalize_nbsp=allow_officehtml_projection_defaults,
+                        )
                         and (
                             (
                                 not left_cell.get("paragraphs")

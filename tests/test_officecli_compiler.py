@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import html_to_pptx.officecli_compiler as officecli_compiler
 from html_to_pptx import (
     OfficeCLICompilationError,
     compile_officecli,
@@ -55,6 +56,40 @@ def _points(value: str) -> float:
     if value.endswith("cm"):
         return float(value[:-2]) * 72 / 2.54
     raise AssertionError(f"unexpected OfficeCLI length: {value}")
+
+
+def test_author_css_pixel_line_height_is_not_double_scaled() -> None:
+    assert officecli_compiler._line_spacing({"fontSize": 42, "lineHeight": "42px"}) is None
+    assert (
+        officecli_compiler._line_spacing({"fontSize": 42, "lineHeight": "44.1px"})
+        == "1.050x"
+    )
+    assert (
+        officecli_compiler._line_spacing({"fontSize": 18, "lineHeight": "28.8px"})
+        == "1.600x"
+    )
+
+
+def test_author_source_fidelity_exceptions_are_narrow_and_anchored() -> None:
+    label = {"text": "ELITE", "fontSize": 30, "width": 75, "height": 40}
+    number = {"text": "01", "fontSize": 42, "width": 48, "height": 56}
+    model_range = {"text": "09K–24K", "fontSize": 19.5, "width": 84, "height": 26}
+    ordinary_label = {"text": "ELITE", "fontSize": 15, "width": 75, "height": 40}
+    large_title = {"text": "XPRO", "fontSize": 49, "width": 700, "height": 50}
+    large_range_title = {"text": "09K–24K", "fontSize": 49, "width": 700, "height": 50}
+
+    assert officecli_compiler._source_fidelity_text_anchor(label) == "left"
+    assert officecli_compiler._source_fidelity_text_anchor(number) == "left"
+    assert officecli_compiler._source_fidelity_text_anchor(model_range) == "right"
+    assert officecli_compiler._source_fidelity_text_anchor(ordinary_label) is None
+    assert officecli_compiler._source_fidelity_text_anchor(large_title) is None
+    assert officecli_compiler._source_fidelity_text_anchor(large_range_title) is None
+    assert officecli_compiler._source_fidelity_text_bounds(
+        label, (10, 20, 50, 12)
+    ) == (10, 20, 67.5, 12)
+    assert officecli_compiler._source_fidelity_text_bounds(
+        model_range, (100, 20, 50, 12)
+    ) == (82.5, 20, 67.5, 12)
 
 
 def _author_html() -> str:

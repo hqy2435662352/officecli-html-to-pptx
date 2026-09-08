@@ -251,50 +251,55 @@ Geometry tolerances agreed for the first contract:
 - supported RGB colors, booleans, and alignment: exact;
 - text: Unicode code-point equality, with only documented display-only OfficeHTML non-breaking-space normalization.
 
-## Issue 07 authoritative acceptance (2026-09-08)
+## Issue 07 authoritative acceptance and targeted reacceptance (2026-09-08)
 
-The final replay used the external Algeria Author HTML and the public `compile_officecli` seam with the explicit `author` and `officehtml` profiles. The report is:
+The initial full replay and its durable review are preserved as historical
+evidence in `.scratch/officecli-html-to-pptx-mvp/issues/07-authoritative-acceptance-remediation.md` and under:
 
-`C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\acceptance-report.json`
+`C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17`
 
-The durable visual review is:
+The independent reacceptance report
+(`C:\TEMP\issue07-reacceptance-20260908\reacceptance-report.md`) correctly
+reopened the ticket: the old PASS record missed the visible slide-1 and
+slide-8 differences and the comparator probes exposed four false-pass
+boundaries.  The targeted remediation is now complete.
 
-`C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\visual-review.json`
+Current evidence:
 
-Results:
+- final Author PPTX A:
+  `C:\TEMP\issue07-reacceptance-fixed-20260908\algeria-a-final.pptx`;
+- final OfficeHTML projection:
+  `C:\TEMP\issue07-reacceptance-fixed-20260908\algeria-a-final.officehtml.html`;
+- final round-trip PPTX B:
+  `C:\TEMP\issue07-reacceptance-fixed-20260908\algeria-b-final.pptx`;
+- fresh slide-1 and slide-8 comparisons:
+  `C:\TEMP\issue07-reacceptance-fixed-20260908\final-visuals\side-by-side`;
+- comparator probes:
+  `C:\TEMP\issue07-reacceptance-20260908\comparator-probes.py`.
 
-- 8 slides, 18 independent pictures, 9 native tables, 86 rows, and 484 cells;
-- the independent native-structure gate passed for both PPTX A and PPTX B,
-  including the expected table distribution and explicit no-whole-slide/no-shape-per-cell checks;
-- PPTX A and PPTX B both passed OfficeCLI validation and their normalized supported manifests matched;
-- the PPTX B issue set was contained in the PPTX A issue set;
-- screenshot generation passed and Gate 3 recorded exactly one `PASS` review for each of the 8 slides;
-- final status was `KNOWN_BASELINE_DIFFERENCE` with CLI exit code 0;
-- the only remaining findings were the three explicit OfficeCLI 1.0.147 baseline tuples:
-  `(1, slide-001-textbox-012, text_overflow)`,
-  `(8, slide-008-textbox-024, text_overflow)`, and
-  `(8, slide-008-textbox-028, text_overflow)`;
-- full regression testing passed: `67 passed`; `compileall` and `git diff --check` also passed.
+The final A and B artifacts both pass OfficeCLI validation and contain 8
+slides, 89 shapes, 154 textboxes, 18 independent pictures, and 9 native
+tables.  Their issue keys are identical and contain only the three approved
+OfficeCLI 1.0.147 baseline tuples:
 
-The final review remediation also closes the false-pass risks around same-MIME
-picture content fingerprints, pure-text opacity, consecutive/trailing hard-break
-paragraphs, hidden or unused unsupported CSS, descendant CSS affecting canvas
-dimensions, and external `@font-face` resources.  OfficeCLI table-cell
-paragraph properties are projected through its supported cell-level API, with
-heterogeneous paragraph properties rejected explicitly.  The A-to-B line-spacing
-tolerance is limited to the three measured OfficeCLI 1.0.147 projections
-(`0.6x→0.8x`, `0.788x→1.05x`, and `1.6x→1.2x`), while the legacy renderer keeps
-its default measurement semantics through an explicit OfficeCLI extraction mode.
+- `(1, slide-001-textbox-012, text_overflow)`;
+- `(8, slide-008-textbox-024, text_overflow)`; and
+- `(8, slide-008-textbox-028, text_overflow)`.
 
-The corresponding deliverables are:
+The B-minus-A issue subset is empty.  The final Author compiler manifest and
+OfficeCLI readback compare strictly as `PASS` with zero findings.  The new
+visual comparisons close the slide-1 title/card-label/model-range blocker and
+the slide-8 number/card-04-wrap blocker.  The comparator now treats authored
+paragraph spacing and Unicode strictly except at the explicit OfficeHTML
+projection boundary, and only permits SVG-to-PNG picture fallback when its
+intrinsic aspect ratio is preserved.  All five supplied probes return
+`REGRESSION` for their deliberately invalid mutations.
 
-- PPTX A: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\algeria-a.pptx`;
-- OfficeHTML A: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\algeria-a.officehtml.html`;
-- PPTX B: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\algeria-b.pptx`;
-- side-by-side screenshots: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17\visuals\side-by-side`.
-
-The tested implementation range is `a5d979e..9ab8aba`; the acceptance replay
-used the final review-remediation code at `9ab8aba`.
+Full regression testing passes with `73 passed`; the non-Algeria OfficeHTML
+round-trip, Algeria round-trip, compiler, acceptance, contract, and legacy
+paths are included.  `compileall` and `git diff --check` also pass.  Per the
+reacceptance scope, the unchanged slides reuse acceptance-17 screenshots
+instead of repeating the complete eight-page visual replay.
 
 The table distribution is:
 
