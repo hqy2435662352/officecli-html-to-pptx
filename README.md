@@ -89,6 +89,18 @@ Your HTML file should contain `<section class="slide">` elements at a 1920×1080
 
 See [`examples/demo.html`](examples/demo.html) for a full five-slide deck.
 
+## OfficeCLI-first compiler MVP
+
+The repository also contains an explicit OfficeCLI path for native shapes,
+text, pictures, and tables. Its version-pinned contract and profile rules live
+in [`docs/OFFICEHTML_CONTRACT_V1.md`](docs/OFFICEHTML_CONTRACT_V1.md). The
+contract is separate from the legacy `python-pptx` renderer and uses OfficeCLI
+1.0.147 for validation, inventory, round-trip projection, and screenshots.
+
+Run the profile-aware checker with `html-to-pptx-contract` and replay the
+Algeria acceptance gate with `html-to-pptx-algeria-acceptance`; both commands
+write machine-readable JSON when an output path is provided.
+
 ## What gets converted
 
 | HTML feature | PPTX output |

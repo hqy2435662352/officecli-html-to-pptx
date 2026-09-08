@@ -45,6 +45,8 @@ dev = [
 [project.scripts]
 html-to-pptx = "html_to_pptx.cli:main"
 html-to-pptx-compare = "html_to_pptx.compare:main"
+html-to-pptx-contract = "html_to_pptx.contract:main"
+html-to-pptx-algeria-acceptance = "html_to_pptx.acceptance:main"
 
 [project.urls]
 Homepage = "https://github.com/Design-Arena/html-to-pptx"

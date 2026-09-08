@@ -25,6 +25,13 @@ from html_to_pptx.officecli_compiler import (
     OfficeCLICompilationResult,
     compile_officecli,
 )
+from html_to_pptx.contract import (
+    CONTRACT_VERSION,
+    OFFICECLI_COMPATIBILITY_BASELINE,
+    ContractDiagnostic,
+    ContractReport,
+    check_contract,
+)
 
 __all__ = [
     "convert",
@@ -34,5 +41,10 @@ __all__ = [
     "CompilationDiagnostic",
     "OfficeCLICompilationError",
     "OfficeCLICompilationResult",
+    "CONTRACT_VERSION",
+    "OFFICECLI_COMPATIBILITY_BASELINE",
+    "ContractDiagnostic",
+    "ContractReport",
+    "check_contract",
 ]
 __version__ = version("html-to-pptx")
