@@ -11,7 +11,7 @@ This repository worktree is reserved for the OfficeCLI HTML-to-PPTX compiler MVP
 - Base remote branch: `fork/fix/clear-theme-shape-effects`
 - OfficeCLI compatibility baseline: `1.0.147`
 - Issue 07 remediation base: `a5d979e`.
-- Issue 07 implementation commit: `0d8cba7`.
+- Issue 07 implementation commits: `0d8cba7` and `c766018`.
 - Implementation status: Tickets 01–07 are implemented in this worktree; the authoritative Issue 07 gate has completed.
 - Acceptance status: `KNOWN_BASELINE_DIFFERENCE` with Gate 3 visual review PASS for all 8 slides; all non-baseline checks PASS.
 - Ticket frontier: 01–07 are complete for the MVP; future work remains explicitly deferred below.
@@ -281,7 +281,7 @@ The corresponding deliverables are:
 - PPTX B: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\algeria-b.pptx`;
 - side-by-side screenshots: `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-10\visuals\side-by-side`.
 
-The tested implementation range is `a5d979e..0d8cba7`; the documentation update that records this result follows that range.
+The tested implementation range is `a5d979e..c766018`; the acceptance replay used implementation commit `0d8cba7`, and the follow-up test commit keeps the negative case on the public seam.
 
 The table distribution is:
 

@@ -50,4 +50,4 @@ The report status is `KNOWN_BASELINE_DIFFERENCE` with exit code 0. All 16 struct
 - `(8, slide-008-textbox-024, text_overflow)`;
 - `(8, slide-008-textbox-028, text_overflow)`.
 
-Verification also includes `56 passed` from the full pytest suite, `compileall PASS`, and `git diff --check` with no whitespace errors. The implementation was committed as `0d8cba7` on `codex/officecli-html-to-pptx-mvp`; the documented tested range is `a5d979e..0d8cba7`.
+Verification also includes `56 passed` from the full pytest suite, `compileall PASS`, and `git diff --check` with no whitespace errors. The implementation was committed as `0d8cba7` with the public-seam test follow-up `c766018` on `codex/officecli-html-to-pptx-mvp`; the documented tested range is `a5d979e..c766018`.
