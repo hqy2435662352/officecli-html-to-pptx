@@ -114,11 +114,15 @@ FONT_LOAD_WAIT_MS = 1_000
 # ---------------------------------------------------------------------------
 
 EXTRACTION_JS = """
-() => {
+({ officecliMode = false } = {}) => {
     const slides = document.querySelectorAll('.slide');
     const results = [];
     let _svgCounter = 0;
     let _imageCounter = 0;
+    const INLINE_TAGS = new Set([
+        'span','strong','em','b','i','a','code','mark','sub','sup',
+        'small','u','s','del','abbr','cite','q','time','var','kbd',
+    ]);
     function getDirectText(el) {
         let text = '';
         for (const node of el.childNodes) {
@@ -144,8 +148,8 @@ EXTRACTION_JS = """
                 if (pre) {
                     const segs = node.textContent.split('\\n');
                     for (let si = 0; si < segs.length; si++) {
-                        if (si > 0) runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', textDecoration: parentStyle.textDecorationLine });
-                        if (segs[si].length) runs.push({ text: segs[si], color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: parentStyle.textTransform, textDecoration: parentStyle.textDecorationLine });
+                        if (si > 0) runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
+                        if (segs[si].length) runs.push({ text: segs[si], color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: parentStyle.textTransform, ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
                     }
                     continue;
                 }
@@ -163,7 +167,7 @@ EXTRACTION_JS = """
                     fontWeight: parentStyle.fontWeight,
                     fontStyle: parentStyle.fontStyle,
                     textTransform: parentStyle.textTransform,
-                    textDecoration: parentStyle.textDecorationLine,
+                    ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}),
                 });
             } else if (node.nodeType === Node.ELEMENT_NODE) {
                 const tag = node.tagName.toLowerCase();
@@ -171,14 +175,16 @@ EXTRACTION_JS = """
                 const cs = getComputedStyle(node);
                 if (cs.display === 'none' || cs.visibility === 'hidden') continue;
                 if (tag === 'br') {
-                    runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', textDecoration: parentStyle.textDecorationLine });
+                    runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
                     continue;
                 }
                 // Only collect true inline-flow children as runs.  A tag such
                 // as <b> or <small> can be a flex/grid item whose computed
                 // display is blockified; treating it as an inline run loses
                 // the layout gap/line break and concatenates sibling labels.
-                const isInline = cs.display.startsWith('inline');
+                const isInline = officecliMode
+                    ? cs.display.startsWith('inline')
+                    : cs.display.startsWith('inline') || INLINE_TAGS.has(tag);
                 if (isInline) {
                     const text = node.textContent.trim();
                     if (text) {
@@ -193,7 +199,7 @@ EXTRACTION_JS = """
                             fontWeight: cs.fontWeight,
                             fontStyle: cs.fontStyle,
                             textTransform: cs.textTransform,
-                            textDecoration: cs.textDecorationLine,
+                            ...(officecliMode ? {textDecoration: cs.textDecorationLine} : {}),
                             href: tag === 'a' ? node.getAttribute('href') : null,
                             isGradientText: childIsGradientText,
                             backgroundImage: childIsGradientText ? childBgImage : null,
@@ -215,7 +221,7 @@ EXTRACTION_JS = """
             fontWeight: style.fontWeight,
             fontStyle: style.fontStyle,
             textTransform: style.textTransform,
-            textDecoration: style.textDecorationLine,
+            ...(officecliMode ? {textDecoration: style.textDecorationLine} : {}),
         }] : []);
         const paragraphs = [];
         let current = [];
@@ -246,7 +252,11 @@ EXTRACTION_JS = """
                 }
             }
         }
-        if (current.length || paragraphs.length === 0 || breakAtEnd) pushParagraph(breakAtEnd);
+        if (officecliMode) {
+            if (current.length || paragraphs.length === 0 || breakAtEnd) pushParagraph(breakAtEnd);
+        } else if (current.length || paragraphs.length === 0) {
+            pushParagraph();
+        }
         return paragraphs;
     }
 
@@ -444,6 +454,32 @@ EXTRACTION_JS = """
             if (childData) data.children.push(childData);
         }
 
+        // Table cells remain one native OfficeCLI object.  Their block-level
+        // children (most commonly <p>) must therefore be folded into the cell
+        // paragraph DTO instead of becoming ignored child objects at the table
+        // lowering seam.  Inline children are already represented by the
+        // parent runs and must not be appended a second time.
+        if (officecliMode && isTableCell) {
+            const blockParagraphs = [];
+            const collectBlockParagraphs = (node) => {
+                if (node.paragraphs && node.paragraphs.length) {
+                    blockParagraphs.push(...node.paragraphs);
+                    return;
+                }
+                for (const nested of node.children || []) {
+                    collectBlockParagraphs(nested);
+                }
+            };
+            for (const childData of data.children) {
+                if (String(childData.display || '').startsWith('inline')) continue;
+                collectBlockParagraphs(childData);
+            }
+            if (blockParagraphs.length) {
+                data.paragraphs = [...(data.paragraphs || []), ...blockParagraphs];
+                data.text = data.paragraphs.map(paragraph => paragraph.text).join('\\n');
+            }
+        }
+
         // Measure ::before and ::after pseudo-elements as synthetic children
         for (const pseudo of ['::before', '::after']) {
             try {
@@ -486,24 +522,31 @@ EXTRACTION_JS = """
             } catch(e) {}
         }
 
-        if (directText || hasChildElementText(el)) {
+        const hasTextContent = officecliMode
+            ? (directText || hasChildElementText(el))
+            : (directText && hasChildElementText(el));
+        if (hasTextContent) {
             const runs = collectInlineRuns(el);
-            if (runs.length > 0 && !hasNonInlineTextChild(el)) {
+            if (runs.length > 0 && (!officecliMode || !hasNonInlineTextChild(el))) {
                 if (markerPrefix && runs.length > 0) {
                     runs[0].text = markerPrefix + runs[0].text;
                 }
                 data.inlineRuns = runs;
-                // Keep the flattened text field as a compatibility view for
-                // callers of the measurement DTO.  The compiler consumes
-                // ``inlineRuns``/``paragraphs`` for formatting, so exposing
-                // this summary does not flatten the object at the lowering
-                // seam and preserves the older ``text`` lookup contract.
-                data.text = runs.map(run => run.text).join('');
-                data.paragraphs = textParagraphs(el, runs, directText);
-            } else if (directText) {
+                if (officecliMode) {
+                    // Keep the flattened text field as a compatibility view
+                    // for callers of the measurement DTO.  The compiler
+                    // consumes ``inlineRuns``/``paragraphs`` for formatting,
+                    // so exposing this summary does not flatten the object at
+                    // the lowering seam.
+                    data.text = runs.map(run => run.text).join('');
+                    data.paragraphs = textParagraphs(el, runs, directText);
+                } else {
+                    data.text = '';
+                }
+            } else if (directText && officecliMode) {
                 data.paragraphs = textParagraphs(el, [], markerPrefix + directText);
             }
-        } else if (directText) {
+        } else if (directText && officecliMode) {
             data.paragraphs = textParagraphs(el, [], markerPrefix + directText);
         }
 
@@ -2300,6 +2343,7 @@ async def extract_measurements(
     html_path: str,
     *,
     include_picture_fallbacks: bool = False,
+    officecli_mode: bool = False,
 ) -> list[dict]:
     """Open an HTML slide deck in headless Chromium and measure every element.
 
@@ -2308,6 +2352,9 @@ async def extract_measurements(
         include_picture_fallbacks: Also capture browser-rendered PNG fallbacks
             for SVG data-URI ``<img>`` nodes. The legacy renderer leaves this
             disabled; the OfficeCLI compiler enables it when needed.
+        officecli_mode: Enable the paragraph-preserving and blockified-child
+            extraction needed by the OfficeCLI object compiler. The default
+            keeps the legacy python-pptx measurement semantics unchanged.
 
     Returns:
         List of slide measurement dicts, each containing:
@@ -2349,7 +2396,10 @@ async def extract_measurements(
         )
         await page.wait_for_timeout(FONT_LOAD_WAIT_MS)
 
-        measurements = await page.evaluate(EXTRACTION_JS)
+        measurements = await page.evaluate(
+            EXTRACTION_JS,
+            {"officecliMode": officecli_mode},
+        )
 
         await _rasterize_inline_svgs(
             page,

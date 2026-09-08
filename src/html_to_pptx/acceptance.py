@@ -98,6 +98,28 @@ _EMPTY_SHAPE_TEXT_PROPERTIES = frozenset(
         "margin",
     }
 )
+
+# The Algeria golden case is intentionally checked as a native-object contract,
+# not merely by comparing whatever object inventory the compiler happened to
+# produce.  These counts make a whole-slide raster fallback or a table rebuilt
+# from one-shape-per-cell fail the authoritative gate.
+_ALGERIA_EXPECTED_OBJECT_KIND_COUNTS = {
+    "shape": 89,
+    "textbox": 154,
+    "picture": 18,
+    "table": 9,
+}
+_ALGERIA_EXPECTED_TABLE_LAYOUT = {
+    2: ((5, 8), (8, 8), (5, 8), (5, 8)),
+    3: ((15, 4),),
+    4: ((13, 5),),
+    5: ((13, 5),),
+    6: ((13, 5),),
+    7: ((9, 5),),
+}
+_ALGERIA_EXPECTED_SLIDE_COUNT = 8
+_ALGERIA_EXPECTED_ROW_COUNT = 86
+_ALGERIA_EXPECTED_CELL_COUNT = 484
 _LENGTH_VALUE_RE = re.compile(
     r"^-?(?:\d+(?:\.\d*)?|\.\d+)\s*(?:pt|emu|cm|mm|in|px)$", re.I
 )
@@ -178,7 +200,7 @@ class AcceptanceReport:
 
 def _normal_text(value: Any) -> str:
     """Normalize only display whitespace introduced by OfficeHTML."""
-    return " ".join(str(value or "").replace("\u00a0", " ").split())
+    return str(value or "").replace("\u00a0", " ")
 
 
 def _issue_subtype(message: str) -> str:
@@ -386,22 +408,10 @@ def _paragraphs_equivalent(
     *,
     allow_projection_defaults: bool = False,
     expected_properties: Mapping[str, Any] | None = None,
+    allow_single_empty_projection: bool = False,
 ) -> bool:
     expected_list = list(expected)
     actual_list = list(actual)
-    if not expected_list and all(
-        not str(paragraph.get("text", "")).strip() for paragraph in actual_list
-    ):
-        return True
-    if not actual_list and all(
-        not str(paragraph.get("text", "")).strip() for paragraph in expected_list
-    ):
-        return True
-    if expected_list and actual_list and all(
-        not _display_text(paragraph.get("text", "")).strip()
-        for paragraph in [*expected_list, *actual_list]
-    ):
-        return True
     expected_signature = _paragraph_signature(
         expected_list,
         run_size_scale=(
@@ -413,6 +423,25 @@ def _paragraphs_equivalent(
     actual_signature = _paragraph_signature(actual_list)
     if expected_signature == actual_signature:
         return True
+    # OfficeHTML can materialize one empty default paragraph for an otherwise
+    # empty shape.  That projection is safe to tolerate, but blank paragraph
+    # positions are meaningful for explicit hard breaks and must not be
+    # collapsed (for example, four authored paragraphs cannot become one).
+    if allow_projection_defaults and len(expected_list) == len(actual_list) == 1:
+        if all(
+            not _display_text(paragraph.get("text", "")).strip()
+            for paragraph in [expected_list[0], actual_list[0]]
+        ):
+            return True
+    if allow_projection_defaults and allow_single_empty_projection:
+        if not expected_list and len(actual_list) == 1 and not _display_text(
+            actual_list[0].get("text", "")
+        ).strip():
+            return True
+        if not actual_list and len(expected_list) == 1 and not _display_text(
+            expected_list[0].get("text", "")
+        ).strip():
+            return True
     if not allow_projection_defaults or len(expected_signature) != len(actual_signature):
         return False
     # OfficeCLI's HTML projection omits paragraph spaceBefore/spaceAfter and
@@ -787,11 +816,11 @@ def _picture_metadata_mismatches(
         actual_type = str(
             actual.get("mime") or actual.get("content_type") or ""
         ).lower()
-        # SVG-to-PNG rasterization is an intentional OfficeCLI fallback.  A
-        # changed image in the same preserved encoding, however, must fail the
-        # manifest comparison instead of being accepted merely because both
-        # fingerprints are well-formed.
-        if not expected_type or not actual_type or expected_type == actual_type:
+        # SVG-to-PNG rasterization is the one intentional OfficeCLI fallback.
+        # A changed image in the same encoding, or an unrelated MIME change,
+        # must fail instead of being accepted merely because both fingerprints
+        # are well-formed.
+        if (expected_type, actual_type) != ("image/svg+xml", "image/png"):
             different["content_fingerprint"] = {
                 "expected": expected_fingerprint,
                 "actual": actual_fingerprint,
@@ -876,6 +905,21 @@ def compare_manifests(
             right.get("paragraphs", []),
             allow_projection_defaults=allow_officehtml_projection_defaults,
             expected_properties=left.get("properties", {}),
+            allow_single_empty_projection=(
+                allow_officehtml_projection_defaults
+                and not _normal_text(left.get("text"))
+                and not _normal_text(right.get("text"))
+                and (
+                    (
+                        not left.get("paragraphs")
+                        and len(right.get("paragraphs", []) or []) == 1
+                    )
+                    or (
+                        not right.get("paragraphs")
+                        and len(left.get("paragraphs", []) or []) == 1
+                    )
+                )
+            ),
         ):
             mismatch(
                 "object paragraph/run formatting differs",
@@ -936,6 +980,21 @@ def compare_manifests(
                     left_cell.get("paragraphs", []),
                     right_cell.get("paragraphs", []),
                     allow_projection_defaults=allow_officehtml_projection_defaults,
+                    allow_single_empty_projection=(
+                        allow_officehtml_projection_defaults
+                        and not _normal_text(left_cell.get("text"))
+                        and not _normal_text(right_cell.get("text"))
+                        and (
+                            (
+                                not left_cell.get("paragraphs")
+                                and len(right_cell.get("paragraphs", []) or []) == 1
+                            )
+                            or (
+                                not right_cell.get("paragraphs")
+                                and len(left_cell.get("paragraphs", []) or []) == 1
+                            )
+                        )
+                    ),
                 ):
                     mismatch(
                         "table cell paragraph/run formatting differs",
@@ -1210,6 +1269,125 @@ def _record_manifest_check(
     return True
 
 
+def _record_algeria_native_structure_check(
+    report: AcceptanceReport,
+    name: str,
+    manifest: Mapping[str, Any],
+) -> bool:
+    """Enforce the golden deck's native object inventory independently.
+
+    A compiler-generated manifest can be internally self-consistent even when
+    an implementation has silently flattened a slide or replaced a native
+    table with hundreds of ordinary shapes.  This check therefore compares
+    the OfficeCLI readback directly with the acceptance fixture's published
+    native structure and keeps the table matrix distribution explicit.
+    """
+    objects = [
+        item for item in manifest.get("objects", []) if isinstance(item, Mapping)
+    ]
+    counts: dict[str, int] = {}
+    for item in objects:
+        kind = str(item.get("kind", ""))
+        counts[kind] = counts.get(kind, 0) + 1
+    tables = [item for item in objects if item.get("kind") == "table"]
+    layout_by_slide: dict[int, list[tuple[int, int]]] = {}
+    for table in tables:
+        slide = int(table.get("source_slide", 0))
+        layout_by_slide.setdefault(slide, []).append(
+            (int(table.get("rows", 0)), int(table.get("columns", 0)))
+        )
+    observed_layout = {
+        slide: tuple(values) for slide, values in sorted(layout_by_slide.items())
+    }
+    expected_layout = {
+        slide: tuple(values)
+        for slide, values in sorted(_ALGERIA_EXPECTED_TABLE_LAYOUT.items())
+    }
+    slide_size = manifest.get("slide_size_pt", {})
+    slide_width = float(slide_size.get("width", 0.0) or 0.0)
+    slide_height = float(slide_size.get("height", 0.0) or 0.0)
+    whole_slide_pictures = [
+        str(item.get("name", ""))
+        for item in objects
+        if item.get("kind") == "picture"
+        and _approx_equal(
+            item.get("bounds_pt", ()),
+            (0.0, 0.0, slide_width, slide_height),
+            1.0,
+        )
+    ]
+    shape_per_cell = [
+        str(item.get("name", ""))
+        for item in objects
+        if item.get("kind") in {"shape", "textbox"}
+        and "/tc[" in str(item.get("source_object", ""))
+    ]
+    row_count = sum(int(table.get("rows", 0)) for table in tables)
+    cell_count = sum(len(table.get("cells", []) or []) for table in tables)
+    observed = {
+        "slide_count": int(manifest.get("slide_count", 0) or 0),
+        "object_kind_counts": counts,
+        "table_layout": observed_layout,
+        "table_count": len(tables),
+        "row_count": row_count,
+        "cell_count": cell_count,
+        "whole_slide_pictures": whole_slide_pictures,
+        "shape_per_cell": shape_per_cell,
+    }
+    problems: list[str] = []
+    if observed["slide_count"] != _ALGERIA_EXPECTED_SLIDE_COUNT:
+        problems.append(
+            f"slide count {observed['slide_count']} != {_ALGERIA_EXPECTED_SLIDE_COUNT}"
+        )
+    if counts != _ALGERIA_EXPECTED_OBJECT_KIND_COUNTS:
+        problems.append("object-kind counts differ from the native golden inventory")
+    if observed_layout != expected_layout:
+        problems.append("native table row/column distribution differs")
+    if row_count != _ALGERIA_EXPECTED_ROW_COUNT:
+        problems.append(f"native table row count {row_count} != {_ALGERIA_EXPECTED_ROW_COUNT}")
+    if cell_count != _ALGERIA_EXPECTED_CELL_COUNT:
+        problems.append(f"native table cell count {cell_count} != {_ALGERIA_EXPECTED_CELL_COUNT}")
+    if whole_slide_pictures:
+        problems.append("a picture occupies the complete slide canvas")
+    if shape_per_cell:
+        problems.append("table cells were expanded into ordinary shapes or textboxes")
+    if problems:
+        finding = {
+            "status": REGRESSION,
+            "message": "Algeria native-object structure differs from the authoritative golden inventory",
+            "problems": problems,
+            "observed": observed,
+            "expected": {
+                "slide_count": _ALGERIA_EXPECTED_SLIDE_COUNT,
+                "object_kind_counts": _ALGERIA_EXPECTED_OBJECT_KIND_COUNTS,
+                "table_layout": expected_layout,
+                "row_count": _ALGERIA_EXPECTED_ROW_COUNT,
+                "cell_count": _ALGERIA_EXPECTED_CELL_COUNT,
+                "whole_slide_pictures": [],
+                "shape_per_cell": [],
+            },
+        }
+        report.findings.append(finding)
+        report.checks.append(
+            AcceptanceCheck(
+                name,
+                REGRESSION,
+                "native-object inventory does not match the authoritative golden structure",
+                finding,
+            )
+        )
+        return False
+    report.checks.append(
+        AcceptanceCheck(
+            name,
+            PASS,
+            "native object counts, table distribution, and non-flattening checks passed",
+            observed,
+        )
+    )
+    return True
+
+
 def _final_status(report: AcceptanceReport, issue_keys: Iterable[Mapping[str, Any]]) -> str:
     if report.error or any(check.status == REGRESSION for check in report.checks):
         return REGRESSION
@@ -1278,17 +1456,15 @@ def _record_issue_subset_gate(
     issue_keys_a: Iterable[Mapping[str, Any]],
     issue_keys_b: Iterable[Mapping[str, Any]],
 ) -> None:
+    issue_keys_a = list(issue_keys_a)
+    issue_keys_b = list(issue_keys_b)
     issues_a = {_issue_tuple(item) for item in issue_keys_a}
-    issues_b = {_issue_tuple(item) for item in issue_keys_b}
-    unexpected = issues_b - issues_a - STABLE_ISSUE_ALLOWLIST
+    unexpected = issue_subset_regressions(issues_a, issue_keys_b)
     if unexpected:
         finding = {
             "status": REGRESSION,
             "message": "PPTX B introduced an OfficeCLI issue not present in PPTX A",
-            "issues": [
-                {"slide": slide, "object": name, "subtype": subtype}
-                for slide, name, subtype in sorted(unexpected)
-            ],
+            "issues": unexpected,
         }
         report.findings.append(finding)
         report.checks.append(
@@ -1305,9 +1481,30 @@ def _record_issue_subset_gate(
             "PPTX B issue subset gate",
             PASS,
             "PPTX B issues are contained in PPTX A",
-            {"a_count": len(issues_a), "b_count": len(issues_b)},
+            {"a_count": len(issues_a), "b_count": len(issue_keys_b)},
         )
     )
+
+
+def issue_subset_regressions(
+    issue_keys_a: Iterable[Mapping[str, Any] | tuple[int, str, str]],
+    issue_keys_b: Iterable[Mapping[str, Any] | tuple[int, str, str]],
+) -> list[dict[str, Any]]:
+    """Return B issue identities that are absent from A and not allowlisted."""
+    issues_a = {
+        item if isinstance(item, tuple) else _issue_tuple(item)
+        for item in issue_keys_a
+    }
+    issues_b = {
+        item if isinstance(item, tuple) else _issue_tuple(item)
+        for item in issue_keys_b
+    }
+    return [
+        {"slide": slide, "object": name, "subtype": subtype}
+        for slide, name, subtype in sorted(
+            issues_b - issues_a - STABLE_ISSUE_ALLOWLIST
+        )
+    ]
 
 
 def _visual_review_payload(
@@ -1384,6 +1581,14 @@ def _visual_review_payload(
         "slides": slides,
         "notes": str(source.get("notes", "") or ""),
     }
+
+
+def normalize_visual_review(
+    review: str | Path | Mapping[str, Any] | None,
+    slide_count: int,
+) -> dict[str, Any]:
+    """Normalize a visual review document and compute its Gate 3 status."""
+    return _visual_review_payload(review, slide_count)
 
 
 def _record_visual_review(
@@ -1480,6 +1685,9 @@ async def run_algeria_acceptance(
                 {"object_kind_counts": observed_a["object_kind_counts"]},
             )
         )
+        _record_algeria_native_structure_check(
+            report, "PPTX A authoritative native structure", observed_a
+        )
         _record_manifest_check(report, "PPTX A normalized structure", first.manifest, observed_a)
 
         issues_a = str(_run_officecli("view", pptx_a, "issues"))
@@ -1512,6 +1720,9 @@ async def run_algeria_acceptance(
         _validate_with_officecli(pptx_b)
         report.checks.append(AcceptanceCheck("PPTX B validation", PASS, "OfficeCLI validation passed"))
         observed_b, id_to_name_b = _officecli_manifest(pptx_b)
+        _record_algeria_native_structure_check(
+            report, "PPTX B authoritative native structure", observed_b
+        )
         _record_manifest_check(report, "PPTX B normalized structure", second.manifest, observed_b)
         _record_manifest_check(
             report,
@@ -1610,7 +1821,9 @@ __all__ = [
     "AcceptanceCheck",
     "AcceptanceReport",
     "compare_manifests",
+    "issue_subset_regressions",
     "issue_keys_from_officecli",
+    "normalize_visual_review",
     "run_algeria_acceptance",
 ]
 

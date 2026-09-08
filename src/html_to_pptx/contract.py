@@ -258,6 +258,11 @@ def _is_hidden(element: Any) -> bool:
             "visibility", ""
         ).lower() in {"hidden", "collapse"}:
             return True
+        try:
+            if float(styles.get("opacity", "1")) <= 0:
+                return True
+        except (TypeError, ValueError):
+            pass
         current = current.getparent()
     return False
 
@@ -316,6 +321,94 @@ def _simple_selector_matches(element: Any, selector: str) -> bool:
     return set(classes).issubset(_class_tokens(element))
 
 
+def _selector_matches_element(element: Any, selector: str) -> bool:
+    """Conservatively match tag/class/id descendant selectors.
+
+    This is only used to decide whether a stylesheet rule hides an author
+    node.  It deliberately does not try to implement the full CSS selector
+    grammar; unsupported selector constructs simply do not count as a hidden
+    match and remain subject to the normal visible-content contract.
+    """
+    selector = selector.strip()
+    if not selector or selector.startswith("@"):
+        return False
+    parts = [
+        part.strip()
+        for part in re.split(r"\s*(?:>|\+|~)\s*|\s+", selector)
+        if part.strip()
+    ]
+    if not parts or not _simple_selector_matches(element, parts[-1]):
+        return False
+    current = element.getparent()
+    for part in reversed(parts[:-1]):
+        while current is not None and not _simple_selector_matches(current, part):
+            current = current.getparent()
+        if current is None:
+            return False
+        current = current.getparent()
+    return True
+
+
+def _is_slide_element(element: Any) -> bool:
+    return "slide" in _class_tokens(element)
+
+
+def _stylesheet_hides_element(document: Any, element: Any) -> bool:
+    """Apply the small visibility subset needed by the author contract.
+
+    Inline declarations win over stylesheet declarations.  A rule targeting a
+    slide root is not treated as hiding that root because the compiler activates
+    one slide at a time before measurement; the same declaration does not hide
+    descendants in CSS and is therefore not inherited here either.
+    """
+    current = element
+    rules = _stylesheet_rules(document)
+    while current is not None:
+        # The compiler intentionally activates each .slide during browser
+        # measurement, so a stylesheet's display:none on the slide root is
+        # not an author-content visibility decision.  Descendant visibility is
+        # still checked normally below.
+        if not _is_slide_element(current):
+            computed: dict[str, str] = {}
+            for selector, declarations in rules:
+                if any(
+                    _selector_matches_element(current, alternative)
+                    for alternative in selector.split(",")
+                ):
+                    for name in ("display", "visibility", "opacity"):
+                        if name in declarations:
+                            computed[name] = declarations[name]
+            computed.update(
+                {
+                    name: value
+                    for name, value in _inline_styles(current).items()
+                    if name in {"display", "visibility", "opacity"}
+                }
+            )
+            if computed.get("display", "").lower() == "none":
+                return True
+            if computed.get("visibility", "").lower() in {"hidden", "collapse"}:
+                return True
+            try:
+                if float(computed.get("opacity", "1")) <= 0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        current = current.getparent()
+    return False
+
+
+def _selector_targets_slide(selector: str, slide: Any) -> bool:
+    """Match only a compound selector whose target is the slide itself."""
+    for alternative in selector.split(","):
+        alternative = alternative.strip()
+        if not alternative or re.search(r"\s|[>+~]", alternative):
+            continue
+        if _simple_selector_matches(slide, alternative):
+            return True
+    return False
+
+
 def _stylesheet_rule_has_visible_author_match(
     document: Any,
     selector: str,
@@ -337,7 +430,7 @@ def _stylesheet_rule_has_visible_author_match(
     )
     return any(
         _simple_selector_matches(element, alternative)
-        and _is_visible_author_element(element)
+        and _is_visible_author_element(element, document)
         for alternative in selectors
         for slide in slide_elements
         for element in slide.iter()
@@ -389,8 +482,13 @@ def _in_slide(element: Any) -> bool:
     )
 
 
-def _is_visible_author_element(element: Any) -> bool:
-    return _in_slide(element) and not _is_author_ignored(element) and not _is_hidden(element)
+def _is_visible_author_element(element: Any, document: Any | None = None) -> bool:
+    return (
+        _in_slide(element)
+        and not _is_author_ignored(element)
+        and not _is_hidden(element)
+        and (document is None or not _stylesheet_hides_element(document, element))
+    )
 
 
 def _parse_length(value: Any) -> tuple[float, str] | None:
@@ -516,7 +614,9 @@ def _check_author(
         width = inline.get("width")
         height = inline.get("height")
         for selector, declarations in rules:
-            if ".slide" in selector and not _selector_has_preview_token(selector):
+            if _selector_targets_slide(selector, slide) and not _selector_has_preview_token(
+                selector
+            ):
                 width = declarations.get("width", width)
                 height = declarations.get("height", height)
         valid_canvases = {(1920.0, "px", 1080.0, "px"), (960.0, "px", 540.0, "px")}
@@ -531,7 +631,7 @@ def _check_author(
             )
 
     for element in document.iter():
-        if not _is_visible_author_element(element):
+        if not _is_visible_author_element(element, document):
             continue
         tag = str(element.tag).lower() if isinstance(element.tag, str) else ""
         if tag in _UNSUPPORTED_VISIBLE_TAGS:
@@ -565,6 +665,33 @@ def _check_author(
     for selector, declarations in _stylesheet_rules(document):
         preview_only = _selector_has_preview_token(selector)
         source = f"style:{selector}"
+        if selector.strip().lower().startswith("@font-face"):
+            # @font-face has no painted DOM target, so the ordinary visible
+            # selector probe cannot protect it.  Local/data fonts are allowed
+            # as deterministic inputs; network/file-backed font sources are
+            # rejected explicitly before they can affect browser measurement.
+            for property_name, value in declarations.items():
+                classification = _record_css_classification(
+                    classifications,
+                    "author",
+                    property_name,
+                    value,
+                    source,
+                    preview_only=False,
+                )
+                if (
+                    property_name == "src"
+                    and _EXTERNAL_URL_RE.search(value)
+                    and not value.strip().lower().startswith("data:")
+                ):
+                    _emit(
+                        findings,
+                        "author",
+                        "external_resource",
+                        "External @font-face sources are not deterministic compiler inputs.",
+                        source,
+                    )
+            continue
         for property_name, value in declarations.items():
             classification = _record_css_classification(
                 classifications,
@@ -596,9 +723,11 @@ def _check_author(
             )
     for element in document.iter():
         tag = str(element.tag).lower() if isinstance(element.tag, str) else ""
+        author_ignored = _is_author_ignored(element)
         ignored = (
-            _is_author_ignored(element)
+            author_ignored
             or _is_hidden(element)
+            or _stylesheet_hides_element(document, element)
             or not _in_slide(element)
         )
         source = _node_path(element)
@@ -609,7 +738,7 @@ def _check_author(
                 property_name,
                 value,
                 source,
-                preview_only=ignored,
+                preview_only=author_ignored,
             )
             if ignored:
                 continue

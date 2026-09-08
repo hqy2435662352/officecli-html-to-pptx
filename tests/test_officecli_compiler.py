@@ -144,6 +144,25 @@ def _table_deck_html() -> str:
     </body></html>"""
 
 
+def _paragraph_table_deck_html() -> str:
+    return """<!doctype html>
+<html><head><style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  .slide { width: 960px; height: 540px; position: relative; background: #ffffff; }
+  table { position: absolute; left: 80px; top: 60px; width: 400px; height: 140px;
+          table-layout: fixed; border-collapse: collapse; }
+  td { padding: 4px; text-align: center; vertical-align: middle;
+       border: 1px solid #445566; font-family: Arial, sans-serif;
+       font-size: 16px; line-height: 1.5; }
+  td p { margin: 4px 0; }
+</style></head><body>
+  <section class="slide active">
+    <table><tbody><tr><td><p>First paragraph</p><p>Second paragraph</p></td></tr></tbody></table>
+  </section>
+</body></html>"""
+
+
 def _unsupported_canvas_html() -> str:
     return """<!doctype html>
 <html><head><style>
@@ -433,6 +452,41 @@ async def test_public_author_compiler_emits_one_editable_native_table(
     assert first_body_cell["text"] == "Capacity Class"
     assert first_body_cell["format"]["padding.left"] == "12pt"
     assert _run_json("query", str(output_path), "table")["data"]["matches"] == 1
+
+
+@pytest.mark.asyncio
+async def test_native_table_projects_uniform_cell_paragraph_properties(
+    tmp_path: Path,
+):
+    html_path = tmp_path / "paragraph-table.html"
+    output_path = tmp_path / "paragraph-table.pptx"
+    html_path.write_text(_paragraph_table_deck_html(), encoding="utf-8")
+
+    result = await compile_officecli(
+        str(html_path), "author", str(output_path), slide_indices=[0]
+    )
+
+    cell = result.manifest["objects"][0]["cells"][0]
+    assert [paragraph["text"] for paragraph in cell["paragraphs"]] == [
+        "First paragraph",
+        "Second paragraph",
+    ]
+    assert cell["props"]["align"] == "center"
+    assert cell["props"]["linespacing"] == "1.125x"
+    assert cell["props"]["spacebefore"] == "4.0000pt"
+    assert cell["props"]["spaceafter"] == "4.0000pt"
+
+    table = _run_json(
+        "get", str(output_path), "/slide[1]/table[1]", "--depth", "5"
+    )["data"]["results"][0]
+    rendered_cell = table["children"][0]["children"][0]
+    assert rendered_cell["format"]["align"] == "center"
+    assert rendered_cell["format"]["lineSpacing"] == "1.125x"
+    assert rendered_cell["format"]["spaceBefore"] == "4pt"
+    assert rendered_cell["format"]["spaceAfter"] == "4pt"
+    assert rendered_cell["format"]["txBodyRaw"].count("<a:p>") == 2
+    assert "First paragraph" in rendered_cell["format"]["txBodyRaw"]
+    assert "Second paragraph" in rendered_cell["format"]["txBodyRaw"]
 
 
 @pytest.mark.asyncio

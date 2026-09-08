@@ -1695,6 +1695,33 @@ def _table_cell_border(
     return f"{_pt(width, scale_x):.4f}pt {dash} {_hex(rgb)}"
 
 
+def _table_cell_paragraph_props(
+    paragraphs: Sequence[dict[str, Any]],
+    source_slide: int,
+    source_object: str,
+) -> dict[str, str]:
+    """Project uniform paragraph properties onto OfficeCLI's cell surface.
+
+    OfficeCLI 1.0.147 exposes paragraph alignment, spacing, and direction for
+    a table cell through the cell path; setting those properties fans them out
+    to every paragraph in that cell.  Preserve the paragraph-level source
+    values when they are uniform and reject a heterogeneous cell explicitly so
+    the compiler cannot silently flatten a real paragraph-format difference.
+    """
+    if not paragraphs:
+        return {}
+    projected = [_paragraph_props(paragraph) for paragraph in paragraphs]
+    first = projected[0]
+    if any(props != first for props in projected[1:]):
+        raise _diagnostic(
+            "unsupported_table_paragraph_format",
+            f"Table cell paragraph properties differ on source slide {source_slide}, {source_object}; OfficeCLI Contract v1 exposes these properties at cell scope.",
+            source_slide,
+            source_object,
+        )
+    return first
+
+
 def _table_cell_props(
     element: dict[str, Any],
     scale_x: float,
@@ -1702,6 +1729,7 @@ def _table_cell_props(
     backdrop: tuple[int, int, int],
     source_slide: int,
     source_object: str,
+    paragraphs: Sequence[dict[str, Any]] = (),
 ) -> dict[str, str]:
     props: dict[str, str] = {"text": _text_of(element)}
     fill = _parse_css_color(element.get("backgroundColor"))
@@ -1744,6 +1772,20 @@ def _table_cell_props(
     line_spacing = _line_spacing(element)
     if line_spacing is not None:
         props["linespacing"] = line_spacing
+
+    paragraph_props = _table_cell_paragraph_props(
+        paragraphs, source_slide, source_object
+    )
+    if paragraph_props:
+        props["align"] = paragraph_props.get("align", props["align"])
+        if paragraph_props.get("lineSpacing"):
+            props["linespacing"] = paragraph_props["lineSpacing"]
+        if paragraph_props.get("spaceBefore"):
+            props["spacebefore"] = paragraph_props["spaceBefore"]
+        if paragraph_props.get("spaceAfter"):
+            props["spaceafter"] = paragraph_props["spaceAfter"]
+        if paragraph_props.get("direction"):
+            props["direction"] = paragraph_props["direction"]
 
     for side in ("top", "right", "bottom", "left"):
         descriptor = _table_cell_border(
@@ -1875,6 +1917,7 @@ def _lower_table(
             )
             cell_name = f"{name}-cell-r{row_index:03d}-c{column_index:03d}"
             cell_bounds = _bounds(cell, scale_x, scale_y)
+            cell_paragraphs = _text_paragraphs(cell, scale_x, scale_y, backdrop)
             table_cells.append(
                 _TableCellIR(
                     cell_name,
@@ -1889,8 +1932,9 @@ def _lower_table(
                         backdrop,
                         source_slide,
                         cell_source,
+                        cell_paragraphs,
                     ),
-                    _text_paragraphs(cell, scale_x, scale_y, backdrop),
+                    cell_paragraphs,
                 )
             )
     return _ObjectIR(
@@ -1952,6 +1996,23 @@ def _lower_slide(
         metadata: dict[str, Any] | None = None,
     ) -> None:
         name = f"slide-{source_slide:03d}-{kind}-{len(result.objects) + 1:03d}"
+        if kind in {"shape", "textbox"} and not text and not paragraphs:
+            # OfficeCLI creates one empty paragraph for every native text body,
+            # including a text-bearing shape whose visible content is empty.
+            # Keep that implementation detail in the source manifest so the
+            # strict A -> OfficeCLI readback check does not confuse a native
+            # default body with loss of an authored hard-break paragraph.
+            paragraphs = (
+                {
+                    "text": "",
+                    "align": _text_alignment(element),
+                    "line_spacing": _line_spacing(element),
+                    "space_before_pt": 0.0,
+                    "space_after_pt": 0.0,
+                    "direction": str(element.get("direction", "ltr") or "ltr"),
+                    "runs": [],
+                },
+            )
         object_props = dict(props)
         object_props["name"] = name
         if fallback_props is not None:
@@ -2278,6 +2339,14 @@ def _batch_for_slides(
                     sources.append(obj)
                     if cell.paragraphs:
                         cell_path = f"{table_path}/tr[{row_index}]/tc[{column_index}]"
+                        # OfficeCLI's table-cell setter is the public paragraph
+                        # formatting surface for Contract v1: align,
+                        # linespacing, spacebefore, spaceafter, and direction
+                        # fan out to every paragraph in the cell.  Those
+                        # properties were projected into ``cell.props`` above;
+                        # OfficeCLI range offsets address the concatenated
+                        # character scope, so paragraph separators are not
+                        # included in the later run offset.
                         offset = 0
                         for paragraph in cell.paragraphs:
                             for run in paragraph.get("runs", []):
@@ -2378,6 +2447,7 @@ async def compile_officecli(
         measurements = await extract_measurements(
             input_html,
             include_picture_fallbacks=True,
+            officecli_mode=True,
         )
     else:
         measurements = _parse_officehtml_measurements(input_html)

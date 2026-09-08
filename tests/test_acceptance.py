@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 from html_to_pptx.acceptance import (
-    AcceptanceReport,
     KNOWN_BASELINE_ISSUES,
     KNOWN_BASELINE_DIFFERENCE,
     PENDING,
     REGRESSION,
-    _record_issue_subset_gate,
-    _visual_review_payload,
     compare_manifests,
+    issue_subset_regressions,
     issue_keys_from_officecli,
+    normalize_visual_review,
 )
 
 
@@ -140,6 +139,99 @@ def test_same_encoding_picture_content_difference_is_a_regression() -> None:
     )
 
 
+def test_unapproved_picture_mime_reencoding_is_a_regression() -> None:
+    expected = {
+        "slide_count": 1,
+        "object_kind_counts": {"picture": 1},
+        "objects": [{
+            "kind": "picture",
+            "name": "picture-1",
+            "bounds_pt": [0, 0, 100, 50],
+            "text": "",
+            "properties": {},
+            "metadata": {
+                "picture": {
+                    "mime": "image/png",
+                    "content_fingerprint": "a" * 64,
+                    "intrinsic_size": [20, 10],
+                    "object_fit": "fill",
+                    "bounds_pt": [0, 0, 100, 50],
+                    "fitting": {},
+                }
+            },
+        }],
+    }
+    actual = {
+        **expected,
+        "objects": [{
+            **expected["objects"][0],
+            "metadata": {
+                "picture": {
+                    "content_type": "image/jpeg",
+                    "content_fingerprint": "b" * 64,
+                    "intrinsic_size": [20, 10],
+                    "object_fit": "fill",
+                    "bounds_pt": [0, 0, 100, 50],
+                    "fitting": {},
+                }
+            },
+        }],
+    }
+
+    status, findings = compare_manifests(expected, actual)
+
+    assert status == REGRESSION
+    assert any(
+        item["details"].get("different", {}).get("content_fingerprint")
+        for item in findings
+    )
+
+
+def test_svg_to_png_picture_reencoding_is_the_only_allowed_mime_fallback() -> None:
+    expected = {
+        "slide_count": 1,
+        "object_kind_counts": {"picture": 1},
+        "objects": [{
+            "kind": "picture",
+            "name": "picture-1",
+            "bounds_pt": [0, 0, 100, 50],
+            "text": "",
+            "properties": {},
+            "metadata": {
+                "picture": {
+                    "mime": "image/svg+xml",
+                    "content_fingerprint": "a" * 64,
+                    "intrinsic_size": [20, 10],
+                    "object_fit": "fill",
+                    "bounds_pt": [0, 0, 100, 50],
+                    "fitting": {},
+                }
+            },
+        }],
+    }
+    actual = {
+        **expected,
+        "objects": [{
+            **expected["objects"][0],
+            "metadata": {
+                "picture": {
+                    "content_type": "image/png",
+                    "content_fingerprint": "b" * 64,
+                    "intrinsic_size": [20, 10],
+                    "object_fit": "fill",
+                    "bounds_pt": [0, 0, 100, 50],
+                    "fitting": {},
+                }
+            },
+        }],
+    }
+
+    status, findings = compare_manifests(expected, actual)
+
+    assert status == "PASS"
+    assert not findings
+
+
 def test_unapproved_paragraph_line_spacing_difference_is_a_regression() -> None:
     paragraph = {
         "text": "Line",
@@ -236,6 +328,46 @@ def test_empty_shape_text_defaults_are_tolerated_only_for_officehtml_projection(
     assert not projection_findings
 
 
+def test_projection_does_not_collapse_authored_blank_paragraph_positions() -> None:
+    blank = {
+        "text": "",
+        "align": "left",
+        "line_spacing": None,
+        "space_before_pt": 0,
+        "space_after_pt": 0,
+        "direction": "ltr",
+        "runs": [],
+    }
+    expected = {
+        "slide_count": 1,
+        "object_kind_counts": {"textbox": 1},
+        "objects": [{
+            "kind": "textbox",
+            "name": "breaks",
+            "bounds_pt": [0, 0, 100, 50],
+            "text": "\n\n\n",
+            "properties": {},
+            "paragraphs": [blank, blank, blank, blank],
+        }],
+    }
+    actual = {
+        **expected,
+        "objects": [{
+            **expected["objects"][0],
+            "paragraphs": [blank],
+        }],
+    }
+
+    status, findings = compare_manifests(
+        expected,
+        actual,
+        allow_officehtml_projection_defaults=True,
+    )
+
+    assert status == REGRESSION
+    assert any("paragraph/run formatting" in item["message"] for item in findings)
+
+
 def test_officehtml_projection_compares_effective_font_scale() -> None:
     expected = {
         "slide_count": 1,
@@ -297,14 +429,14 @@ def test_officehtml_projection_compares_effective_font_scale() -> None:
 
 
 def test_visual_gate_is_pending_without_one_result_per_slide() -> None:
-    payload = _visual_review_payload(None, 2)
+    payload = normalize_visual_review(None, 2)
 
     assert payload["gate"] == PENDING
     assert [slide["status"] for slide in payload["slides"]] == [PENDING, PENDING]
 
 
 def test_visual_gate_rejects_major_finding_even_when_slide_is_marked_pass() -> None:
-    payload = _visual_review_payload(
+    payload = normalize_visual_review(
         {
             "slides": [
                 {"slide": 1, "status": "PASS", "findings": []},
@@ -322,10 +454,7 @@ def test_visual_gate_rejects_major_finding_even_when_slide_is_marked_pass() -> N
 
 
 def test_round_trip_issue_gate_requires_b_to_be_a_subset_of_a() -> None:
-    report = AcceptanceReport("PASS", "input.html", "output")
-
-    _record_issue_subset_gate(
-        report,
+    unexpected = issue_subset_regressions(
         [{"slide": 1, "object": "shape-a", "subtype": "text_overflow"}],
         [
             {"slide": 1, "object": "shape-a", "subtype": "text_overflow"},
@@ -333,4 +462,6 @@ def test_round_trip_issue_gate_requires_b_to_be_a_subset_of_a() -> None:
         ],
     )
 
-    assert report.checks[-1].status == REGRESSION
+    assert unexpected == [
+        {"slide": 2, "object": "shape-b", "subtype": "text_overflow"}
+    ]

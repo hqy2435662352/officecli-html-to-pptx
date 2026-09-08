@@ -148,3 +148,67 @@ def test_author_profile_ignores_unused_and_hidden_unsupported_css(
 
     assert not report.blocked
     assert not any(item.code == "unsupported_visible_css" for item in report.diagnostics)
+    assert any(
+        item["property"] == "box-shadow" and item["classification"] == "unsupported"
+        for item in report.as_dict()["css_classifications"]
+    )
+
+
+def test_author_profile_uses_visible_slide_selector_for_canvas_dimensions(
+    tmp_path: Path,
+) -> None:
+    path = _write(
+        tmp_path,
+        """<!doctype html><html><head><style>
+        .slide { width:1920px; height:1080px; }
+        .slide .content { width:11px; height:22px; }
+        </style></head><body><section class="slide"><div class="content">Visible</div>
+        </section></body></html>""",
+    )
+
+    report = check_contract(path, "author")
+
+    assert not report.blocked
+    assert not any(item.code == "invalid_author_canvas" for item in report.diagnostics)
+
+
+def test_author_profile_ignores_stylesheet_hidden_and_zero_opacity_nodes(
+    tmp_path: Path,
+) -> None:
+    path = _write(
+        tmp_path,
+        """<!doctype html><html><head><style>
+        .slide { width:1920px; height:1080px; }
+        .hidden { display:none; }
+        .hidden .effect { box-shadow:0 2px 4px #000; }
+        .transparent { opacity:0; }
+        .transparent .effect { filter:blur(4px); }
+        </style></head><body><section class="slide">
+          <div class="hidden"><div class="effect">Not painted</div></div>
+          <div class="transparent"><div class="effect">Not painted</div></div>
+          <div>Visible text</div>
+        </section></body></html>""",
+    )
+
+    report = check_contract(path, "author")
+
+    assert not report.blocked
+    assert not any(item.code == "unsupported_visible_css" for item in report.diagnostics)
+
+
+def test_author_profile_rejects_external_font_face_source(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        """<!doctype html><html><head><style>
+        @font-face { font-family: Example; src: url(https://example.invalid/font.woff2); }
+        .slide { width:1920px; height:1080px; }
+        </style></head><body><section class="slide">Visible</section></body></html>""",
+    )
+
+    report = check_contract(path, "author")
+
+    assert report.blocked
+    assert any(
+        item.code == "external_resource" and "font-face" in item.message
+        for item in report.diagnostics
+    )
