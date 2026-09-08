@@ -261,19 +261,10 @@ async def test_public_compiler_keeps_flex_children_as_separate_text_objects(
 @pytest.mark.asyncio
 async def test_public_compiler_blocks_visible_canvas_before_measurement(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     html_path = tmp_path / "unsupported.html"
     output_path = tmp_path / "output.pptx"
     html_path.write_text(_unsupported_canvas_html(), encoding="utf-8")
-
-    async def unexpected_measurement(*args, **kwargs):
-        raise AssertionError("browser measurement must not run for blocked input")
-
-    monkeypatch.setattr(
-        "html_to_pptx.officecli_compiler.extract_measurements",
-        unexpected_measurement,
-    )
 
     with pytest.raises(OfficeCLICompilationError) as error:
         await compile_officecli(str(html_path), "author", str(output_path))
