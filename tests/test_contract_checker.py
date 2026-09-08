@@ -126,3 +126,25 @@ def test_author_profile_classifies_visible_css_and_blocks_box_shadow(
     assert by_property["display"] == "measurement-only"
     assert by_property["background"] == "rendered"
     assert by_property["box-shadow"] == "unsupported"
+
+
+def test_author_profile_ignores_unused_and_hidden_unsupported_css(
+    tmp_path: Path,
+) -> None:
+    path = _write(
+        tmp_path,
+        """<!doctype html><html><head><style>
+        .slide { width:1920px; height:1080px; }
+        .unused { box-shadow:0 2px 4px #000; }
+        .hidden { display:none; box-shadow:0 2px 4px #000; }
+        </style></head><body><section class="slide">
+          <div class="hidden">Not painted</div>
+          <div style="display:none; box-shadow:0 2px 4px #000">Not painted</div>
+          <div>Visible text</div>
+        </section></body></html>""",
+    )
+
+    report = check_contract(path, "author")
+
+    assert not report.blocked
+    assert not any(item.code == "unsupported_visible_css" for item in report.diagnostics)

@@ -190,6 +190,20 @@ def _flex_labels_html() -> str:
 </section></body></html>"""
 
 
+def _opacity_and_hard_breaks_html() -> str:
+    return """<!doctype html>
+<html><head><style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  .slide { width: 960px; height: 540px; position: relative; background: #ffffff; }
+  .copy { position: absolute; left: 40px; top: 40px; width: 500px; height: 150px;
+          padding: 8px; font-family: Arial, sans-serif; font-size: 24px;
+          line-height: 1.25; opacity: 0.55; }
+</style></head><body><section class="slide">
+  <div class="copy">one<br><br>three<br></div>
+</section></body></html>"""
+
+
 @pytest.mark.asyncio
 async def test_public_compiler_preserves_paragraphs_direct_runs_and_underline(
     tmp_path: Path,
@@ -256,6 +270,42 @@ async def test_public_compiler_keeps_flex_children_as_separate_text_objects(
     assert "INTELLIGENCE" in texts
     assert "AIR CONDITIONERPRODUCT LINE-UP" not in texts
     assert "COMFORTRELIABILITYINTELLIGENCE" not in texts
+
+
+@pytest.mark.asyncio
+async def test_public_compiler_preserves_text_opacity_and_hard_break_paragraphs(
+    tmp_path: Path,
+):
+    html_path = tmp_path / "breaks.html"
+    output_path = tmp_path / "breaks.pptx"
+    html_path.write_text(_opacity_and_hard_breaks_html(), encoding="utf-8")
+
+    result = await compile_officecli(str(html_path), "author", str(output_path))
+
+    text_object = next(
+        item for item in result.manifest["objects"] if item["kind"] == "textbox"
+    )
+    assert text_object["properties"]["color"] == "#0000008C"
+    assert [paragraph["text"] for paragraph in text_object["paragraphs"]] == [
+        "one",
+        "",
+        "three",
+        "",
+    ]
+
+    document = _run_json("get", str(output_path), "/", "--depth", "5")
+    shape = next(
+        child
+        for child in document["data"]["results"][0]["children"][0]["children"]
+        if child["type"] in {"shape", "textbox"}
+    )
+    assert shape["format"]["color"] == "#0000008C"
+    assert [paragraph["text"] for paragraph in shape["children"]] == [
+        "one",
+        "",
+        "three",
+        "",
+    ]
 
 
 @pytest.mark.asyncio

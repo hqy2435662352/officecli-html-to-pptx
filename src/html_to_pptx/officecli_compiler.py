@@ -364,6 +364,11 @@ def _hex(rgb: tuple[int, int, int]) -> str:
     return f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
 
 
+def _hex_with_alpha(rgb: tuple[int, int, int], alpha: float) -> str:
+    alpha_byte = round(max(0.0, min(1.0, alpha)) * 255)
+    return f"{_hex(rgb)}{alpha_byte:02X}"
+
+
 def _blend(
     foreground: tuple[int, int, int],
     alpha: float,
@@ -428,6 +433,7 @@ def _text_paragraphs(
         if runs:
             raw_paragraphs = []
             current: list[dict[str, Any]] = []
+            break_at_end = False
             for run in runs:
                 pieces = str(run.get("text", "")).split("\n")
                 for index, piece in enumerate(pieces):
@@ -436,7 +442,10 @@ def _text_paragraphs(
                     if index < len(pieces) - 1:
                         raw_paragraphs.append({"runs": current})
                         current = []
-            if current or not raw_paragraphs:
+                        break_at_end = True
+                    elif piece:
+                        break_at_end = False
+            if current or not raw_paragraphs or break_at_end:
                 raw_paragraphs.append({"runs": current})
         elif _text_of(element):
             raw_paragraphs = [{
@@ -452,6 +461,7 @@ def _text_paragraphs(
             }]
 
     result: list[dict[str, Any]] = []
+    element_opacity = max(0.0, min(1.0, _number(element.get("opacity"), 1.0)))
     for raw_paragraph in raw_paragraphs:
         raw_runs = raw_paragraph.get("runs") or []
         normalized_runs: list[dict[str, Any]] = []
@@ -464,9 +474,12 @@ def _text_paragraphs(
                 color_value = None
             else:
                 rgb, alpha = color
-                color_value = _hex(
-                    rgb if alpha >= 0.999 else _blend(rgb, alpha, backdrop)
-                )
+                if element_opacity < 0.999:
+                    color_value = _hex_with_alpha(rgb, alpha * element_opacity)
+                else:
+                    color_value = _hex(
+                        rgb if alpha >= 0.999 else _blend(rgb, alpha, backdrop)
+                    )
             font_size = _number(
                 raw_run.get("fontSize"), _number(element.get("fontSize"))
             )
@@ -488,8 +501,6 @@ def _text_paragraphs(
                 }
             )
         paragraph_text = "".join(run["text"] for run in normalized_runs)
-        if not normalized_runs and not paragraph_text:
-            continue
         direction = str(
             raw_paragraph.get("direction", element.get("direction", "ltr")) or "ltr"
         ).lower()
@@ -725,8 +736,6 @@ def _officehtml_paragraphs(
                     "textDecoration": span_styles.get("text-decoration", "none"),
                 }
             )
-        if not runs:
-            continue
         result.append(
             {
                 "text": "".join(str(run["text"]) for run in runs),
@@ -1311,7 +1320,15 @@ def _text_props(
     text_color = _parse_css_color(element.get("color"))
     if text_color:
         rgb, alpha = text_color
-        props["color"] = _hex(rgb if alpha >= 0.999 else _blend(rgb, alpha, backdrop))
+        opacity = max(0.0, min(1.0, _number(element.get("opacity"), 1.0)))
+        if opacity < 0.999:
+            # OfficeCLI's shape opacity is a fill-only property and rejects an
+            # opacity value on a text-only object.  Preserve CSS element
+            # opacity at the glyph level instead; DrawingML text colors carry
+            # an alpha byte and OfficeCLI round-trips that value directly.
+            props["color"] = _hex_with_alpha(rgb, alpha * opacity)
+        else:
+            props["color"] = _hex(rgb if alpha >= 0.999 else _blend(rgb, alpha, backdrop))
     if _is_bold(element.get("fontWeight")):
         props["bold"] = "true"
     if str(element.get("fontStyle", "")).lower() in {"italic", "oblique"}:

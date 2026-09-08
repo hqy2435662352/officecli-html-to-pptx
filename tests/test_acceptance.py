@@ -92,6 +92,101 @@ def test_manifest_style_difference_is_a_regression() -> None:
     assert any("supported properties" in item["message"] for item in findings)
 
 
+def test_same_encoding_picture_content_difference_is_a_regression() -> None:
+    expected = {
+        "slide_count": 1,
+        "object_kind_counts": {"picture": 1},
+        "objects": [{
+            "kind": "picture",
+            "name": "picture-1",
+            "bounds_pt": [0, 0, 100, 50],
+            "text": "",
+            "properties": {},
+            "metadata": {
+                "picture": {
+                    "mime": "image/png",
+                    "content_fingerprint": "a" * 64,
+                    "intrinsic_size": [20, 10],
+                    "object_fit": "fill",
+                    "bounds_pt": [0, 0, 100, 50],
+                    "fitting": {},
+                }
+            },
+        }],
+    }
+    actual = {
+        **expected,
+        "objects": [{
+            **expected["objects"][0],
+            "metadata": {
+                "picture": {
+                    "content_type": "image/png",
+                    "content_fingerprint": "b" * 64,
+                    "intrinsic_size": [20, 10],
+                    "object_fit": "fill",
+                    "bounds_pt": [0, 0, 100, 50],
+                    "fitting": {},
+                }
+            },
+        }],
+    }
+
+    status, findings = compare_manifests(expected, actual)
+
+    assert status == REGRESSION
+    assert any(
+        item["details"].get("different", {}).get("content_fingerprint")
+        for item in findings
+    )
+
+
+def test_unapproved_paragraph_line_spacing_difference_is_a_regression() -> None:
+    paragraph = {
+        "text": "Line",
+        "align": "left",
+        "space_before_pt": 0,
+        "space_after_pt": 0,
+        "direction": "ltr",
+        "runs": [{
+            "text": "Line",
+            "font_family": "Arial",
+            "font_size_pt": 12,
+            "bold": False,
+            "italic": False,
+            "underline": "none",
+            "color": "#000000",
+        }],
+    }
+    expected = {
+        "slide_count": 1,
+        "object_kind_counts": {"textbox": 1},
+        "objects": [{
+            "kind": "textbox",
+            "name": "textbox-1",
+            "bounds_pt": [0, 0, 100, 50],
+            "text": "Line",
+            "properties": {},
+            "paragraphs": [{**paragraph, "line_spacing": "1.4x"}],
+        }],
+    }
+    actual = {
+        **expected,
+        "objects": [{
+            **expected["objects"][0],
+            "paragraphs": [{**paragraph, "line_spacing": "1.0x"}],
+        }],
+    }
+
+    status, findings = compare_manifests(
+        expected,
+        actual,
+        allow_officehtml_projection_defaults=True,
+    )
+
+    assert status == REGRESSION
+    assert any("paragraph/run formatting" in item["message"] for item in findings)
+
+
 def test_empty_shape_text_defaults_are_tolerated_only_for_officehtml_projection() -> None:
     expected = {
         "slide_count": 1,

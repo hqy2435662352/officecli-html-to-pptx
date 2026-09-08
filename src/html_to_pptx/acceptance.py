@@ -361,6 +361,25 @@ def _paragraph_signature(
     return tuple(signature)
 
 
+def _line_spacing_equivalent(expected: Any, actual: Any) -> bool:
+    if expected == actual:
+        return True
+    try:
+        expected_value = float(expected)
+        actual_value = float(actual)
+    except (TypeError, ValueError):
+        return False
+    # OfficeCLI 1.0.147's HTML projection has three measured, fixed-coordinate
+    # line-spacing projections in the current Algeria golden case.  Keep these
+    # explicit rather than accepting arbitrary spacing drift in A -> B.
+    known_projections = ((0.6, 0.8), (0.788, 1.05), (1.6, 1.2))
+    return any(
+        abs(expected_value - authored) <= 0.01
+        and abs(actual_value - projected) <= 0.01
+        for authored, projected in known_projections
+    )
+
+
 def _paragraphs_equivalent(
     expected: Iterable[Mapping[str, Any]],
     actual: Iterable[Mapping[str, Any]],
@@ -401,7 +420,12 @@ def _paragraphs_equivalent(
     # checked strictly against their own OfficeCLI readbacks; this narrow
     # tolerance applies only to the explicit A -> OfficeHTML -> B comparison.
     for left, right in zip(expected_signature, actual_signature):
-        if left[:2] != right[:2] or left[5] != right[5] or left[6] != right[6]:
+        if (
+            left[:2] != right[:2]
+            or not _line_spacing_equivalent(left[2], right[2])
+            or left[5] != right[5]
+            or left[6] != right[6]
+        ):
             return False
         if left[3] != 0.0 and right[3] != 0.0:
             return False
@@ -553,8 +577,6 @@ def _officecli_paragraphs(node: Mapping[str, Any]) -> list[dict[str, Any]]:
         text = str(paragraph.get("text", "") or "")
         if not text:
             text = "".join(str(run.get("text", "")) for run in runs)
-        if not text and not runs:
-            continue
         paragraph_format = paragraph.get("format", {})
         try:
             space_before = _points(
@@ -686,18 +708,17 @@ def _officecli_cell_paragraphs(cell: Mapping[str, Any]) -> list[dict[str, Any]]:
                     "color": color or _normalize_color(fallback.get("color")),
                 }
             )
-        if runs:
-            paragraphs.append(
-                {
-                    "text": "".join(run["text"] for run in runs),
-                    "align": alignment,
-                    "line_spacing": line_spacing,
-                    "space_before_pt": 0.0,
-                    "space_after_pt": 0.0,
-                    "direction": "ltr",
-                    "runs": runs,
-                }
-            )
+        paragraphs.append(
+            {
+                "text": "".join(run["text"] for run in runs),
+                "align": alignment,
+                "line_spacing": line_spacing,
+                "space_before_pt": 0.0,
+                "space_after_pt": 0.0,
+                "direction": "ltr",
+                "runs": runs,
+            }
+        )
     return paragraphs
 
 
@@ -747,6 +768,34 @@ def _picture_metadata_mismatches(
             or any(float(value) <= 0 for value in intrinsic)
         ):
             missing.append(f"{label}.intrinsic_size")
+    expected_fingerprint = expected.get("content_fingerprint") or expected.get(
+        "source_fingerprint"
+    )
+    actual_fingerprint = actual.get("content_fingerprint") or actual.get(
+        "source_fingerprint"
+    )
+    if (
+        isinstance(expected_fingerprint, str)
+        and isinstance(actual_fingerprint, str)
+        and re.fullmatch(r"[0-9a-f]{64}", expected_fingerprint)
+        and re.fullmatch(r"[0-9a-f]{64}", actual_fingerprint)
+        and expected_fingerprint != actual_fingerprint
+    ):
+        expected_type = str(
+            expected.get("mime") or expected.get("content_type") or ""
+        ).lower()
+        actual_type = str(
+            actual.get("mime") or actual.get("content_type") or ""
+        ).lower()
+        # SVG-to-PNG rasterization is an intentional OfficeCLI fallback.  A
+        # changed image in the same preserved encoding, however, must fail the
+        # manifest comparison instead of being accepted merely because both
+        # fingerprints are well-formed.
+        if not expected_type or not actual_type or expected_type == actual_type:
+            different["content_fingerprint"] = {
+                "expected": expected_fingerprint,
+                "actual": actual_fingerprint,
+            }
     return {"missing": missing, "different": different} if missing or different else {}
 
 

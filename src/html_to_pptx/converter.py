@@ -219,8 +219,9 @@ EXTRACTION_JS = """
         }] : []);
         const paragraphs = [];
         let current = [];
-        const pushParagraph = () => {
-            if (current.length || paragraphs.length === 0) {
+        let breakAtEnd = false;
+        const pushParagraph = (force = false) => {
+            if (current.length || paragraphs.length === 0 || force) {
                 paragraphs.push({
                     text: current.map(run => run.text).join(''),
                     align: style.textAlign,
@@ -237,10 +238,15 @@ EXTRACTION_JS = """
             const pieces = String(run.text || '').split('\\n');
             for (let index = 0; index < pieces.length; index++) {
                 if (pieces[index]) current.push({ ...run, text: pieces[index] });
-                if (index < pieces.length - 1) pushParagraph();
+                if (index < pieces.length - 1) {
+                    pushParagraph(true);
+                    breakAtEnd = true;
+                } else if (pieces[index]) {
+                    breakAtEnd = false;
+                }
             }
         }
-        if (current.length || paragraphs.length === 0) pushParagraph();
+        if (current.length || paragraphs.length === 0 || breakAtEnd) pushParagraph(breakAtEnd);
         return paragraphs;
     }
 

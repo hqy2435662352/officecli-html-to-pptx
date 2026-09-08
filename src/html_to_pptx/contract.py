@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from lxml import html as _lxml_html
 
@@ -179,6 +179,8 @@ _AUTHOR_PREVIEW_TOKENS = frozenset(
 _UNSUPPORTED_VISIBLE_TAGS = frozenset(
     {"audio", "canvas", "embed", "iframe", "object", "video"}
 )
+
+
 @dataclass(frozen=True)
 class ContractDiagnostic:
     """One contract finding; blocking findings cannot enter compilation."""
@@ -247,12 +249,17 @@ def _class_tokens(element: Any) -> set[str]:
 
 
 def _is_hidden(element: Any) -> bool:
-    if element.get("hidden") is not None:
-        return True
-    styles = _inline_styles(element)
-    return styles.get("display", "").lower() == "none" or styles.get(
-        "visibility", ""
-    ).lower() in {"hidden", "collapse"}
+    current = element
+    while current is not None:
+        if current.get("hidden") is not None:
+            return True
+        styles = _inline_styles(current)
+        if styles.get("display", "").lower() == "none" or styles.get(
+            "visibility", ""
+        ).lower() in {"hidden", "collapse"}:
+            return True
+        current = current.getparent()
+    return False
 
 
 def _inline_styles(element: Any) -> dict[str, str]:
@@ -279,6 +286,62 @@ def _stylesheet_rules(document: Any) -> list[tuple[str, dict[str, str]]]:
 def _selector_has_preview_token(selector: str) -> bool:
     lowered = selector.lower()
     return any(token in lowered for token in _AUTHOR_PREVIEW_TOKENS)
+
+
+def _selector_atom(selector: str) -> str:
+    """Return the final simple selector used for a conservative visibility check."""
+    selector = selector.strip()
+    if not selector or selector.startswith("@"):
+        return ""
+    selector = re.sub(r"::?[a-zA-Z-]+(?:\([^)]*\))?", "", selector)
+    selector = re.sub(r"\[[^\]]*\]", "", selector)
+    parts = re.split(r"\s*(?:>|\+|~)\s*|\s+", selector)
+    return parts[-1].strip()
+
+
+def _simple_selector_matches(element: Any, selector: str) -> bool:
+    atom = _selector_atom(selector)
+    if not atom:
+        return False
+    tag_match = re.match(r"^(?P<tag>[a-zA-Z][a-zA-Z0-9_-]*|\*)", atom)
+    identifier = re.search(r"#([a-zA-Z][a-zA-Z0-9_-]*)", atom)
+    classes = re.findall(r"\.([a-zA-Z][a-zA-Z0-9_-]*)", atom)
+    if not tag_match and not identifier and not classes:
+        return False
+    if tag_match and tag_match.group("tag") != "*":
+        if str(element.tag).lower() != tag_match.group("tag").lower():
+            return False
+    if identifier and str(element.get("id", "")) != identifier.group(1):
+        return False
+    return set(classes).issubset(_class_tokens(element))
+
+
+def _stylesheet_rule_has_visible_author_match(
+    document: Any,
+    selector: str,
+    declarations: Mapping[str, str],
+) -> bool:
+    """Avoid blocking on CSS rules that cannot paint a visible slide object.
+
+    This is intentionally a conservative selector probe, not a CSS engine.  It
+    handles the tag/class/id and final-descendant selectors used by the author
+    dialect and leaves the browser responsible for actual selector semantics.
+    """
+    if str(declarations.get("display", "")).lower() == "none":
+        return False
+    if str(declarations.get("visibility", "")).lower() in {"hidden", "collapse"}:
+        return False
+    selectors = [item.strip() for item in selector.split(",") if item.strip()]
+    slide_elements = document.xpath(
+        "//*[contains(concat(' ', normalize-space(@class), ' '), ' slide ')]"
+    )
+    return any(
+        _simple_selector_matches(element, alternative)
+        and _is_visible_author_element(element)
+        for alternative in selectors
+        for slide in slide_elements
+        for element in slide.iter()
+    )
 
 
 def _author_declarations(document: Any) -> Iterable[tuple[str, str, str]]:
@@ -433,6 +496,8 @@ def _check_css_value(
             "vertical writing modes are outside OfficeCLI Contract v1.",
             source_object,
         )
+
+
 def _check_author(
     document: Any,
     findings: list[ContractDiagnostic],
@@ -509,7 +574,9 @@ def _check_author(
                 source,
                 preview_only=preview_only,
             )
-            if preview_only:
+            if preview_only or not _stylesheet_rule_has_visible_author_match(
+                document, selector, declarations
+            ):
                 continue
             if _EXTERNAL_URL_RE.search(value) and not value.strip().lower().startswith("data:"):
                 _emit(
@@ -529,7 +596,11 @@ def _check_author(
             )
     for element in document.iter():
         tag = str(element.tag).lower() if isinstance(element.tag, str) else ""
-        ignored = _is_author_ignored(element)
+        ignored = (
+            _is_author_ignored(element)
+            or _is_hidden(element)
+            or not _in_slide(element)
+        )
         source = _node_path(element)
         for property_name, value in _inline_styles(element).items():
             classification = _record_css_classification(
