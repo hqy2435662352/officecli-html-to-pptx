@@ -779,15 +779,13 @@ def _officehtml_line_height(value: str | None) -> str | None:
     if normalized == "normal":
         return None
     if re.fullmatch(r"-?(?:\d+(?:\.\d*)?|\.\d+)", normalized):
-        ratio = float(normalized)
-        if abs(ratio - 1.33) <= 0.01:
+        # OfficeCLI 1.0.147 serializes unitless line height in HTML at a
+        # 4/3 projection of the native ratio (for example, 1.05x becomes
+        # 1.4).  Undo that projection before the value reaches the normal
+        # OfficeCLI line-spacing lowering path.
+        ratio = float(normalized) * 0.75
+        if abs(ratio - 1.0) <= 0.01:
             return None
-        # OfficeCLI 1.0.147's HTML projection reports the four compact
-        # 9pt/1.2x Algeria captions as 1.6x after it has already resolved the
-        # text box height.  Feeding that derived value back creates four new
-        # B-only overflow findings; restore the authored native ratio.
-        if abs(ratio - 1.6) <= 0.01:
-            return "1.2"
         return str(ratio)
     if _CSS_LENGTH_RE.fullmatch(normalized):
         return normalized

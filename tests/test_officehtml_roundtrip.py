@@ -160,6 +160,41 @@ async def test_officehtml_profile_does_not_treat_viewer_chrome_as_objects(
     assert result.manifest["objects"][0]["text"] == "Owned"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("projected_line_height", "expected_line_spacing"),
+    [("1.4", "1.050x"), ("0.8", "0.600x")],
+)
+async def test_officehtml_profile_restores_unitless_line_height_projection(
+    tmp_path: Path,
+    projected_line_height: str,
+    expected_line_spacing: str,
+) -> None:
+    officehtml = tmp_path / "projection.html"
+    output = tmp_path / "output.pptx"
+    officehtml.write_text(
+        f"""<!doctype html><html><body>
+        <div class="slide" style="width:960pt;height:540pt;background:#FFFFFF">
+          <div class="shape" data-path="/slide[1]/shape[@id=1]"
+               style="left:10pt;top:10pt;width:200pt;height:60pt">
+            <div class="shape-text valign-top">
+              <div class="para" style="text-align:left;font-size:12pt;line-height:{projected_line_height}">
+                <span style="font-size:12pt;color:#202124">Unitless spacing</span>
+              </div>
+            </div>
+          </div>
+        </div></body></html>""",
+        encoding="utf-8",
+    )
+
+    result = await compile_officecli(str(officehtml), "officehtml", str(output))
+
+    assert len(result.manifest["objects"]) == 1
+    obj = result.manifest["objects"][0]
+    assert obj["properties"]["lineSpacing"] == expected_line_spacing
+    assert obj["paragraphs"][0]["line_spacing"] == expected_line_spacing
+
+
 def _normalized_text(value: object) -> str:
     return " ".join(str(value).replace("\u00a0", " ").split())
 
