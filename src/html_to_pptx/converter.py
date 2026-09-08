@@ -119,11 +119,6 @@ EXTRACTION_JS = """
     const results = [];
     let _svgCounter = 0;
     let _imageCounter = 0;
-    const INLINE_TAGS = new Set([
-        'span','strong','em','b','i','a','code','mark','sub','sup',
-        'small','u','s','del','abbr','cite','q','time','var','kbd',
-    ]);
-
     function getDirectText(el) {
         let text = '';
         for (const node of el.childNodes) {
@@ -149,8 +144,8 @@ EXTRACTION_JS = """
                 if (pre) {
                     const segs = node.textContent.split('\\n');
                     for (let si = 0; si < segs.length; si++) {
-                        if (si > 0) runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none' });
-                        if (segs[si].length) runs.push({ text: segs[si], color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: parentStyle.textTransform });
+                        if (si > 0) runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', textDecoration: parentStyle.textDecorationLine });
+                        if (segs[si].length) runs.push({ text: segs[si], color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: parentStyle.textTransform, textDecoration: parentStyle.textDecorationLine });
                     }
                     continue;
                 }
@@ -168,6 +163,7 @@ EXTRACTION_JS = """
                     fontWeight: parentStyle.fontWeight,
                     fontStyle: parentStyle.fontStyle,
                     textTransform: parentStyle.textTransform,
+                    textDecoration: parentStyle.textDecorationLine,
                 });
             } else if (node.nodeType === Node.ELEMENT_NODE) {
                 const tag = node.tagName.toLowerCase();
@@ -175,10 +171,14 @@ EXTRACTION_JS = """
                 const cs = getComputedStyle(node);
                 if (cs.display === 'none' || cs.visibility === 'hidden') continue;
                 if (tag === 'br') {
-                    runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none' });
+                    runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', textDecoration: parentStyle.textDecorationLine });
                     continue;
                 }
-                const isInline = cs.display.startsWith('inline') || INLINE_TAGS.has(tag);
+                // Only collect true inline-flow children as runs.  A tag such
+                // as <b> or <small> can be a flex/grid item whose computed
+                // display is blockified; treating it as an inline run loses
+                // the layout gap/line break and concatenates sibling labels.
+                const isInline = cs.display.startsWith('inline');
                 if (isInline) {
                     const text = node.textContent.trim();
                     if (text) {
@@ -193,6 +193,7 @@ EXTRACTION_JS = """
                             fontWeight: cs.fontWeight,
                             fontStyle: cs.fontStyle,
                             textTransform: cs.textTransform,
+                            textDecoration: cs.textDecorationLine,
                             href: tag === 'a' ? node.getAttribute('href') : null,
                             isGradientText: childIsGradientText,
                             backgroundImage: childIsGradientText ? childBgImage : null,
@@ -204,9 +205,57 @@ EXTRACTION_JS = """
         return runs;
     }
 
+    function textParagraphs(el, runs, directText) {
+        const style = getComputedStyle(el);
+        const sourceRuns = runs.length ? runs : (directText ? [{
+            text: directText,
+            color: style.color,
+            fontSize: parseFloat(style.fontSize),
+            fontFamily: style.fontFamily,
+            fontWeight: style.fontWeight,
+            fontStyle: style.fontStyle,
+            textTransform: style.textTransform,
+            textDecoration: style.textDecorationLine,
+        }] : []);
+        const paragraphs = [];
+        let current = [];
+        const pushParagraph = () => {
+            if (current.length || paragraphs.length === 0) {
+                paragraphs.push({
+                    text: current.map(run => run.text).join(''),
+                    align: style.textAlign,
+                    lineHeight: style.lineHeight,
+                    spaceBefore: parseFloat(style.marginTop) || 0,
+                    spaceAfter: parseFloat(style.marginBottom) || 0,
+                    direction: style.direction,
+                    runs: current,
+                });
+            }
+            current = [];
+        };
+        for (const run of sourceRuns) {
+            const pieces = String(run.text || '').split('\\n');
+            for (let index = 0; index < pieces.length; index++) {
+                if (pieces[index]) current.push({ ...run, text: pieces[index] });
+                if (index < pieces.length - 1) pushParagraph();
+            }
+        }
+        if (current.length || paragraphs.length === 0) pushParagraph();
+        return paragraphs;
+    }
+
     function hasChildElementText(el) {
         for (const child of el.children) {
             if (child.textContent && child.textContent.trim()) return true;
+        }
+        return false;
+    }
+
+    function hasNonInlineTextChild(el) {
+        for (const child of el.children) {
+            if (!child.textContent || !child.textContent.trim()) continue;
+            const childStyle = getComputedStyle(child);
+            if (!childStyle.display.startsWith('inline')) return true;
         }
         return false;
     }
@@ -431,15 +480,25 @@ EXTRACTION_JS = """
             } catch(e) {}
         }
 
-        if (directText && hasChildElementText(el)) {
+        if (directText || hasChildElementText(el)) {
             const runs = collectInlineRuns(el);
-            if (runs.length > 0) {
+            if (runs.length > 0 && !hasNonInlineTextChild(el)) {
                 if (markerPrefix && runs.length > 0) {
                     runs[0].text = markerPrefix + runs[0].text;
                 }
                 data.inlineRuns = runs;
-                data.text = '';
+                // Keep the flattened text field as a compatibility view for
+                // callers of the measurement DTO.  The compiler consumes
+                // ``inlineRuns``/``paragraphs`` for formatting, so exposing
+                // this summary does not flatten the object at the lowering
+                // seam and preserves the older ``text`` lookup contract.
+                data.text = runs.map(run => run.text).join('');
+                data.paragraphs = textParagraphs(el, runs, directText);
+            } else if (directText) {
+                data.paragraphs = textParagraphs(el, [], markerPrefix + directText);
             }
+        } else if (directText) {
+            data.paragraphs = textParagraphs(el, [], markerPrefix + directText);
         }
 
         const isContainer = !data.text && !isImg && !isSvg && !hasVisibleBg && !hasBorder &&

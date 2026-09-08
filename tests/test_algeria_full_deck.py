@@ -36,8 +36,6 @@ _EXPECTED_TABLES = (
 _ALLOWED_OVERFLOW_OBJECTS = frozenset(
     {
         "slide-001-textbox-012",
-        "slide-008-textbox-016",
-        "slide-008-textbox-020",
         "slide-008-textbox-024",
         "slide-008-textbox-028",
     }
@@ -91,14 +89,26 @@ def _measurement_nodes(
     elements: list[dict[str, Any]],
     slide_index: int,
     parent: str = "",
+    parent_has_inline_runs: bool = False,
 ) -> list[tuple[str, dict[str, Any]]]:
     nodes: list[tuple[str, dict[str, Any]]] = []
     for position, element in enumerate(elements, start=1):
         tag = str(element.get("tag", "element") or "element").lower()
+        if parent_has_inline_runs and tag in {
+            "span", "strong", "em", "b", "i", "a", "code", "mark",
+            "sub", "sup", "small", "u", "s", "del", "abbr", "cite",
+            "q", "time", "var", "kbd",
+        }:
+            continue
         path = f"{parent}/{tag}[{position}]" if parent else f"slide[{slide_index}]/{tag}[{position}]"
         nodes.append((path, element))
         nodes.extend(
-            _measurement_nodes(element.get("children", []) or [], slide_index, path)
+            _measurement_nodes(
+                element.get("children", []) or [],
+                slide_index,
+                path,
+                bool(element.get("inlineRuns")),
+            )
         )
     return nodes
 

@@ -19,31 +19,137 @@ CONTRACT_VERSION = "1.0"
 OFFICECLI_COMPATIBILITY_BASELINE = "1.0.147"
 SUPPORTED_PROFILES = ("author", "officehtml")
 SUPPORTED_OBJECT_KINDS = frozenset({"shape", "textbox", "picture", "table"})
-SUPPORTED_CSS_PROPERTIES = frozenset(
+CSS_CLASSIFICATIONS = (
+    "measurement-only",
+    "rendered",
+    "preview-only",
+    "unsupported",
+)
+
+_RENDERED_CSS_PROPERTIES = frozenset(
     {
         "background",
         "background-color",
         "border",
+        "border-bottom",
         "border-color",
+        "border-left",
         "border-radius",
+        "border-right",
         "border-style",
+        "border-top",
         "border-width",
+        "border-collapse",
         "color",
+        "font",
         "font-family",
         "font-size",
         "font-style",
         "font-weight",
-        "height",
         "line-height",
         "margin",
+        "margin-bottom",
+        "margin-left",
+        "margin-right",
+        "margin-top",
+        "object-fit",
         "opacity",
         "padding",
+        "padding-bottom",
+        "padding-left",
+        "padding-right",
+        "padding-top",
         "text-align",
+        "text-decoration",
+        "text-transform",
         "transform",
         "vertical-align",
-        "width",
     }
 )
+_MEASUREMENT_ONLY_CSS_PROPERTIES = frozenset(
+    {
+        "align-content",
+        "align-items",
+        "align-self",
+        "bottom",
+        "box-sizing",
+        "column-gap",
+        "display",
+        "flex",
+        "flex-direction",
+        "flex-flow",
+        "flex-wrap",
+        "gap",
+        "grid",
+        "grid-area",
+        "grid-column",
+        "grid-row",
+        "grid-template",
+        "grid-template-columns",
+        "grid-template-rows",
+        "height",
+        "justify-content",
+        "justify-items",
+        "justify-self",
+        "left",
+        "letter-spacing",
+        "max-height",
+        "max-width",
+        "min-height",
+        "min-width",
+        "overflow",
+        "overflow-wrap",
+        "position",
+        "right",
+        "row-gap",
+        "table-layout",
+        "top",
+        "white-space",
+        "width",
+        "word-break",
+        "writing-mode",
+        "z-index",
+    }
+)
+_PREVIEW_ONLY_CSS_PROPERTIES = frozenset(
+    {
+        "cursor",
+        "pointer-events",
+        "scroll-behavior",
+        "user-select",
+    }
+)
+_UNSUPPORTED_CSS_PROPERTIES = frozenset(
+    {
+        "animation",
+        "animation-delay",
+        "animation-duration",
+        "animation-name",
+        "background-attachment",
+        "background-blend-mode",
+        "background-image",
+        "box-shadow",
+        "clip-path",
+        "filter",
+        "mix-blend-mode",
+        "text-shadow",
+        "transition",
+        "transition-delay",
+        "transition-duration",
+        "transition-property",
+        "transition-timing-function",
+        "-webkit-background-clip",
+        "-webkit-text-fill-color",
+        "-webkit-text-stroke",
+    }
+)
+CSS_PROPERTY_CLASSIFICATIONS = {
+    **{name: "rendered" for name in _RENDERED_CSS_PROPERTIES},
+    **{name: "measurement-only" for name in _MEASUREMENT_ONLY_CSS_PROPERTIES},
+    **{name: "preview-only" for name in _PREVIEW_ONLY_CSS_PROPERTIES},
+    **{name: "unsupported" for name in _UNSUPPORTED_CSS_PROPERTIES},
+}
+SUPPORTED_CSS_PROPERTIES = frozenset(CSS_PROPERTY_CLASSIFICATIONS)
 
 _CSS_BLOCK_RE = re.compile(r"(?P<selectors>[^{}]+)\{(?P<body>[^{}]*)\}", re.DOTALL)
 _CSS_DECL_RE = re.compile(r"(?P<name>[a-zA-Z-]+)\s*:\s*(?P<value>[^;]+)")
@@ -73,23 +179,6 @@ _AUTHOR_PREVIEW_TOKENS = frozenset(
 _UNSUPPORTED_VISIBLE_TAGS = frozenset(
     {"audio", "canvas", "embed", "iframe", "object", "video"}
 )
-_CSS_BLOCKING_PROPERTIES = frozenset(
-    {
-        "animation",
-        "animation-delay",
-        "animation-duration",
-        "animation-name",
-        "clip-path",
-        "filter",
-        "transition",
-        "transition-delay",
-        "transition-duration",
-        "transition-property",
-        "transition-timing-function",
-    }
-)
-
-
 @dataclass(frozen=True)
 class ContractDiagnostic:
     """One contract finding; blocking findings cannot enter compilation."""
@@ -119,6 +208,7 @@ class ContractReport:
     input_path: str
     profile: str
     diagnostics: tuple[ContractDiagnostic, ...]
+    css_classifications: tuple[dict[str, Any], ...] = ()
 
     @property
     def blocked(self) -> bool:
@@ -137,6 +227,11 @@ class ContractReport:
             "status": self.status,
             "blocked": self.blocked,
             "diagnostics": [item.as_dict() for item in self.diagnostics],
+            "css_classifications": list(self.css_classifications),
+            "css_properties": {
+                item["property"]: item["classification"]
+                for item in self.css_classifications
+            },
         }
 
 
@@ -262,49 +357,74 @@ def _emit(
     )
 
 
+def _css_classification(property_name: str, value: str) -> str:
+    normalized_name = property_name.strip().lower()
+    normalized_value = value.strip().lower()
+    if normalized_name.startswith("--"):
+        return "measurement-only"
+    if normalized_name in {"background", "background-image"}:
+        if normalized_name == "background-image":
+            return "unsupported" if normalized_value not in {"none", "initial"} else "rendered"
+        if "url(" in normalized_value or "gradient(" in normalized_value:
+            return "unsupported"
+        return "rendered"
+    if normalized_name == "transform":
+        if normalized_value in {"none", "initial"} or re.fullmatch(
+            r"rotate\(\s*-?[\d.]+deg\s*\)", normalized_value
+        ):
+            return "rendered"
+        return "unsupported"
+    if normalized_name in {"border-style", "border-top-style", "border-right-style", "border-bottom-style", "border-left-style"}:
+        return "rendered" if normalized_value in {"solid", "none", "initial"} else "unsupported"
+    if normalized_name in CSS_PROPERTY_CLASSIFICATIONS:
+        return CSS_PROPERTY_CLASSIFICATIONS[normalized_name]
+    if normalized_name in {"content", "font-variant", "font-stretch", "font-feature-settings"}:
+        return "measurement-only"
+    return "unsupported"
+
+
+def _record_css_classification(
+    classifications: list[dict[str, Any]],
+    profile: str,
+    property_name: str,
+    value: str,
+    source_object: str,
+    *,
+    preview_only: bool = False,
+) -> str:
+    classification = "preview-only" if preview_only else _css_classification(property_name, value)
+    classifications.append(
+        {
+            "profile": profile,
+            "property": property_name.strip().lower(),
+            "classification": classification,
+            "value": value,
+            "source_object": source_object,
+        }
+    )
+    return classification
+
+
 def _check_css_value(
     findings: list[ContractDiagnostic],
     profile: str,
     property_name: str,
     value: str,
     source_object: str,
+    *,
+    classification: str | None = None,
 ) -> None:
     normalized = value.strip().lower()
-    if property_name in _CSS_BLOCKING_PROPERTIES and normalized not in {"none", "initial"}:
+    classification = classification or _css_classification(property_name, value)
+    if classification == "unsupported" and normalized not in {"none", "initial"}:
         _emit(
             findings,
             profile,
             "unsupported_visible_css",
-            f"{property_name} is not part of the OfficeCLI contract: {value!r}.",
+            f"{property_name} is not supported by the OfficeCLI contract: {value!r}.",
             source_object,
         )
         return
-    if property_name in {"filter", "clip-path"} and normalized not in {"none", "initial"}:
-        _emit(
-            findings,
-            profile,
-            "unsupported_visible_css",
-            f"{property_name} is not supported for visible objects: {value!r}.",
-            source_object,
-        )
-        return
-    if property_name in {"background", "background-image"}:
-        if _EXTERNAL_URL_RE.search(normalized) or "url(" in normalized:
-            _emit(
-                findings,
-                profile,
-                "unsupported_visible_css",
-                "background images are not supported; use a native picture object.",
-                source_object,
-            )
-        elif "gradient(" in normalized:
-            _emit(
-                findings,
-                profile,
-                "unsupported_visible_css",
-                "gradient fills are outside OfficeCLI Contract v1.",
-                source_object,
-            )
     if property_name == "writing-mode" and normalized not in {"horizontal-tb", "initial"}:
         _emit(
             findings,
@@ -313,18 +433,11 @@ def _check_css_value(
             "vertical writing modes are outside OfficeCLI Contract v1.",
             source_object,
         )
-    if property_name.endswith("border-style") or property_name == "border-style":
-        if normalized not in {"solid", "none", "initial"}:
-            _emit(
-                findings,
-                profile,
-                "unsupported_visible_css",
-                "only solid or none borders are supported.",
-                source_object,
-            )
-
-
-def _check_author(document: Any, findings: list[ContractDiagnostic]) -> None:
+def _check_author(
+    document: Any,
+    findings: list[ContractDiagnostic],
+    classifications: list[dict[str, Any]],
+) -> None:
     slides = document.xpath(
         "//*[contains(concat(' ', normalize-space(@class), ' '), ' slide ')]"
     )
@@ -341,12 +454,14 @@ def _check_author(document: Any, findings: list[ContractDiagnostic]) -> None:
             if ".slide" in selector and not _selector_has_preview_token(selector):
                 width = declarations.get("width", width)
                 height = declarations.get("height", height)
-        if _parse_length(width) != (1920.0, "px") or _parse_length(height) != (1080.0, "px"):
+        valid_canvases = {(1920.0, "px", 1080.0, "px"), (960.0, "px", 540.0, "px")}
+        parsed_canvas = (*(_parse_length(width) or (None, None)), *(_parse_length(height) or (None, None)))
+        if parsed_canvas not in valid_canvases:
             _emit(
                 findings,
                 "author",
                 "invalid_author_canvas",
-                f"Author slide {index} must declare width:1920px and height:1080px; got {width!r} × {height!r}.",
+                f"Author slide {index} must declare width:1920px and height:1080px (or the legacy 960px × 540px canvas); got {width!r} × {height!r}.",
                 f"slide[{index}]",
             )
 
@@ -382,16 +497,67 @@ def _check_author(document: Any, findings: list[ContractDiagnostic]) -> None:
                     _node_path(element),
                 )
 
-    for property_name, value, source in _author_declarations(document):
-        if _EXTERNAL_URL_RE.search(value) and not value.strip().lower().startswith("data:"):
-            _emit(
+    for selector, declarations in _stylesheet_rules(document):
+        preview_only = _selector_has_preview_token(selector)
+        source = f"style:{selector}"
+        for property_name, value in declarations.items():
+            classification = _record_css_classification(
+                classifications,
+                "author",
+                property_name,
+                value,
+                source,
+                preview_only=preview_only,
+            )
+            if preview_only:
+                continue
+            if _EXTERNAL_URL_RE.search(value) and not value.strip().lower().startswith("data:"):
+                _emit(
+                    findings,
+                    "author",
+                    "external_resource",
+                    f"External resource in {property_name} is not a deterministic compiler input.",
+                    source,
+                )
+            _check_css_value(
                 findings,
                 "author",
-                "external_resource",
-                f"External resource in {property_name} is not a deterministic compiler input.",
+                property_name,
+                value,
                 source,
+                classification=classification,
             )
-        _check_css_value(findings, "author", property_name, value, source)
+    for element in document.iter():
+        tag = str(element.tag).lower() if isinstance(element.tag, str) else ""
+        ignored = _is_author_ignored(element)
+        source = _node_path(element)
+        for property_name, value in _inline_styles(element).items():
+            classification = _record_css_classification(
+                classifications,
+                "author",
+                property_name,
+                value,
+                source,
+                preview_only=ignored,
+            )
+            if ignored:
+                continue
+            if _EXTERNAL_URL_RE.search(value) and not value.strip().lower().startswith("data:"):
+                _emit(
+                    findings,
+                    "author",
+                    "external_resource",
+                    f"External resource in {property_name} is not a deterministic compiler input.",
+                    source,
+                )
+            _check_css_value(
+                findings,
+                "author",
+                property_name,
+                value,
+                source,
+                classification=classification,
+            )
 
     for style in document.xpath("//style"):
         for match in _IMPORT_RE.finditer(style.text or ""):
@@ -444,7 +610,11 @@ def _owned_officehtml_elements(document: Any) -> list[tuple[Any, str, str]]:
     return owned
 
 
-def _check_officehtml(document: Any, findings: list[ContractDiagnostic]) -> None:
+def _check_officehtml(
+    document: Any,
+    findings: list[ContractDiagnostic],
+    classifications: list[dict[str, Any]],
+) -> None:
     slides = document.xpath(
         "//*[contains(concat(' ', normalize-space(@class), ' '), ' slide ')]"
     )
@@ -463,8 +633,14 @@ def _check_officehtml(document: Any, findings: list[ContractDiagnostic]) -> None
             design_height = declarations.get("--slide-design-h", design_height)
     for index, slide in enumerate(slides, start=1):
         styles = _inline_styles(slide)
+        # The OfficeCLI 1.0.147 parser uses the widescreen point canvas when a
+        # minimal projection omits explicit slide bounds.  Keep the Contract
+        # aligned with that public parser default while still rejecting a
+        # partially declared or non-positive canvas.
         width = styles.get("width", design_width)
         height = styles.get("height", design_height)
+        if width is None and height is None:
+            width, height = "960pt", "540pt"
         if not _positive_length(width) or not _positive_length(height):
             _emit(
                 findings,
@@ -536,7 +712,21 @@ def _check_officehtml(document: Any, findings: list[ContractDiagnostic]) -> None
                     _node_path(descendant),
                 )
             for property_name, value in _inline_styles(descendant).items():
-                _check_css_value(findings, "officehtml", property_name, value, source)
+                classification = _record_css_classification(
+                    classifications,
+                    "officehtml",
+                    property_name,
+                    value,
+                    source,
+                )
+                _check_css_value(
+                    findings,
+                    "officehtml",
+                    property_name,
+                    value,
+                    source,
+                    classification=classification,
+                )
 
 
 def check_contract(input_html: str | Path, profile: str = "author") -> ContractReport:
@@ -553,11 +743,12 @@ def check_contract(input_html: str | Path, profile: str = "author") -> ContractR
     except (OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"Unable to parse HTML input {path}: {exc}") from exc
     findings: list[ContractDiagnostic] = []
+    classifications: list[dict[str, Any]] = []
     if profile == "author":
-        _check_author(document, findings)
+        _check_author(document, findings, classifications)
     else:
-        _check_officehtml(document, findings)
-    return ContractReport(str(path), profile, tuple(findings))
+        _check_officehtml(document, findings, classifications)
+    return ContractReport(str(path), profile, tuple(findings), tuple(classifications))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -588,6 +779,8 @@ __all__ = [
     "OFFICECLI_COMPATIBILITY_BASELINE",
     "SUPPORTED_PROFILES",
     "SUPPORTED_OBJECT_KINDS",
+    "CSS_CLASSIFICATIONS",
+    "CSS_PROPERTY_CLASSIFICATIONS",
     "SUPPORTED_CSS_PROPERTIES",
     "ContractDiagnostic",
     "ContractReport",

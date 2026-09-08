@@ -99,3 +99,30 @@ def test_author_profile_blocks_external_runtime_resources(tmp_path: Path) -> Non
 
     assert report.blocked
     assert sum(item.code == "external_resource" for item in report.diagnostics) == 2
+
+
+def test_author_profile_classifies_visible_css_and_blocks_box_shadow(
+    tmp_path: Path,
+) -> None:
+    path = _write(
+        tmp_path,
+        """<!doctype html><html><head><style>
+        .slide { width:1920px; height:1080px; display:block; }
+        .card { position:absolute; left:10px; top:10px; width:100px; height:50px;
+                background:#fff; box-shadow:0 2px 4px #000; }
+        </style></head><body><section class="slide"><div class="card">Text</div>
+        </section></body></html>""",
+    )
+
+    report = check_contract(path, "author")
+
+    assert report.blocked
+    diagnostic = next(
+        item for item in report.diagnostics if item.code == "unsupported_visible_css"
+    )
+    assert "box-shadow" in diagnostic.message
+    classifications = report.as_dict()["css_classifications"]
+    by_property = {item["property"]: item["classification"] for item in classifications}
+    assert by_property["display"] == "measurement-only"
+    assert by_property["background"] == "rendered"
+    assert by_property["box-shadow"] == "unsupported"

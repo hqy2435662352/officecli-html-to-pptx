@@ -141,7 +141,146 @@ def _table_deck_html() -> str:
       </tbody>
     </table>
   </section>
-</body></html>"""
+    </body></html>"""
+
+
+def _unsupported_canvas_html() -> str:
+    return """<!doctype html>
+<html><head><style>
+  .slide { width: 1920px; height: 1080px; position: relative; }
+</style></head><body><section class="slide">
+  <canvas width="100" height="100"></canvas>
+</section></body></html>"""
+
+
+def _mixed_runs_html() -> str:
+    return """<!doctype html>
+<html><head><style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  .slide { width: 960px; height: 540px; position: relative; background: #ffffff; }
+  .copy { position: absolute; left: 40px; top: 40px; width: 600px; height: 160px;
+          padding: 8px; }
+  p { margin: 0; font-family: Arial, sans-serif; font-size: 24px; line-height: 1.25;
+      text-align: left; }
+  strong { font-family: 'Comic Sans MS', sans-serif; font-size: 30px; font-weight: 700;
+           color: #e60012; }
+  u { font-family: Arial, sans-serif; font-size: 20px; text-decoration: underline;
+      color: #0000ff; }
+</style></head><body><section class="slide">
+  <div class="copy"><p>Plain <strong>bold</strong><br><u>underlined</u></p></div>
+</section></body></html>"""
+
+
+def _flex_labels_html() -> str:
+    return """<!doctype html>
+<html><head><style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  .slide { width: 960px; height: 540px; position: relative; background: #ffffff; }
+  .header { position: absolute; left: 40px; top: 30px; width: 500px; height: 60px;
+            display: flex; align-items: center; gap: 24px; }
+  .header strong { font-size: 24px; }
+  .header small { display: block; font-size: 10px; }
+  .nav { position: absolute; left: 40px; top: 120px; display: flex; gap: 18px; }
+  .nav span { font-size: 12px; }
+</style></head><body><section class="slide">
+  <div class="header"><strong>AIR CONDITIONER</strong><small>PRODUCT LINE-UP</small></div>
+  <div class="nav"><span>COMFORT</span><span>RELIABILITY</span><span>INTELLIGENCE</span></div>
+</section></body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_public_compiler_preserves_paragraphs_direct_runs_and_underline(
+    tmp_path: Path,
+):
+    html_path = tmp_path / "mixed.html"
+    output_path = tmp_path / "mixed.pptx"
+    html_path.write_text(_mixed_runs_html(), encoding="utf-8")
+
+    result = await compile_officecli(str(html_path), "author", str(output_path))
+
+    text_objects = [
+        item for item in result.manifest["objects"] if item["kind"] in {"shape", "textbox"}
+    ]
+    assert len(text_objects) == 1
+    text_object = text_objects[0]
+    assert [paragraph["text"] for paragraph in text_object["paragraphs"]] == [
+        "Plain bold",
+        "underlined",
+    ]
+    assert text_object["paragraphs"][0]["runs"][1]["font_family"] != text_object["paragraphs"][0]["runs"][0]["font_family"]
+    assert text_object["paragraphs"][0]["runs"][1]["bold"] is True
+    assert text_object["paragraphs"][1]["runs"][0]["underline"] == "single"
+
+    document = _run_json("get", str(output_path), "/", "--depth", "5")
+    shape = next(
+        child
+        for child in document["data"]["results"][0]["children"][0]["children"]
+        if child["type"] in {"shape", "textbox"}
+    )
+    assert [paragraph["text"] for paragraph in shape["children"]] == [
+        "Plain bold",
+        "underlined",
+    ]
+    actual_runs = [
+        run
+        for paragraph in shape["children"]
+        for run in paragraph["children"]
+    ]
+    assert [run["text"] for run in actual_runs] == ["Plain ", "bold", "underlined"]
+    assert actual_runs[1]["format"]["font.latin"] == text_object["paragraphs"][0]["runs"][1]["font_family"]
+    assert actual_runs[1]["format"]["bold"] is True
+    assert actual_runs[2]["format"]["underline"] == "single"
+
+
+@pytest.mark.asyncio
+async def test_public_compiler_keeps_flex_children_as_separate_text_objects(
+    tmp_path: Path,
+):
+    html_path = tmp_path / "flex-labels.html"
+    output_path = tmp_path / "flex-labels.pptx"
+    html_path.write_text(_flex_labels_html(), encoding="utf-8")
+
+    result = await compile_officecli(str(html_path), "author", str(output_path))
+
+    texts = [
+        item["text"]
+        for item in result.manifest["objects"]
+        if item["kind"] in {"shape", "textbox"} and item["text"]
+    ]
+    assert "AIR CONDITIONER" in texts
+    assert "PRODUCT LINE-UP" in texts
+    assert "COMFORT" in texts
+    assert "RELIABILITY" in texts
+    assert "INTELLIGENCE" in texts
+    assert "AIR CONDITIONERPRODUCT LINE-UP" not in texts
+    assert "COMFORTRELIABILITYINTELLIGENCE" not in texts
+
+
+@pytest.mark.asyncio
+async def test_public_compiler_blocks_visible_canvas_before_measurement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    html_path = tmp_path / "unsupported.html"
+    output_path = tmp_path / "output.pptx"
+    html_path.write_text(_unsupported_canvas_html(), encoding="utf-8")
+
+    async def unexpected_measurement(*args, **kwargs):
+        raise AssertionError("browser measurement must not run for blocked input")
+
+    monkeypatch.setattr(
+        "html_to_pptx.officecli_compiler.extract_measurements",
+        unexpected_measurement,
+    )
+
+    with pytest.raises(OfficeCLICompilationError) as error:
+        await compile_officecli(str(html_path), "author", str(output_path))
+
+    assert any(item.code == "unsupported_visible_tag" for item in error.value.diagnostics)
+    assert all(item.operation == "contract" for item in error.value.diagnostics)
+    assert not output_path.exists()
 
 
 @pytest.mark.asyncio
@@ -205,12 +344,17 @@ async def test_public_author_compiler_emits_one_editable_native_table(
     assert len({cell["name"] for cell in table_manifest["cells"]}) == 45
     assert all(cell["source_object"].startswith(table_manifest["source_object"] + "/tr[") for cell in table_manifest["cells"])
     assert table_manifest["bounds_pt"] == pytest.approx([80, 60, 501, 274])
+    header_run = table_manifest["cells"][0]["paragraphs"][0]["runs"][0]
+    assert header_run["font_family"] == "Arial"
+    assert header_run["font_size_pt"] == pytest.approx(12)
+    assert header_run["bold"] is True
+    assert header_run["italic"] is True
 
     slide = _run_json("get", str(output_path), "/slide[1]", "--depth", "1")["data"]["results"][0]
     assert [child["type"] for child in slide["children"]] == ["table"]
 
     table = _run_json(
-        "get", str(output_path), "/slide[1]/table[1]", "--depth", "2"
+        "get", str(output_path), "/slide[1]/table[1]", "--depth", "5"
     )["data"]["results"][0]
     assert table["type"] == "table"
     assert table["format"]["rows"] == 9
@@ -241,6 +385,8 @@ async def test_public_author_compiler_emits_one_editable_native_table(
     assert header["format"]["valign"] == "center"
     assert header["format"]["padding.left"] == "4pt"
     assert header["format"]["border.all"] == "1pt solid #445566"
+    assert 'i="1"' in header["format"]["txBodyRaw"]
+    assert 'typeface="Arial"' in header["format"]["txBodyRaw"]
 
     first_body_cell = table["children"][1]["children"][0]
     assert first_body_cell["text"] == "Capacity Class"
