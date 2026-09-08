@@ -302,7 +302,26 @@ Full regression testing passes with `73 passed`; the non-Algeria OfficeHTML
 round-trip, Algeria round-trip, compiler, acceptance, contract, and legacy
 paths are included.  `compileall` and `git diff --check` also pass.  Per the
 reacceptance scope, the unchanged slides reuse acceptance-17 screenshots
-instead of repeating the complete eight-page visual replay.
+  instead of repeating the complete eight-page visual replay.
+
+Focused follow-up reacceptance (2026-09-08) fixed the remaining OfficeHTML
+unitless line-height projection.  OfficeCLI 1.0.147 reports a 4/3 unitless
+HTML ratio, so the reverse profile now restores that ratio before lowering;
+the public seam regression covers `1.4 -> 1.050x` and `0.8 -> 0.600x`.
+
+The follow-up code and test fix is committed as `cfb38d9`; the tested range is
+`5c06c92..cfb38d9` on `codex/officecli-html-to-pptx-mvp`.  Evidence is under
+`C:\TEMP\issue07-independent-reacceptance-20260908\post-fix`:
+
+- the supplied manifest probe is `PASS` with `0` findings;
+- post-fix PPTX B passes OfficeCLI validation and retains the expected
+  `8 slides / 89 shapes / 154 textboxes / 18 pictures / 9 tables` structure;
+- the three stable issue keys are unchanged, with slide-1 `need 120pt ->
+  107pt` and slide-8 `29pt` / `43pt` unchanged from A to B;
+- targeted B screenshots for slides 1 and 8 show no title overlap or new
+  visual regression; no second full eight-slide visual replay was needed;
+- the full regression suite is `75 passed`, with `compileall` and
+  `git diff --check` passing.
 
 The table distribution is:
 

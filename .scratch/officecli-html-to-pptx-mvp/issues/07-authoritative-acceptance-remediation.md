@@ -85,7 +85,36 @@ slide-8 number/card-04-wrap blocker.  The full test suite passes with `73
 passed`; the original five comparator probes now all return `REGRESSION` for
 the deliberately invalid mutations.  `compileall` and `git diff --check` also
 pass.  As requested by the reacceptance report, the unchanged slides were not
-regenerated in a second full eight-screenshot replay.
+  regenerated in a second full eight-screenshot replay.
+
+## Focused follow-up reacceptance (2026-09-08)
+
+The independent reduced reacceptance found that OfficeCLI 1.0.147 projects
+unitless HTML line height at 4/3 of the native ratio.  The reverse profile was
+therefore feeding `1.4` back as `1.400x` instead of restoring the Author
+title's `1.050x`; the same projection affected the eight shared header text
+boxes.  The follow-up fix restores the projection ratio at the OfficeHTML
+boundary and adds a public-seam regression test for the `1.4 -> 1.050x` and
+`0.8 -> 0.600x` cases.
+
+The follow-up code and test fix is committed as `cfb38d9`; the tested range is
+`5c06c92..cfb38d9` on `codex/officecli-html-to-pptx-mvp`.
+
+Targeted evidence is under
+`C:\TEMP\issue07-independent-reacceptance-20260908\post-fix`:
+
+- `roundtrip-manifest-probe.py` returns `PASS` with `0` findings;
+- `algeria-b-postfix.pptx` passes OfficeCLI validation and retains 8 slides,
+  89 shapes, 154 textboxes, 18 pictures, and 9 native tables;
+- the stable issue-key set remains the three approved baseline keys;
+- issue severity is not worse: slide 1 changes from `need 120pt` in A to
+  `need 107pt` in B, while slide 8 remains `29pt` and `43pt` respectively;
+- `slide-01-b-postfix.png` shows the title separated from the red rule and
+  `FOUR PRODUCT LINES`, and `slide-08-b-postfix.png` has no new visual finding.
+
+The full regression suite passes with `75 passed`; `compileall` and
+`git diff --check` pass.  This follow-up intentionally does not regenerate a
+second complete eight-slide visual replay.
 
 ## Historical evidence (superseded by the reacceptance above)
 
