@@ -276,6 +276,46 @@ EXTRACTION_JS = """
         return false;
     }
 
+    // A browser can soft-wrap a text node at a position that OfficeCLI's
+    // substituted font metrics would choose differently.  Preserve those
+    // visual line boundaries for the OfficeCLI profile as explicit paragraph
+    // breaks; this keeps the text editable while removing renderer-dependent
+    // reflow from the final PPTX.
+    function visualLineTexts(el) {
+        if (!officecliMode) return [];
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        const rows = [];
+        let node;
+        while (node = walker.nextNode()) {
+            const parent = node.parentElement;
+            if (!parent) continue;
+            const parentTag = parent.tagName.toLowerCase();
+            if (['script', 'style', 'link', 'meta'].includes(parentTag)) continue;
+            const raw = node.textContent || '';
+            for (let index = 0; index < raw.length; index++) {
+                const range = document.createRange();
+                range.setStart(node, index);
+                range.setEnd(node, index + 1);
+                const rect = range.getBoundingClientRect();
+                if (rect.width < 0.01 && rect.height < 0.01) continue;
+                const tolerance = Math.max(
+                    1.5,
+                    parseFloat(getComputedStyle(el).fontSize || '16') * 0.12,
+                );
+                let row = rows.find(item => Math.abs(item.top - rect.top) <= tolerance);
+                if (!row) {
+                    row = { top: rect.top, text: '' };
+                    rows.push(row);
+                }
+                row.text += raw[index];
+            }
+        }
+        return rows
+            .sort((left, right) => left.top - right.top)
+            .map(row => row.text.replace(/\\s+/g, ' ').trim())
+            .filter(text => text.length > 0);
+    }
+
     function clearAncestorTransforms(el) {
         const saved = [];
         let current = el;
@@ -548,6 +588,18 @@ EXTRACTION_JS = """
             }
         } else if (directText && officecliMode) {
             data.paragraphs = textParagraphs(el, [], markerPrefix + directText);
+        }
+
+        if (
+            officecliMode &&
+            data.inlineRuns &&
+            data.inlineRuns.length > 0 &&
+            !data.inlineRuns.some(run => String(run.text || '').includes('\\n')) &&
+            !hasNonInlineTextChild(el) &&
+            !['td', 'th'].includes(el.tagName.toLowerCase())
+        ) {
+            const lines = visualLineTexts(el);
+            if (lines.length > 1) data.visualLines = lines;
         }
 
         const isContainer = !data.text && !isImg && !isSvg && !hasVisibleBg && !hasBorder &&

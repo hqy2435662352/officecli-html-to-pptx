@@ -75,7 +75,8 @@ The supported CSS/property surface for Contract v1 is intentionally small:
   padding;
 - tables: fixed row/column dimensions, cell text, cell fill, cell text
   formatting, alignment, padding, and four-sided uniform borders;
-- pictures: explicit box geometry, data URI source, and `object-fit` behavior
+- pictures: explicit box geometry, data URI source (from `<img src>` or the
+  OfficeCLI `background-image: url(...)` projection), and `object-fit` behavior
   supported by the compiler.
 
 Visible content outside this surface is a blocking diagnostic. It is never
@@ -146,8 +147,9 @@ The following are explicit ignore rules:
 
 An owned chart, connector, group, SmartArt, media, or another deferred object
 kind is not ignored: it is a blocking `unsupported_object_kind` diagnostic.
-An owned picture without a data image source, an owned table with a missing
-cell path, and a merged cell are also blocking diagnostics.
+An owned picture without a data image source in either `<img src>` or a
+projected `background-image: url(...)`, an owned table with a missing cell
+path, and a merged cell are also blocking diagnostics.
 
 `data-path` is a source identity and debugging join key. It is not an automatic
 write-back protocol to the original PPTX.

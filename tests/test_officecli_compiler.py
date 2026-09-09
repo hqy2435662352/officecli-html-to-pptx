@@ -80,7 +80,10 @@ def test_author_source_fidelity_exceptions_are_narrow_and_anchored() -> None:
 
     assert officecli_compiler._source_fidelity_text_anchor(label) == "left"
     assert officecli_compiler._source_fidelity_text_anchor(number) == "left"
-    assert officecli_compiler._source_fidelity_text_anchor(model_range) == "right"
+    # A range is ordinary measured text.  It must not activate the old
+    # source-fidelity width expansion: in a narrow browser card that moved the
+    # entire text box outside its containing shape.
+    assert officecli_compiler._source_fidelity_text_anchor(model_range) is None
     assert officecli_compiler._source_fidelity_text_anchor(ordinary_label) is None
     assert officecli_compiler._source_fidelity_text_anchor(large_title) is None
     assert officecli_compiler._source_fidelity_text_anchor(large_range_title) is None
@@ -89,7 +92,38 @@ def test_author_source_fidelity_exceptions_are_narrow_and_anchored() -> None:
     ) == (10, 20, 67.5, 12)
     assert officecli_compiler._source_fidelity_text_bounds(
         model_range, (100, 20, 50, 12)
-    ) == (82.5, 20, 67.5, 12)
+    ) == (100, 20, 50, 12)
+
+
+def _wrapped_capacity_html() -> str:
+    return """<!doctype html>
+<html><head><style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; overflow: hidden; }
+  .slide { width: 1920px; height: 1080px; position: relative; background: #ffffff; }
+  .body { position: absolute; left: 72px; top: 283px; width: 1776px; height: 713px; }
+  .panel { position: absolute; border: 1px solid #D9DEE2; border-radius: 24px; background: #F1F5F8; }
+  .card { position: absolute; background: #ffffff; border: 1px solid #D9DEE2;
+          border-radius: 18px; padding: 20px; }
+  .card h3 { font-size: 29px; line-height: 1.2; color: #E60012; }
+  .capacity { font-size: 24px; color: #343B41; font-weight: 600; line-height: 1.4; }
+  .small { font-size: 21px; color: #70767B; line-height: 1.4; }
+</style></head><body><section class="slide active">
+  <div class="body">
+    <div class="panel" style="left:0;top:0;width:872px;height:325px"></div>
+    <div class="card" style="left:26px;top:110px;width:194.5px;height:187px">
+      <h3>T-PLUS</h3>
+      <p class="capacity" style="margin-top:22px;font-size:21px">09K / 12K / 18K / 24K</p>
+      <p class="small" style="margin-top:12px;font-size:18px">RESIDENTIAL SPLIT</p>
+    </div>
+    <div class="panel" style="left:904px;top:0;width:872px;height:325px;background:#F6F2EE"></div>
+    <div class="card" style="left:930px;top:110px;width:264px;height:187px">
+      <h3>TPRO</h3>
+      <p class="capacity" style="margin-top:22px;font-size:21px">09K / 12K / 18K / 24K</p>
+      <p class="small" style="margin-top:12px;font-size:18px">RESIDENTIAL SPLIT</p>
+    </div>
+  </div>
+</section></body></html>"""
 
 
 def _author_html() -> str:
@@ -115,6 +149,49 @@ def _author_html() -> str:
     <div class="accent"></div>
   </section>
 </body></html>"""
+
+
+@pytest.mark.asyncio
+async def test_public_author_compiler_preserves_chromium_soft_wraps_inside_measured_box(
+    tmp_path: Path,
+):
+    html_path = tmp_path / "wrapped-capacity.html"
+    output_path = tmp_path / "wrapped-capacity.pptx"
+    html_path.write_text(_wrapped_capacity_html(), encoding="utf-8")
+
+    result = await compile_officecli(
+        str(html_path), "author", str(output_path), slide_indices=[0]
+    )
+
+    capacities = [
+        item
+        for item in result.manifest["objects"]
+        if item["text"] in {"09K / 12K / 18K\n/ 24K", "09K / 12K / 18K / 24K"}
+    ]
+    assert len(capacities) == 2
+    wrapped = next(item for item in capacities if "\n" in item["text"])
+    single_line = next(item for item in capacities if "\n" not in item["text"])
+
+    assert wrapped["bounds_pt"] == pytest.approx(
+        [59.5, 235.3984, 76.25, 29.390625], abs=0.01
+    )
+    assert [paragraph["text"] for paragraph in wrapped["paragraphs"]] == [
+        "09K / 12K / 18K",
+        "/ 24K",
+    ]
+    assert all(
+        paragraph["space_before_pt"] == 0.0
+        and paragraph["space_after_pt"] == 0.0
+        for paragraph in wrapped["paragraphs"]
+    )
+    assert single_line["bounds_pt"] == pytest.approx(
+        [511.5, 235.3984, 111.0, 14.6953125], abs=0.01
+    )
+
+    validation = _run_process("validate", str(output_path))
+    assert validation.returncode == 0, validation.stdout + validation.stderr
+    issues = _run_json("view", str(output_path), "issues")
+    assert issues["data"].get("issues", []) == []
 
 
 def _picture_deck_html() -> str:
@@ -177,6 +254,26 @@ def _table_deck_html() -> str:
     </table>
   </section>
     </body></html>"""
+
+
+def _wbr_dimension_table_html() -> str:
+    return """<!doctype html>
+<html><head><style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  .slide { width: 960px; height: 540px; position: relative; background: #ffffff; }
+  .slide table { position: absolute; left: 40px; top: 40px; width: 300px;
+                 table-layout: fixed; border-collapse: collapse; }
+  td { border: 1px solid #445566; padding: 14px; font-family: Arial, sans-serif;
+       font-size: 18px; line-height: 1.14; overflow-wrap: anywhere; }
+</style></head><body>
+  <section class="slide active">
+    <table><tbody><tr>
+      <td>ODU DIMENSION (MM)</td>
+      <td>927×<wbr>380×<wbr>699(Including valve)</td>
+    </tr></tbody></table>
+  </section>
+</body></html>"""
 
 
 def _paragraph_table_deck_html() -> str:
@@ -487,6 +584,25 @@ async def test_public_author_compiler_emits_one_editable_native_table(
     assert first_body_cell["text"] == "Capacity Class"
     assert first_body_cell["format"]["padding.left"] == "12pt"
     assert _run_json("query", str(output_path), "table")["data"]["matches"] == 1
+
+
+@pytest.mark.asyncio
+async def test_public_author_compiler_accepts_wbr_dimension_text_ranges(
+    tmp_path: Path,
+):
+    html_path = tmp_path / "wbr-dimension.html"
+    output_path = tmp_path / "wbr-dimension.pptx"
+    html_path.write_text(_wbr_dimension_table_html(), encoding="utf-8")
+
+    result = await compile_officecli(
+        str(html_path), "author", str(output_path), slide_indices=[0]
+    )
+
+    assert result.manifest["object_kind_counts"] == {"table": 1}
+    table = result.manifest["objects"][0]
+    assert table["cells"][1]["text"] == "927×380×699(Including valve)"
+    validation = _run_process("validate", str(output_path))
+    assert validation.returncode == 0, validation.stdout + validation.stderr
 
 
 @pytest.mark.asyncio

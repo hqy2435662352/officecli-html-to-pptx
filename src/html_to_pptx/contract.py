@@ -153,6 +153,10 @@ SUPPORTED_CSS_PROPERTIES = frozenset(CSS_PROPERTY_CLASSIFICATIONS)
 
 _CSS_BLOCK_RE = re.compile(r"(?P<selectors>[^{}]+)\{(?P<body>[^{}]*)\}", re.DOTALL)
 _CSS_DECL_RE = re.compile(r"(?P<name>[a-zA-Z-]+)\s*:\s*(?P<value>[^;]+)")
+_CSS_DATA_IMAGE_URL_RE = re.compile(
+    r'''url\(\s*(?P<quote>["']?)(?P<source>data:image/.*?)(?P=quote)\s*\)''',
+    re.IGNORECASE | re.DOTALL,
+)
 _LENGTH_RE = re.compile(r"^\s*(-?(?:\d+(?:\.\d*)?|\.\d+))\s*(?P<unit>px|pt|cm|mm|in|emu)?\s*$", re.I)
 _OWNED_PATH_RE = re.compile(r"/slide\[(?P<slide>\d+)\]/(?P<kind>[a-z]+)\[", re.I)
 _EXTERNAL_URL_RE = re.compile(r"(?:https?:|//|file:)", re.I)
@@ -179,6 +183,11 @@ _AUTHOR_PREVIEW_TOKENS = frozenset(
 _UNSUPPORTED_VISIBLE_TAGS = frozenset(
     {"audio", "canvas", "embed", "iframe", "object", "video"}
 )
+
+
+def _officehtml_parser() -> Any:
+    """Create the HTML parser used for OfficeCLI's large data-URI projections."""
+    return _lxml_html.HTMLParser(huge_tree=True)
 
 
 @dataclass(frozen=True)
@@ -267,11 +276,73 @@ def _is_hidden(element: Any) -> bool:
     return False
 
 
+def _split_inline_declarations(value: str) -> list[str]:
+    """Split inline CSS without breaking semicolons inside functions/strings."""
+    declarations: list[str] = []
+    start = 0
+    depth = 0
+    quote = ""
+    escaped = False
+    for index, character in enumerate(value):
+        if quote:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = ""
+            continue
+        if character in {"'", '"'}:
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")" and depth:
+            depth -= 1
+        elif character == ";" and depth == 0:
+            declarations.append(value[start:index])
+            start = index + 1
+    declarations.append(value[start:])
+    return declarations
+
+
 def _inline_styles(element: Any) -> dict[str, str]:
-    return {
-        match.group("name").strip().lower(): match.group("value").strip()
-        for match in _CSS_DECL_RE.finditer(str(element.get("style", "") or ""))
-    }
+    styles: dict[str, str] = {}
+    value = element.get("style", "") if element is not None else ""
+    for declaration in _split_inline_declarations(
+        str(value or "")
+    ):
+        if ":" not in declaration:
+            continue
+        name, raw_value = declaration.split(":", 1)
+        name = name.strip().lower()
+        if name:
+            styles[name] = raw_value.strip()
+    return styles
+
+
+def _data_image_source(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = _CSS_DATA_IMAGE_URL_RE.search(value)
+    if match is None:
+        return None
+    return match.group("source").strip()
+
+
+def _officehtml_picture_source(element: Any) -> str | None:
+    """Return an OfficeHTML picture's img or CSS data-image source."""
+    images = element.xpath(".//img[@src]")
+    for image in images:
+        source = str(image.get("src", "") or "")
+        if source.lower().startswith("data:image/"):
+            return source
+    for descendant in element.iter():
+        source = _data_image_source(
+            _inline_styles(descendant).get("background-image")
+        )
+        if source is not None:
+            return source
+    return None
 
 
 def _stylesheet_rules(document: Any) -> list[tuple[str, dict[str, str]]]:
@@ -518,13 +589,20 @@ def _emit(
     )
 
 
-def _css_classification(property_name: str, value: str) -> str:
+def _css_classification(
+    property_name: str,
+    value: str,
+    *,
+    allow_data_image_background: bool = False,
+) -> str:
     normalized_name = property_name.strip().lower()
     normalized_value = value.strip().lower()
     if normalized_name.startswith("--"):
         return "measurement-only"
     if normalized_name in {"background", "background-image"}:
         if normalized_name == "background-image":
+            if allow_data_image_background and _data_image_source(value) is not None:
+                return "rendered"
             return "unsupported" if normalized_value not in {"none", "initial"} else "rendered"
         if "url(" in normalized_value or "gradient(" in normalized_value:
             return "unsupported"
@@ -552,8 +630,17 @@ def _record_css_classification(
     source_object: str,
     *,
     preview_only: bool = False,
+    allow_data_image_background: bool = False,
 ) -> str:
-    classification = "preview-only" if preview_only else _css_classification(property_name, value)
+    classification = (
+        "preview-only"
+        if preview_only
+        else _css_classification(
+            property_name,
+            value,
+            allow_data_image_background=allow_data_image_background,
+        )
+    )
     classifications.append(
         {
             "profile": profile,
@@ -871,8 +958,7 @@ def _check_officehtml(
             )
             continue
         if kind == "picture":
-            images = element.xpath(".//img[@src]")
-            if not images or not str(images[0].get("src", "")).lower().startswith("data:image/"):
+            if _officehtml_picture_source(element) is None:
                 _emit(
                     findings,
                     "officehtml",
@@ -918,6 +1004,7 @@ def _check_officehtml(
                     property_name,
                     value,
                     source,
+                    allow_data_image_background=kind == "picture",
                 )
                 _check_css_value(
                     findings,
@@ -939,7 +1026,10 @@ def check_contract(input_html: str | Path, profile: str = "author") -> ContractR
     if not path.is_file():
         raise FileNotFoundError(f"HTML input does not exist: {path}")
     try:
-        document = _lxml_html.fromstring(path.read_text(encoding="utf-8"))
+        document = _lxml_html.fromstring(
+            path.read_text(encoding="utf-8"),
+            parser=_officehtml_parser(),
+        )
     except (OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"Unable to parse HTML input {path}: {exc}") from exc
     findings: list[ContractDiagnostic] = []

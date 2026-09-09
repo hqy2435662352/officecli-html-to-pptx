@@ -30,7 +30,13 @@ from xml.etree import ElementTree
 from PIL import Image
 from lxml import html as _lxml_html
 
-from .contract import ContractReport, check_contract
+from .contract import (
+    ContractReport,
+    _inline_styles,
+    _officehtml_parser,
+    _officehtml_picture_source,
+    check_contract,
+)
 from .converter import _resolve_pptx_font, extract_measurements
 
 SLIDE_WIDTH_PT = 960.0
@@ -52,6 +58,7 @@ _SVG_CAPABILITY_PROBE = (
     ).decode("ascii")
 )
 _OFFICECLI_SVG_SUPPORT: bool | None = None
+_OFFICECLI_BATCH_MAX_BYTES = 32 * 1024 * 1024
 _INLINE_TAGS = {
     "span", "strong", "em", "b", "i", "a", "code", "mark", "sub",
     "sup", "small", "u", "s", "del", "abbr", "cite", "q", "time",
@@ -393,6 +400,11 @@ def _source_path(slide_number: int, parent: str, tag: str, position: int) -> str
 
 
 def _text_of(element: dict[str, Any]) -> str:
+    visual_lines = element.get("visualLines")
+    if visual_lines and isinstance(visual_lines, list):
+        lines = [str(line) for line in visual_lines if str(line)]
+        if len(lines) > 1:
+            return "\n".join(lines)
     paragraphs = element.get("paragraphs")
     if paragraphs:
         return "\n".join(
@@ -437,6 +449,25 @@ def _text_paragraphs(
     preserve_table_projection: bool = False,
 ) -> tuple[dict[str, Any], ...]:
     raw_paragraphs = element.get("paragraphs") or []
+    visual_lines = element.get("visualLines")
+    if (
+        isinstance(visual_lines, list)
+        and len(visual_lines) > 1
+        and len(raw_paragraphs) == 1
+        and len(raw_paragraphs[0].get("runs") or []) == 1
+    ):
+        visual_texts = [str(line) for line in visual_lines if str(line)]
+        if visual_texts:
+            raw_paragraph = raw_paragraphs[0]
+            raw_run = raw_paragraph["runs"][0]
+            raw_paragraphs = [
+                {
+                    **raw_paragraph,
+                    "text": line,
+                    "runs": [{**raw_run, "text": line}],
+                }
+                for line in visual_texts
+            ]
     if not raw_paragraphs:
         runs = element.get("inlineRuns") or []
         if runs:
@@ -532,11 +563,21 @@ def _text_paragraphs(
                 "text": paragraph_text,
                 "align": _text_alignment(alignment_source),
                 "line_spacing": line_spacing,
-                "space_before_pt": _pt(
-                    _number(raw_paragraph.get("spaceBefore")), scale_y
+                # getBoundingClientRect() already includes the position caused
+                # by a block's CSS margins.  Re-emitting those margins on a
+                # standalone OfficeCLI text body double-counts the spacing and
+                # can make a browser two-line block overflow vertically.  A
+                # table cell is different: its child paragraphs are folded
+                # into the cell body, so their spacing still needs projection.
+                "space_before_pt": (
+                    _pt(_number(raw_paragraph.get("spaceBefore")), scale_y)
+                    if preserve_table_projection
+                    else 0.0
                 ),
-                "space_after_pt": _pt(
-                    _number(raw_paragraph.get("spaceAfter")), scale_y
+                "space_after_pt": (
+                    _pt(_number(raw_paragraph.get("spaceAfter")), scale_y)
+                    if preserve_table_projection
+                    else 0.0
                 ),
                 "direction": direction,
                 "runs": normalized_runs,
@@ -590,16 +631,7 @@ def _officehtml_style(element: Any) -> dict[str, str]:
     lets the reverse profile parse it without running a second browser layout
     pass or treating the viewer shell as slide content.
     """
-    value = element.get("style", "") if element is not None else ""
-    styles: dict[str, str] = {}
-    for declaration in str(value).split(";"):
-        if ":" not in declaration:
-            continue
-        name, raw_value = declaration.split(":", 1)
-        name = name.strip().lower()
-        if name:
-            styles[name] = raw_value.strip()
-    return styles
+    return _inline_styles(element)
 
 
 def _officehtml_length(value: Any, default: float = 0.0) -> float:
@@ -916,22 +948,23 @@ def _officehtml_picture(
 ) -> dict[str, Any]:
     result = _officehtml_base_element(element, slide_styles, tag="img")
     images = element.xpath(".//img[@src]")
-    if not images:
+    source = _officehtml_picture_source(element)
+    if source is None:
         raise _diagnostic(
             "undecodable_picture",
             f"OfficeHTML picture {element.get('data-path')!r} has no image source.",
             source_slide,
             str(element.get("data-path") or "picture"),
         )
-    image = images[0]
-    image_styles = _officehtml_style(image)
+    image = images[0] if images else None
+    image_styles = _officehtml_style(image) if image is not None else {}
     result.update(
         {
             "dataPath": element.get("data-path"),
             "isImage": True,
             "isSvg": False,
-            "src": image.get("src"),
-            "alt": image.get("alt"),
+            "src": source,
+            "alt": image.get("alt") if image is not None else element.get("alt"),
             "objectFit": image_styles.get("object-fit", "fill"),
             "naturalWidth": 0,
             "naturalHeight": 0,
@@ -940,6 +973,70 @@ def _officehtml_picture(
         }
     )
     return result
+
+
+async def _rasterize_officehtml_svg_fallbacks(
+    measurements: Sequence[dict[str, Any]],
+) -> None:
+    """Capture SVG picture projections as PNGs for OfficeCLI 1.0.147."""
+    svg_elements = [
+        element
+        for slide in measurements
+        for element in slide.get("elements", []) or []
+        if str(element.get("src", "") or "").lower().startswith(
+            "data:image/svg+xml"
+        )
+    ]
+    if not svg_elements:
+        return
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return
+
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page(viewport={"width": 2048, "height": 2048})
+                for element in svg_elements:
+                    try:
+                        width = max(1.0, _number(element.get("width"), 1.0))
+                        height = max(1.0, _number(element.get("height"), 1.0))
+                        fit = str(element.get("objectFit", "fill") or "fill").lower()
+                        if fit not in {"fill", "contain", "cover"}:
+                            fit = "fill"
+                        source = _html_escape(str(element["src"]), quote=True)
+                        markup = (
+                            '<!doctype html><html><body '
+                            'style="margin:0;overflow:hidden;background:transparent">'
+                            f'<img id="picture" src="{source}" '
+                            f'style="display:block;width:{width:.4f}pt;'
+                            f'height:{height:.4f}pt;object-fit:{fit};'
+                            'object-position:center center"></body></html>'
+                        )
+                        await page.set_content(markup, wait_until="load")
+                        await page.wait_for_function(
+                            """() => {
+                                const image = document.querySelector('#picture');
+                                return image && image.complete && image.naturalWidth > 0;
+                            }"""
+                        )
+                        png_bytes = await page.locator("#picture").screenshot(type="png")
+                        encoded = base64.b64encode(png_bytes).decode("ascii")
+                        element["rasterFallbackSrc"] = (
+                            "data:image/png;base64," + encoded
+                        )
+                    except Exception:
+                        # The compiler's final fallback gate reports the source
+                        # context if any SVG still lacks a usable fallback.
+                        continue
+            finally:
+                await browser.close()
+    except Exception:
+        # Keep the source intact; compile_officecli will emit the structured
+        # picture_fallback_unavailable diagnostic below.
+        return
 
 
 def _officehtml_cell(
@@ -1127,7 +1224,10 @@ def _parse_officehtml_measurements(input_html: str) -> list[dict[str, Any]]:
     if not path.is_file():
         raise FileNotFoundError(input_html)
     try:
-        root = _lxml_html.fromstring(path.read_bytes())
+        root = _lxml_html.fromstring(
+            path.read_bytes(),
+            parser=_officehtml_parser(),
+        )
     except (OSError, ValueError) as exc:
         raise ValueError(f"Unable to parse OfficeHTML input {input_html!r}: {exc}") from exc
 
@@ -1341,8 +1441,6 @@ def _source_fidelity_text_anchor(element: dict[str, Any]) -> str | None:
     font_size = _number(element.get("fontSize"))
     if text in _SOURCE_FIDELITY_LABELS and 29 <= font_size <= 32:
         return "left"
-    if "09K" in text and "24K" in text and 18 <= font_size <= 21:
-        return "right"
     if text in _SOURCE_FIDELITY_REVIEW_NUMBERS and 40 <= font_size <= 44:
         return "left"
     return None
@@ -1416,11 +1514,16 @@ def _text_props(
     margin = _margin(element, scale_x, scale_y)
     if margin is not None:
         props["margin"] = margin
-    font_scale = None
-    if _source_fidelity_text_anchor(element) is None:
-        font_scale = _tight_single_line_font_scale(element, _text_of(element))
-    if font_scale is not None:
-        props["fontScale"] = font_scale
+    # The browser measurement is the visual source of truth.  A generic
+    # shrink-to-fit heuristic changes the authored font size even when the
+    # browser text already fits its measured box (S1 card copy is a concrete
+    # example), so standalone Author text must keep its measured size.
+    if isinstance(element.get("visualLines"), list) and len(element["visualLines"]) > 1:
+        # OfficeCLI 1.0.147's text metrics are wider than Chromium's for some
+        # bold Latin runs.  A small, explicit scale is only needed on a block
+        # that Chromium actually wrapped; it keeps the measured break while
+        # avoiding the old global shrink-to-fit heuristic.
+        props["fontScale"] = "95"
     line_spacing = _line_spacing(
         element,
         legacy_css_pixel_projection=not _source_fidelity_line_spacing(element),
@@ -2402,6 +2505,9 @@ def _batch_for_slides(
                             text = str(run.get("text", ""))
                             if not text:
                                 continue
+                            range_length = _officecli_range_length(text)
+                            if not range_length:
+                                continue
                             run_props = _run_props(run)
                             if run_props:
                                 commands.append(
@@ -2409,13 +2515,13 @@ def _batch_for_slides(
                                         "command": "set",
                                         "path": object_path,
                                         "props": {
-                                            "range": f"{offset}:{offset + len(text)}",
+                                            "range": f"{offset}:{offset + range_length}",
                                             **run_props,
                                         },
                                     }
                                 )
                                 sources.append(obj)
-                            offset += len(text)
+                            offset += range_length
                 continue
             table_path = f"/slide[{output_index}]/table[@name={obj.name}]"
             cell_index = 0
@@ -2455,20 +2561,58 @@ def _batch_for_slides(
                                 text = str(run.get("text", ""))
                                 if not text:
                                     continue
+                                range_length = _officecli_range_length(text)
+                                if not range_length:
+                                    continue
                                 run_props = _run_props(run)
                                 commands.append(
                                     {
                                         "command": "set",
                                         "path": cell_path,
                                         "props": {
-                                            "range": f"{offset}:{offset + len(text)}",
+                                            "range": f"{offset}:{offset + range_length}",
                                             **run_props,
                                         },
                                     }
                                 )
                                 sources.append(obj)
-                                offset += len(text)
+                                offset += range_length
     return commands, sources
+
+
+def _batch_chunks(
+    commands: Sequence[dict[str, Any]],
+    sources: Sequence[_ObjectIR | None],
+    *,
+    max_bytes: int = _OFFICECLI_BATCH_MAX_BYTES,
+) -> Iterable[tuple[list[dict[str, Any]], list[_ObjectIR | None]]]:
+    """Split large OfficeCLI JSON batches without splitting one command."""
+    if len(commands) != len(sources):
+        raise ValueError("OfficeCLI commands and source mappings must have equal lengths")
+    if max_bytes <= 0:
+        raise ValueError("OfficeCLI batch byte limit must be positive")
+
+    current_commands: list[dict[str, Any]] = []
+    current_sources: list[_ObjectIR | None] = []
+    current_bytes = 2  # JSON array brackets.
+    for command, source in zip(commands, sources):
+        command_bytes = len(
+            json.dumps(command, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        )
+        comma_bytes = 1 if current_commands else 0
+        if current_commands and current_bytes + comma_bytes + command_bytes > max_bytes:
+            yield current_commands, current_sources
+            current_commands = []
+            current_sources = []
+            current_bytes = 2
+            comma_bytes = 0
+        current_commands.append(command)
+        current_sources.append(source)
+        current_bytes += comma_bytes + command_bytes
+    if current_commands:
+        yield current_commands, current_sources
 
 
 def _source_for_command_error(
@@ -2516,6 +2660,16 @@ def _manifest(slides: Sequence[_SlideIR]) -> dict[str, Any]:
     }
 
 
+def _officecli_range_length(text: str) -> int:
+    """Return the character count accepted by OfficeCLI's range setter.
+
+    OfficeCLI ranges use UTF-16 code units, but paragraph line breaks are
+    represented in the text body rather than the addressable character scope.
+    """
+    visible_text = text.replace("\r", "").replace("\n", "")
+    return len(visible_text.encode("utf-16-le")) // 2
+
+
 async def compile_officecli(
     input_html: str,
     profile: str,
@@ -2553,6 +2707,14 @@ async def compile_officecli(
         )
     else:
         measurements = _parse_officehtml_measurements(input_html)
+        if any(
+            str(element.get("src", "") or "").lower().startswith(
+                "data:image/svg+xml"
+            )
+            for slide in measurements
+            for element in slide.get("elements", []) or []
+        ) and not _officecli_supports_svg():
+            await _rasterize_officehtml_svg_fallbacks(measurements)
     selected = _select_measurements(measurements, slide_indices)
     slides = [
         _lower_slide(index, data, profile=profile)
@@ -2591,13 +2753,33 @@ async def compile_officecli(
     try:
         while True:
             commands, sources = _batch_for_slides(slides, raster_fallbacks)
-            command_json = json.dumps(commands, ensure_ascii=False, separators=(",", ":"))
             retry_with_fallback = False
             try:
                 _run_officecli(["create", str(temporary)])
                 resident = True
-                _run_officecli(["batch", str(temporary)], input_text=command_json)
-                _run_officecli(["validate", str(temporary)])
+                for batch_commands, batch_sources in _batch_chunks(commands, sources):
+                    command_json = json.dumps(
+                        batch_commands,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    try:
+                        _run_officecli(
+                            ["batch", str(temporary)], input_text=command_json
+                        )
+                    except _OfficeCLICommandError as error:
+                        source = _source_for_command_error(error, batch_sources)
+                        if (
+                            source is not None
+                            and source.fallback_props is not None
+                            and source.name not in raster_fallbacks
+                        ):
+                            raster_fallbacks.add(source.name)
+                            retry_with_fallback = True
+                            break
+                        raise _failure_from_command(error, batch_sources) from error
+                if not retry_with_fallback:
+                    _run_officecli(["validate", str(temporary)])
             except _OfficeCLICommandError as error:
                 source = _source_for_command_error(error, sources)
                 if (

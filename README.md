@@ -97,6 +97,16 @@ in [`docs/OFFICEHTML_CONTRACT_V1.md`](docs/OFFICEHTML_CONTRACT_V1.md). The
 contract is separate from the legacy `python-pptx` renderer and uses OfficeCLI
 1.0.147 for validation, inventory, round-trip projection, and screenshots.
 
+Agents should follow the executable workflow in
+[`docs/OFFICECLI_HTML_TO_PPTX_AGENT_GUIDE.md`](docs/OFFICECLI_HTML_TO_PPTX_AGENT_GUIDE.md)
+for profile selection, preflight, compilation, round-trip checks, Windows UTF-8
+handling, and delivery gates.
+
+The independently versioned `officecli-html-to-pptx` capability line starts at
+[`v0.1`](docs/OFFICECLI_HTML_TO_PPTX_V0.1_RELEASE_NOTES.md). This is a release
+of this repository's HTML-to-PPTX compiler path, not a release of OfficeCLI;
+OfficeCLI `1.0.147` remains its pinned execution and validation dependency.
+
 Run the profile-aware checker with `html-to-pptx-contract` and replay the
 Algeria acceptance gate with `html-to-pptx-algeria-acceptance`; both commands
 write machine-readable JSON when an output path is provided.
@@ -204,7 +214,7 @@ results/deck/
 ## Limitations
 
 - **External images** are not fetched — use base64 `data:` URIs for embedded images
-- **CSS `background-image: url(...)`** on containers is not converted — only `<img>` tags with base64 `src` and inline `<svg>` elements become picture shapes
+- **CSS `background-image: url(...)`** on Author HTML containers is not converted — the explicit `officehtml` reverse profile additionally accepts OfficeCLI-exported picture projections whose owned picture node contains a `data:image/...` background
 - **Radial / multi-layered gradients** are not drawn — they fall back to the solid background color (single `linear-gradient` and `conic-gradient` are supported)
 - **Animations and transitions** are not represented in PPTX
 - **Font availability** — web fonts are mapped to a metric-compatible font in the same family (serif→Georgia, humanist sans→Segoe UI, geometric sans→Century Gothic, mono→Consolas, …). For pixel-exact display type, embed the font in PowerPoint yourself

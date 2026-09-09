@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 from html_to_pptx.contract import (
@@ -65,6 +66,77 @@ def test_officehtml_profile_ignores_viewer_chrome_and_pathless_master_projection
 
     assert not report.blocked
     assert not any(item.code == "legacy_renderer_table_limit" for item in report.diagnostics)
+
+
+def test_officehtml_profile_accepts_css_data_image_picture_source(
+    tmp_path: Path,
+) -> None:
+    source = "data:image/svg+xml;base64," + base64.b64encode(
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"/>'
+    ).decode("ascii")
+    path = _write(
+        tmp_path,
+        f"""<!doctype html><html><body>
+        <div class="slide" style="width:960pt;height:540pt">
+          <div class="picture" data-path="/slide[1]/picture[@id=1]"
+               style="left:10pt;top:10pt;width:80pt;height:60pt">
+            <div style="width:100%;height:100%;background-image:url({source})"></div>
+          </div>
+        </div></body></html>""",
+    )
+
+    report = check_contract(path, "officehtml")
+
+    assert not report.blocked
+    assert any(
+        item["property"] == "background-image"
+        and item["classification"] == "rendered"
+        for item in report.as_dict()["css_classifications"]
+    )
+
+
+def test_officehtml_profile_falls_back_from_invalid_img_to_css_picture_source(
+    tmp_path: Path,
+) -> None:
+    path = _write(
+        tmp_path,
+        """<!doctype html><html><body>
+        <div class="slide" style="width:960pt;height:540pt">
+          <div class="picture" data-path="/slide[1]/picture[@id=1]"
+               style="left:10pt;top:10pt;width:80pt;height:60pt">
+            <img src="about:blank" alt="viewer fallback">
+            <div style="background-image:url(data:image/png;base64,AA==)"></div>
+          </div>
+        </div></body></html>""",
+    )
+
+    report = check_contract(path, "officehtml")
+
+    assert not report.blocked
+
+
+def test_author_profile_still_blocks_css_data_image_background(
+    tmp_path: Path,
+) -> None:
+    path = _write(
+        tmp_path,
+        """<!doctype html><html><body>
+        <div class="slide" style="width:1920px;height:1080px">
+          <div style="left:10px;top:10px;width:80px;height:60px;
+                      background-image:url(data:image/png;base64,AA==)">
+            Visible
+          </div>
+        </div></body></html>""",
+    )
+
+    report = check_contract(path, "author")
+
+    assert report.blocked
+    assert any(
+        item.code == "unsupported_visible_css"
+        and "background-image" in item.message
+        for item in report.diagnostics
+    )
 
 
 def test_officehtml_profile_blocks_an_owned_deferred_object_kind(

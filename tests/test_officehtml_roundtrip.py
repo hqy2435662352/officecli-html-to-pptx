@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
+import html_to_pptx.officecli_compiler as compiler_module
 from html_to_pptx import compile_officecli
+from html_to_pptx.contract import check_contract
 
 
 _DEFAULT_AUTHOR_HTML = (
@@ -30,6 +32,10 @@ _SVG_DATA_URI = "data:image/svg+xml;base64," + base64.b64encode(
     b'<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">'
     b'<rect width="20" height="10" fill="#e60012"/></svg>'
 ).decode("ascii")
+_PNG_DATA_URI = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 def _roundtrip_author_html() -> str:
@@ -158,6 +164,137 @@ async def test_officehtml_profile_does_not_treat_viewer_chrome_as_objects(
     assert result.manifest["object_kind_counts"] == {"shape": 1}
     assert result.manifest["objects"][0]["source_object"] == "/slide[1]/shape[@id=2]"
     assert result.manifest["objects"][0]["text"] == "Owned"
+
+
+@pytest.mark.asyncio
+async def test_officehtml_profile_reads_css_background_picture_source(
+    tmp_path: Path,
+) -> None:
+    officehtml = tmp_path / "projection.html"
+    output = tmp_path / "output.pptx"
+    officehtml.write_text(
+        f"""<!doctype html><html><body>
+        <div class="slide" style="width:960pt;height:540pt;background:#FFFFFF">
+          <div class="picture" data-path="/slide[1]/picture[@id=1]"
+               style="left:12pt;top:18pt;width:60pt;height:24pt">
+            <div style="width:100%;height:100%;background-image:url({_PNG_DATA_URI})"></div>
+          </div>
+        </div></body></html>""",
+        encoding="utf-8",
+    )
+
+    result = await compile_officecli(str(officehtml), "officehtml", str(output))
+
+    assert result.manifest["object_kind_counts"] == {"picture": 1}
+    picture = result.manifest["objects"][0]
+    assert picture["source_object"] == "/slide[1]/picture[@id=1]"
+    assert picture["metadata"]["picture"]["mime"] == "image/png"
+    assert picture["bounds_pt"] == pytest.approx([12, 18, 60, 24])
+
+
+@pytest.mark.asyncio
+async def test_officehtml_profile_uses_css_picture_when_img_is_not_embedded(
+    tmp_path: Path,
+) -> None:
+    officehtml = tmp_path / "projection-with-viewer-img.html"
+    output = tmp_path / "output.pptx"
+    officehtml.write_text(
+        f"""<!doctype html><html><body>
+        <div class="slide" style="width:960pt;height:540pt;background:#FFFFFF">
+          <div class="picture" data-path="/slide[1]/picture[@id=1]"
+               style="left:12pt;top:18pt;width:60pt;height:24pt">
+            <img src="about:blank" alt="viewer fallback">
+            <div style="width:100%;height:100%;background-image:url({_PNG_DATA_URI})"></div>
+          </div>
+        </div></body></html>""",
+        encoding="utf-8",
+    )
+
+    result = await compile_officecli(str(officehtml), "officehtml", str(output))
+
+    picture = result.manifest["objects"][0]
+    assert picture["metadata"]["picture"]["mime"] == "image/png"
+    assert output.is_file()
+
+
+def test_officehtml_parser_keeps_very_long_picture_source(tmp_path: Path) -> None:
+    officehtml = tmp_path / "large-projection.html"
+    source = "data:image/png;base64," + ("A" * 10_100_000)
+    officehtml.write_text(
+        f"""<!doctype html><html><body>
+        <div class="slide" style="width:960pt;height:540pt;background:#FFFFFF">
+          <div class="picture" data-path="/slide[1]/picture[@id=1]"
+               style="left:12pt;top:18pt;width:60pt;height:24pt">
+            <img src="{source}" alt="large source">
+          </div>
+        </div></body></html>""",
+        encoding="utf-8",
+    )
+
+    report = check_contract(officehtml, "officehtml")
+    assert not report.blocked
+    measurements = compiler_module._parse_officehtml_measurements(str(officehtml))
+    assert measurements[0]["elements"][0]["src"] == source
+
+
+@pytest.mark.asyncio
+async def test_officehtml_profile_rasterizes_svg_when_direct_svg_is_unsafe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    officehtml = tmp_path / "svg-projection.html"
+    output = tmp_path / "output.pptx"
+    monkeypatch.setattr(compiler_module, "_OFFICECLI_SVG_SUPPORT", False)
+    officehtml.write_text(
+        f"""<!doctype html><html><body>
+        <div class="slide" style="width:960pt;height:540pt;background:#FFFFFF">
+          <div class="picture" data-path="/slide[1]/picture[@id=1]"
+               style="left:12pt;top:18pt;width:60pt;height:24pt">
+            <img src="{_SVG_DATA_URI}" alt="red mark">
+          </div>
+        </div></body></html>""",
+        encoding="utf-8",
+    )
+
+    result = await compile_officecli(str(officehtml), "officehtml", str(output))
+
+    picture = result.manifest["objects"][0]
+    assert picture["metadata"]["picture"]["mime"] == "image/svg+xml"
+    assert picture["metadata"]["picture"]["fallback_intrinsic_size"]
+    assert output.is_file()
+
+
+@pytest.mark.asyncio
+async def test_officehtml_profile_uses_officecli_utf16_ranges_without_linebreaks(
+    tmp_path: Path,
+) -> None:
+    officehtml = tmp_path / "range-projection.html"
+    output = tmp_path / "output.pptx"
+    officehtml.write_text(
+        """<!doctype html><html><body>
+        <div class="slide" style="width:960pt;height:540pt;background:#FFFFFF">
+          <div class="table-container" data-path="/slide[1]/table[@id=1]"
+               style="left:10pt;top:10pt;width:200pt;height:40pt">
+            <table><colgroup><col style="width:200pt"></colgroup><tbody>
+              <tr style="height:40pt"><td data-cell-path="/slide[1]/table[@id=1]/tr[1]/tc[1]"
+                  style="text-align:center;font-size:12pt;color:#202124">
+                <div class="para" style="text-align:center;font-size:12pt;line-height:1.2">
+                  <span style="font-size:12pt;color:#202124">&#x2713;\n(200mm)</span>
+                </div>
+              </td></tr>
+            </tbody></table>
+          </div>
+        </div></body></html>""",
+        encoding="utf-8",
+    )
+
+    result = await compile_officecli(str(officehtml), "officehtml", str(output))
+
+    assert result.manifest["object_kind_counts"] == {"table": 1}
+    assert result.manifest["objects"][0]["cells"][0]["text"].replace(
+        "\r\n", "\n"
+    ) == "✓\n(200mm)"
+    assert output.is_file()
 
 
 @pytest.mark.asyncio
