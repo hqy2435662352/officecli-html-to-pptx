@@ -82,23 +82,52 @@ EXTRACTION_JS = """
             }
             // This run's own leading space stays inside this run, unless the
             // flow already owns a space at that boundary: then the earlier
-            // space keeps the position and this duplicate is removed.
+            // space keeps the position and this duplicate is removed.  A space
+            // left pending by the previous run of *this same* format is the
+            // same boundary space, so it is claimed rather than duplicated.
             let text = core;
             if (match[1]) {
-                const previous = collapsed.length
-                    ? collapsed[collapsed.length - 1].text
-                    : '';
-                if (!pendingSpace && previous && !previous.endsWith(' ')) {
+                const last = collapsed.length
+                    ? collapsed[collapsed.length - 1]
+                    : null;
+                const format = inlineRunFormat(run);
+                if (pendingSpace && last && last._format === format) {
+                    // The boundary space the previous run left pending belongs
+                    // to the run this text joins, so it moves inside the joined
+                    // text rather than being appended after the merge.
+                    text = ' ' + text;
+                    pendingSpace = false;
+                } else if (!pendingSpace && last && !last.text.endsWith(' ')) {
                     text = ' ' + text;
                 }
             }
             flush();
-            collapsed.push({ ...run, text: text });
+            const format = inlineRunFormat(run);
+            const last = collapsed.length ? collapsed[collapsed.length - 1] : null;
+            if (last && last._format === format) {
+                last.text += text;
+            } else {
+                collapsed.push({ ...run, text: text, _format: format });
+            }
             if (match[3]) pendingSpace = true;
         }
         // The line ends here, so a space still pending is the line-box end edge
         // and is dropped rather than emitted.
         return collapsed;
+    }
+
+    // A run boundary is a formatting boundary, not a DOM node boundary.  Two
+    // runs merge only inside one authored line and only with identical
+    // resolved formatting, so a nested <strong> inside a <span> still wins and
+    // a differently formatted neighbour is never absorbed.  The identity rides
+    // on the run as a private '_format' key the compiler never reads.
+    function inlineRunFormat(run) {
+        return [
+            run.color, run.fontSize, run.fontFamily, run.fontWeight,
+            run.fontStyle, run.textTransform,
+            run.textDecoration === undefined ? 'none' : run.textDecoration,
+            run.href === undefined || run.href === null ? '' : run.href,
+        ].join('\\u0000');
     }
 
     function collapseInlineRuns(runs) {
@@ -112,9 +141,17 @@ EXTRACTION_JS = """
             breakRun = null;
         };
         for (const run of runs) {
+            // Only an explicitly marked break closes a segment.  A newline is a
+            // break where it was *authored* as one (a <br>, or a newline in
+            // white-space:pre* text); a whitespace-only text node of ordinary
+            // ``white-space: normal`` content is authored whitespace, so it
+            // collapses to a boundary space like any other source newline.
             if (run.br === true) {
                 // Keep the authored break marker: a trailing <br> is a real
-                // empty paragraph, while a trailing source newline is not.
+                // empty paragraph, while a trailing source newline is not.  A
+                // break that a nested inline element produced carries the same
+                // ``br`` marker up through the recursion, so it closes the
+                // segment of this flow too.
                 breakRun = { ...run, text: '\\n', br: true };
                 closeSegment();
                 continue;
@@ -128,13 +165,49 @@ EXTRACTION_JS = """
         while (kept.length && kept[kept.length - 1].text === '\\n' && kept[kept.length - 1].br !== true) {
             kept.pop();
         }
-        for (const item of kept) delete item.br;
+        for (const item of kept) {
+            delete item.br;
+            delete item._format;
+        }
         return kept;
     }
 
-    function collectInlineRuns(el) {
+    // Style fields of one resolved inline frame.  ``href`` carries the nearest
+    // enclosing anchor target so a link inside a styled span stays supported;
+    // it is null for every run that is not descended from an <a>.
+    function inlineRunFields(style, text, href) {
+        const bgImage = style.backgroundImage !== 'none' ? style.backgroundImage : null;
+        const fillColor = style.webkitTextFillColor || '';
+        const isGradientText = (fillColor === 'transparent' || fillColor === 'rgba(0, 0, 0, 0)') && bgImage && bgImage.includes('gradient');
+        return {
+            text: text,
+            color: style.color,
+            fontSize: parseFloat(style.fontSize),
+            fontFamily: style.fontFamily,
+            fontWeight: style.fontWeight,
+            fontStyle: style.fontStyle,
+            textTransform: style.textTransform,
+            ...(officecliMode ? {textDecoration: style.textDecorationLine} : {}),
+            href: href || null,
+            isGradientText: isGradientText,
+            backgroundImage: isGradientText ? bgImage : null,
+        };
+    }
+
+    // ``topLevel`` marks the inline flow of the measured element.  Whitespace
+    // collapsing is a property of the whole flow, so it runs exactly once, at
+    // the top: a nested inline element contributes its raw runs and is folded
+    // with the flow around it.  Collapsing a nested element on its own would
+    // resolve its leading space against a line edge that does not exist and
+    // drop a boundary space the authored line keeps (``Canonical: `` followed
+    // by ``<span>North</span><span> Africa</span>``).
+    //
+    // ``href`` is the nearest enclosing anchor target: an <a> hands its own
+    // target to the whole subtree it wraps, so a link's text keeps its
+    // hyperlink even when it sits inside <strong>/<span>.
+    function collectInlineRuns(el, style, topLevel, href) {
         const runs = [];
-        const parentStyle = getComputedStyle(el);
+        const parentStyle = style || getComputedStyle(el);
         const pre = parentStyle.whiteSpace && parentStyle.whiteSpace.indexOf('pre') === 0;
         const nodes = el.childNodes;
         for (let ni = 0; ni < nodes.length; ni++) {
@@ -146,29 +219,22 @@ EXTRACTION_JS = """
                 if (pre) {
                     const segs = node.textContent.split('\\n');
                     for (let si = 0; si < segs.length; si++) {
-                        if (si > 0) runs.push({ text: '\\n', br: true, color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
-                        if (segs[si].length) runs.push({ text: segs[si], color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: parentStyle.textTransform, ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
+                        if (si > 0) runs.push({ ...inlineRunFields(parentStyle, '\\n', href), textTransform: 'none', br: true });
+                        if (segs[si].length) runs.push(inlineRunFields(parentStyle, segs[si], href));
                     }
                     continue;
                 }
                 if (!node.textContent) continue;
-                runs.push({
-                    text: node.textContent,
-                    color: parentStyle.color,
-                    fontSize: parseFloat(parentStyle.fontSize),
-                    fontFamily: parentStyle.fontFamily,
-                    fontWeight: parentStyle.fontWeight,
-                    fontStyle: parentStyle.fontStyle,
-                    textTransform: parentStyle.textTransform,
-                    ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}),
-                });
+                runs.push(inlineRunFields(parentStyle, node.textContent, href));
             } else if (node.nodeType === Node.ELEMENT_NODE) {
                 const tag = node.tagName.toLowerCase();
                 if (['script','style','link','meta'].includes(tag)) continue;
                 const cs = getComputedStyle(node);
                 if (cs.display === 'none' || cs.visibility === 'hidden') continue;
                 if (tag === 'br') {
-                    runs.push({ text: '\\n', br: true, color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
+                    // The one place a break of ordinary content is declared, so
+                    // it is the one place that marks one.
+                    runs.push({ ...inlineRunFields(parentStyle, '\\n', href), textTransform: 'none', br: true });
                     continue;
                 }
                 // Only collect true inline-flow children as runs.  A tag such
@@ -178,30 +244,27 @@ EXTRACTION_JS = """
                 const isInline = officecliMode
                     ? cs.display.startsWith('inline')
                     : cs.display.startsWith('inline') || INLINE_TAGS.has(tag);
-                if (isInline) {
-                    const raw = node.textContent;
-                    if (raw && /\\S/.test(raw)) {
-                        const childBgImage = cs.backgroundImage !== 'none' ? cs.backgroundImage : null;
-                        const childFillColor = cs.webkitTextFillColor || '';
-                        const childIsGradientText = (childFillColor === 'transparent' || childFillColor === 'rgba(0, 0, 0, 0)') && childBgImage && childBgImage.includes('gradient');
-                        runs.push({
-                            text: raw,
-                            color: cs.color,
-                            fontSize: parseFloat(cs.fontSize),
-                            fontFamily: cs.fontFamily,
-                            fontWeight: cs.fontWeight,
-                            fontStyle: cs.fontStyle,
-                            textTransform: cs.textTransform,
-                            ...(officecliMode ? {textDecoration: cs.textDecorationLine} : {}),
-                            href: tag === 'a' ? node.getAttribute('href') : null,
-                            isGradientText: childIsGradientText,
-                            backgroundImage: childIsGradientText ? childBgImage : null,
-                        });
-                    }
+                if (!isInline) continue;
+                // Descend into the inline element instead of flattening it
+                // through textContent: a <br> nested inside an inline element
+                // is a real hard break, and every nested text node keeps the
+                // computed style of its *nearest* inline element (<strong>
+                // inside <span> still wins).  The nested runs stay separate
+                // here: identical formatting is folded once, by the flow-level
+                // collapse below.
+                const childRuns = collectInlineRuns(
+                    node,
+                    cs,
+                    false,
+                    tag === 'a' ? (node.getAttribute('href') || href) : href,
+                );
+                for (const childRun of childRuns) {
+                    runs.push(childRun);
                 }
             }
         }
-        return pre ? runs : collapseInlineRuns(runs);
+        if (!pre && topLevel) return collapseInlineRuns(runs);
+        return runs;
     }
 
 
@@ -560,7 +623,7 @@ EXTRACTION_JS = """
             ? (directText || hasChildElementText(el))
             : (directText && hasChildElementText(el));
         if (hasTextContent) {
-            const runs = collectInlineRuns(el);
+            const runs = collectInlineRuns(el, null, true);
             if (runs.length > 0 && (!officecliMode || !hasNonInlineTextChild(el))) {
                 if (markerPrefix && runs.length > 0) {
                     runs[0].text = markerPrefix + runs[0].text;
