@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>V03-01 negative fixture: nested_list</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background-color: #e8edf5; }
+    .slide {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        display: none;
+        overflow: hidden;
+        background-color: #f8fafc;
+        font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    .slide.active { display: block; }
+    .card {
+        position: absolute;
+        background-color: #ffffff;
+        border: 2px solid #cbd5e1;
+        border-radius: 20px;
+    }
+    .textbox { position: absolute; color: #172033; }
+</style>
+</head>
+<body>
+<main id="deck">
+    <section class="slide active" aria-label="Rejected boundary nested_list">
+        <div class="textbox" id="title" style="left: 120px; top: 70px; width: 1680px; height: 90px; font-size: 48px; line-height: 1.15; font-weight: 700; color: #0f3d66;">
+            V03-01 拒绝边界 / Rejected boundary: nested_list
+        </div>
+        <div class="card" style="left: 1000px; top: 590px; width: 800px; height: 360px;"></div>
+        <ul id="nested-list" style="position: absolute; left: 1080px; top: 635px; width: 300px; font-size: 27px; line-height: 1.35; color: #24324a; padding-left: 42px;">
+            <li>原生项目符号<ul><li>缩进与段落边界</li></ul></li>
+        </ul>
+    </section>
+</main>
+</body>
+</html>
