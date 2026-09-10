@@ -237,6 +237,75 @@ SOFT_WRAP_MODEL = {
     "new_soft_line_break_representation": False,
 }
 
+# The list surface is the top-level HTML list surface this product really
+# supports end to end: one ``ul``/``ol`` becomes one Native List Textbox and
+# every direct ``li`` one Native List Paragraph whose bullet or automatic number,
+# level, and indentation are native PowerPoint paragraph properties.  It is
+# declared once here and consumed by both the Contract checker (which blocks the
+# structures outside it) and the OfficeCLI lowering pass, so the published
+# capability manifest cannot drift from what is enforced.
+LIST_SURFACE_ELEMENTS = ("ol", "ul")
+LIST_MARKER_PRESETS = {"ol": "numbered", "ul": "bullet"}
+LIST_PARAGRAPH_PROPERTIES = ("list", "level", "marginLeft", "indent")
+LIST_LEVELS = (0,)
+LIST_ITEM_SOFT_WRAP = "native-re-wrap-inside-the-measured-list-bounds"
+# One stable, descriptive blocking code per structure outside the surface; each
+# diagnostic carries the source context of the offending DOM node.
+LIST_REJECTION_CODES = (
+    "nested_list",
+    "list_item_hard_break",
+    "multi_paragraph_list_item",
+)
+LIST_REJECTIONS = {
+    "nested_list": (
+        "A <ul>/<ol> nested inside another <ul>/<ol> is outside the initial "
+        "top-level list surface."
+    ),
+    "list_item_hard_break": (
+        "A list item containing a <br> would need more than one Native List "
+        "Paragraph."
+    ),
+    "multi_paragraph_list_item": (
+        "A list item with block-level children would need more than one Native "
+        "List Paragraph."
+    ),
+}
+
+
+def list_surface() -> dict[str, Any]:
+    """Declare the top-level list surface from its single authority.
+
+    ``author_capability_manifest`` publishes this, ``_check_lists`` blocks the
+    structures outside it, and the OfficeCLI lowering pass consumes the same
+    marker presets and paragraph properties, so checking and lowering are held
+    to one declaration instead of a parallel handwritten matrix.
+    """
+    return {
+        "elements": list(LIST_SURFACE_ELEMENTS),
+        "nesting": "top-level-only",
+        "levels": list(LIST_LEVELS),
+        "object_per_list": 1,
+        "object_kind": "textbox",
+        "paragraphs_per_item": 1,
+        "marker": {
+            "property": "list",
+            "presets": dict(LIST_MARKER_PRESETS),
+            "unmarked": "none",
+            "literal_prefix": "rejected",
+            "native": ["a:buChar", "a:buAutoNum"],
+        },
+        "indentation": {
+            "properties": ["marginLeft", "indent", "level"],
+            "native": ["@marL", "@indent", "@lvl"],
+            "margin_left": "measured item text edge minus the list border-box left edge",
+            "indent": "negative one em (the Chromium outside-marker box advance)",
+            "body_inset": "0pt",
+        },
+        "paragraph_properties": sorted(LIST_PARAGRAPH_PROPERTIES),
+        "item_soft_wrap": LIST_ITEM_SOFT_WRAP,
+        "rejections": dict(LIST_REJECTIONS),
+    }
+
 
 def paragraph_layout_surface() -> dict[str, Any]:
     """Declare the paragraph-layout surface from its single authority.
@@ -325,6 +394,7 @@ def author_capability_manifest() -> dict[str, Any]:
             },
         },
         "paragraph_layout_surface": paragraph_layout_surface(),
+        "list_surface": list_surface(),
         "accepted_resources": {
             "picture_source": AUTHOR_PICTURE_SOURCE,
             "external_resources": AUTHOR_EXTERNAL_RESOURCES_ALLOWED,
@@ -770,6 +840,107 @@ def _emit(
     )
 
 
+def _element_tag(element: Any) -> str:
+    return str(element.tag).lower() if isinstance(element.tag, str) else ""
+
+
+def _descendant_tag(element: Any, tag: str) -> Any | None:
+    for descendant in element.iterdescendants():
+        if _element_tag(descendant) == tag:
+            return descendant
+    return None
+
+
+def _child_tag(element: Any, tags: set[str]) -> Any | None:
+    for child in element:
+        if _element_tag(child) in tags:
+            return child
+    return None
+
+
+def _list_stray_text(element: Any) -> str:
+    """Return list-owned text that no direct ``li`` accounts for."""
+    parts = [element.text or ""]
+    parts.extend(child.tail or "" for child in element)
+    return "".join(parts).strip()
+
+
+def _check_lists(document: Any, findings: list[ContractDiagnostic]) -> None:
+    """Reject the list structures outside the declared top-level list surface.
+
+    The accepted surface is one ``ul``/``ol`` per Native List Textbox with one
+    Native List Paragraph per direct, single-paragraph ``li``.  A list nested in
+    another list, an item with a hard break, and an item with block-level
+    children all need paragraph structures the surface does not have, so they
+    block before any output exists.  A list's position in the DOM (inside a
+    ``div`` or ``section``) is not a rejection: only nesting and item structure
+    are.
+    """
+    list_tags = set(LIST_SURFACE_ELEMENTS)
+    for element in document.iter():
+        tag = _element_tag(element)
+        if tag not in list_tags:
+            continue
+        if not _is_visible_author_element(element, document):
+            continue
+        source = _node_path(element)
+        nested = _descendant_tag(element, "ul")
+        if nested is None:
+            nested = _descendant_tag(element, "ol")
+        if nested is not None:
+            _emit(
+                findings,
+                "author",
+                "nested_list",
+                f"{LIST_REJECTIONS['nested_list']} (found <{_element_tag(nested)}> at {_node_path(nested)}.)",
+                _node_path(nested),
+            )
+            continue
+        strays = [child for child in element if _element_tag(child) != "li"]
+        if strays:
+            _emit(
+                findings,
+                "author",
+                "multi_paragraph_list_item",
+                "Only direct <li> items are part of the Native List Textbox "
+                f"surface; found <{_element_tag(strays[0])}> instead.",
+                _node_path(strays[0]),
+            )
+            continue
+        if _list_stray_text(element):
+            _emit(
+                findings,
+                "author",
+                "multi_paragraph_list_item",
+                "List text that no direct <li> item owns is outside the Native List "
+                "Textbox surface.",
+                source,
+            )
+            continue
+        for item in element:
+            hard_break = _descendant_tag(item, "br")
+            if hard_break is not None:
+                _emit(
+                    findings,
+                    "author",
+                    "list_item_hard_break",
+                    f"{LIST_REJECTIONS['list_item_hard_break']} (found <br> at {_node_path(hard_break)}.)",
+                    _node_path(hard_break),
+                )
+                continue
+            block_child = _child_tag(
+                item, {"p", "div", "section", "ul", "ol", "table", "blockquote", "pre"}
+            )
+            if block_child is not None:
+                _emit(
+                    findings,
+                    "author",
+                    "multi_paragraph_list_item",
+                    f"{LIST_REJECTIONS['multi_paragraph_list_item']} (found <{_element_tag(block_child)}> at {_node_path(block_child)}.)",
+                    _node_path(block_child),
+                )
+
+
 def _css_classification(
     property_name: str,
     value: str,
@@ -929,6 +1100,8 @@ def _check_author(
                     "Merged table cells are not supported in OfficeCLI Contract v1.",
                     _node_path(element),
                 )
+
+    _check_lists(document, findings)
 
     for selector, declarations in _stylesheet_rules(document):
         preview_only = _selector_has_preview_token(selector)
@@ -1243,6 +1416,13 @@ __all__ = [
     "SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX",
     "PARAGRAPH_SPACING_PROPERTIES",
     "SOFT_WRAP_MODEL",
+    "LIST_SURFACE_ELEMENTS",
+    "LIST_MARKER_PRESETS",
+    "LIST_PARAGRAPH_PROPERTIES",
+    "LIST_LEVELS",
+    "LIST_ITEM_SOFT_WRAP",
+    "LIST_REJECTION_CODES",
+    "LIST_REJECTIONS",
     "CSS_CLASSIFICATIONS",
     "CSS_PROPERTY_CLASSIFICATIONS",
     "SUPPORTED_CSS_PROPERTIES",
@@ -1250,6 +1430,7 @@ __all__ = [
     "ContractReport",
     "author_capability_manifest",
     "paragraph_layout_surface",
+    "list_surface",
     "check_contract",
 ]
 

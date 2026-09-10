@@ -31,6 +31,7 @@ from lxml import html as _lxml_html
 
 from ..contract import (
     LINE_HEIGHT_PX_PROJECTION_SCALE,
+    LIST_MARKER_PRESETS,
     SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX,
     SOURCE_FIDELITY_LINE_SPACING_TEXT,
     SUPPORTED_INLINE_ELEMENTS,
@@ -500,11 +501,14 @@ def _text_paragraphs(
     backdrop: tuple[int, int, int],
     *,
     preserve_table_projection: bool = False,
+    preserve_paragraph_spacing: bool = False,
+    visual_lines_as_paragraphs: bool = True,
 ) -> tuple[dict[str, Any], ...]:
     raw_paragraphs = element.get("paragraphs") or []
     visual_lines = element.get("visualLines")
     if (
-        isinstance(visual_lines, list)
+        visual_lines_as_paragraphs
+        and isinstance(visual_lines, list)
         and len(visual_lines) > 1
         and len(raw_paragraphs) == 1
         and len(raw_paragraphs[0].get("runs") or []) == 1
@@ -640,12 +644,12 @@ def _text_paragraphs(
                 # into the cell body, so their spacing still needs projection.
                 "space_before_pt": (
                     _pt(_number(raw_paragraph.get("spaceBefore")), scale_y)
-                    if preserve_table_projection
+                    if preserve_table_projection or preserve_paragraph_spacing
                     else 0.0
                 ),
                 "space_after_pt": (
                     _pt(_number(raw_paragraph.get("spaceAfter")), scale_y)
-                    if preserve_table_projection
+                    if preserve_table_projection or preserve_paragraph_spacing
                     else 0.0
                 ),
                 "direction": direction,
@@ -665,7 +669,108 @@ def _paragraph_props(paragraph: dict[str, Any]) -> dict[str, str]:
         props["spaceAfter"] = _length(_number(paragraph["space_after_pt"]))
     if str(paragraph.get("direction", "ltr")).lower() == "rtl":
         props["direction"] = "rtl"
+    marker = str(paragraph.get("list") or "")
+    if marker:
+        # A Native List Paragraph keeps its bullet or automatic number, its
+        # list level, and its indentation as native paragraph properties.  The
+        # marker is never literal text: ``list`` writes ``a:buChar`` for the
+        # bullet preset and ``a:buAutoNum`` for automatic numbering,
+        # ``marginLeft`` writes the list's own @marL, and ``indent`` hangs the
+        # marker box one em left of the item's text edge.
+        props["list"] = marker
+        props["level"] = str(int(_number(paragraph.get("level"))))
+        props["marginLeft"] = _length(_number(paragraph.get("margin_left_pt")))
+        indent_pt = _number(paragraph.get("indent_pt"))
+        if indent_pt:
+            props["indent"] = _length(indent_pt)
     return props
+
+
+def _list_items(list_element: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the direct ``li`` children of a measured list, in source order."""
+    return [
+        child
+        for child in list_element.get("children", []) or []
+        if str(child.get("tag", "element") or "element").lower() == "li"
+    ]
+
+
+def _empty_item_paragraph(
+    item: dict[str, Any],
+    scale_y: float,
+) -> dict[str, Any]:
+    """One Native List Paragraph for an authored item that has no text.
+
+    An authored empty item is still one Native List Paragraph; it keeps the
+    item's own measured paragraph spacing so the items after it do not move.
+    """
+    raw = (item.get("paragraphs") or [{}])[0]
+    return {
+        "text": "",
+        "align": _text_alignment(item),
+        "line_spacing": _line_spacing(item),
+        "space_before_pt": _pt(_number(raw.get("spaceBefore")), scale_y),
+        "space_after_pt": _pt(_number(raw.get("spaceAfter")), scale_y),
+        "direction": str(item.get("direction", "ltr") or "ltr"),
+        "runs": [],
+    }
+
+
+def _list_paragraphs(
+    list_element: dict[str, Any],
+    scale_x: float,
+    scale_y: float,
+    backdrop: tuple[int, int, int],
+    source_slide: int,
+    source_object: str,
+) -> tuple[dict[str, Any], ...]:
+    """Return one Native List Paragraph per direct item of one measured list.
+
+    The list keeps one object identity: every direct ``li`` contributes exactly
+    one paragraph, in source order, carrying the item's own runs (Canonical Run
+    normalization stays inside that one paragraph) plus the native list
+    properties the list element and its items measured.
+    """
+    list_facts = list_element.get("list") or {}
+    list_kind = str(list_facts.get("kind") or list_element.get("tag") or "")
+    list_x = _number(list_element.get("x"))
+    paragraphs: list[dict[str, Any]] = []
+    for position, item in enumerate(_list_items(list_element), start=1):
+        item_facts = item.get("listItem") or {}
+        item_paragraphs = _text_paragraphs(
+            item,
+            scale_x,
+            scale_y,
+            backdrop,
+            preserve_paragraph_spacing=True,
+            visual_lines_as_paragraphs=False,
+        )
+        if not item_paragraphs:
+            item_paragraphs = (_empty_item_paragraph(item, scale_y),)
+        if len(item_paragraphs) != 1:
+            raise _diagnostic(
+                "multi_paragraph_list_item",
+                f"List item {_source_path(source_slide, source_object, 'li', position)} "
+                f"measures {len(item_paragraphs)} native paragraphs; the declared "
+                "list surface is one Native List Paragraph per direct item.",
+                source_slide,
+                _source_path(source_slide, source_object, "li", position),
+            )
+        paragraph = dict(item_paragraphs[0])
+        first_run = (paragraph.get("runs") or [{}])[0]
+        font_size_pt = _number(
+            first_run.get("font_size_pt"),
+            _pt(_number(item.get("fontSize")), scale_x),
+        )
+        paragraph["list"] = str(
+            item_facts.get("marker")
+            or LIST_MARKER_PRESETS.get(list_kind, "bullet")
+        )
+        paragraph["level"] = int(_number(item_facts.get("level")))
+        paragraph["margin_left_pt"] = _pt(_number(item.get("x")) - list_x, scale_x)
+        paragraph["indent_pt"] = -font_size_pt if font_size_pt > 0 else 0.0
+        paragraphs.append(paragraph)
+    return tuple(paragraphs)
 
 
 def _run_props(run: dict[str, Any]) -> dict[str, str]:
@@ -1577,7 +1682,10 @@ def _text_props(
     direction = str(element.get("direction", "ltr") or "ltr").lower()
     if direction == "rtl":
         props["direction"] = "rtl"
-    margin = _margin(element, scale_x, scale_y)
+    # A Native List Textbox carries the list's own indentation in its native
+    # paragraph properties (marginLeft/indent), so its text body keeps no CSS
+    # inset: a body inset would double-count the list padding.
+    margin = "0pt" if element.get("list") else _margin(element, scale_x, scale_y)
     if margin is not None:
         props["margin"] = margin
     # The browser measurement is the visual source of truth.  A generic
@@ -2305,12 +2413,28 @@ def _lower_slide(
         inherited_backdrop: tuple[int, int, int],
     ) -> None:
         tag = str(element.get("tag", "element") or "element").lower()
-        # One paragraph structure per element: the object text and every
-        # OfficeCLI range offset below are computed from this same structure, so
-        # a range can never address the wrong characters.
-        paragraphs = _text_paragraphs(
-            element, scale_x, scale_y, inherited_backdrop
-        )
+        is_list = bool(element.get("list"))
+        if is_list:
+            # One supported top-level list is one Native List Textbox: its
+            # direct items are the paragraphs of that one object, so no item is
+            # ever emitted as its own textbox, picture, or marker-simulating
+            # shape.  The item ``li`` children are folded in below and are never
+            # walked as objects of their own.
+            paragraphs = _list_paragraphs(
+                element,
+                scale_x,
+                scale_y,
+                inherited_backdrop,
+                source_slide,
+                source_object,
+            )
+        else:
+            # One paragraph structure per element: the object text and every
+            # OfficeCLI range offset below are computed from this same
+            # structure, so a range can never address the wrong characters.
+            paragraphs = _text_paragraphs(
+                element, scale_x, scale_y, inherited_backdrop
+            )
         text = _paragraphs_text(paragraphs)
         if element.get("isImage") or element.get("isSvg") or tag in {"img", "svg"}:
             picture_bounds = _bounds(element, scale_x, scale_y)
@@ -2447,7 +2571,7 @@ def _lower_slide(
                 bounds,
                 paragraphs=paragraphs,
             )
-        elif text:
+        elif text or paragraphs:
             props = _text_props(element, bounds, scale_x_local, scale_y_local, inherited_backdrop)
             add_object(
                 element,
@@ -2480,7 +2604,9 @@ def _lower_slide(
                 (bounds[0], bounds[1], left_width, bounds[3]),
             )
 
-        child_elements = element.get("children", []) or []
+        # A list's own items are the paragraphs of the one list object, so they
+        # are never walked as separate objects.
+        child_elements = [] if is_list else (element.get("children", []) or [])
         for position, child in enumerate(child_elements, start=1):
             child_tag = str(child.get("tag", "element") or "element").lower()
             if element.get("inlineRuns") and child_tag in _INLINE_TAGS:

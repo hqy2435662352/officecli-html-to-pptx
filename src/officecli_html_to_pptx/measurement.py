@@ -41,6 +41,22 @@ EXTRACTION_JS = """
         return text.replace(/\\s+/g, ' ').trim();
     }
 
+    const LIST_TAGS = ['ul', 'ol'];
+    function isListTag(node) {
+        return !!node && LIST_TAGS.includes(node.tagName.toLowerCase());
+    }
+    // 0-based list nesting level: the number of enclosing <ul>/<ol> elements
+    // including the element's own list, minus one.  A direct item of a
+    // top-level list is level 0, which is the only level the initial list
+    // surface lowers.
+    function listLevel(node) {
+        let count = isListTag(node) ? 1 : 0;
+        for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+            if (isListTag(parent)) count += 1;
+        }
+        return Math.max(0, count - 1);
+    }
+
     // Whitespace collapsing is a property of the whole inline flow, not of one
     // DOM node: a boundary space that one sibling owns must still survive next
     // to another.  Runs are therefore collected with their raw text and
@@ -430,22 +446,37 @@ EXTRACTION_JS = """
         const tag = el.tagName.toLowerCase();
 
         let markerColor = null;
-        let markerPrefix = '';
+        // List facts for the lowering seam.  The marker is never injected as
+        // literal text: one supported top-level list becomes one Native List
+        // Textbox and every direct item one Native List Paragraph whose bullet
+        // or automatic number, level, and indentation are native PowerPoint
+        // paragraph properties.
+        let listFacts = null;
+        let listItemFacts = null;
         if (tag === 'li') {
-            const parentTag = el.parentElement ? el.parentElement.tagName.toLowerCase() : '';
-            const listStyle = getComputedStyle(el).listStyleType;
-            if (parentTag === 'ol') {
-                const index = Array.from(el.parentElement.children).indexOf(el) + 1;
-                markerPrefix = index + '. ';
-                directText = markerPrefix + directText;
-            } else if (listStyle !== 'none') {
-                markerPrefix = '\\u2022 ';
-                directText = markerPrefix + directText;
-            }
+            const parent = el.parentElement;
+            const parentTag = parent ? parent.tagName.toLowerCase() : '';
+            listItemFacts = {
+                kind: isListTag(parent) ? parentTag : '',
+                level: listLevel(el),
+                index: parent ? Array.from(parent.children).indexOf(el) + 1 : 1,
+                // ``list-style-type: none`` stays unmarked, exactly as the
+                // released literal-prefix measurement left it unmarked.
+                marker: parentTag === 'ol'
+                    ? 'numbered'
+                    : (getComputedStyle(el).listStyleType === 'none' ? 'none' : 'bullet'),
+            };
             try {
                 const ms = getComputedStyle(el, '::marker');
                 if (ms && ms.color) markerColor = ms.color;
             } catch(e) {}
+        } else if (isListTag(el)) {
+            listFacts = {
+                kind: tag,
+                level: listLevel(el),
+                itemCount: Array.from(el.children)
+                    .filter(child => child.tagName.toLowerCase() === 'li').length,
+            };
         }
 
         const isImg = tag === 'img';
@@ -530,6 +561,8 @@ EXTRACTION_JS = """
             alt: isImg ? el.getAttribute('alt') : null,
             href: tag === 'a' ? el.getAttribute('href') : null,
             markerColor: markerColor,
+            list: listFacts,
+            listItem: listItemFacts,
             isSvgDataUri: isSvgDataUri,
             children: []
         };
@@ -625,9 +658,6 @@ EXTRACTION_JS = """
         if (hasTextContent) {
             const runs = collectInlineRuns(el, null, true);
             if (runs.length > 0 && (!officecliMode || !hasNonInlineTextChild(el))) {
-                if (markerPrefix && runs.length > 0) {
-                    runs[0].text = markerPrefix + runs[0].text;
-                }
                 data.inlineRuns = runs;
                 if (officecliMode) {
                     // Keep the flattened text field as a compatibility view
@@ -641,10 +671,10 @@ EXTRACTION_JS = """
                     data.text = '';
                 }
             } else if (directText && officecliMode) {
-                data.paragraphs = textParagraphs(el, [], markerPrefix + directText);
+                data.paragraphs = textParagraphs(el, [], directText);
             }
         } else if (directText && officecliMode) {
-            data.paragraphs = textParagraphs(el, [], markerPrefix + directText);
+            data.paragraphs = textParagraphs(el, [], directText);
         }
 
         if (
@@ -660,7 +690,7 @@ EXTRACTION_JS = """
         }
 
         const isContainer = !data.text && !isImg && !isSvg && !hasVisibleBg && !hasBorder &&
-                           !isTableElement &&
+                           !isTableElement && !data.list && !data.listItem &&
                            data.backgroundImage === null && !data.inlineRuns;
         if (isContainer && data.children.length === 1 && depth > 0) {
             const child = data.children[0];
