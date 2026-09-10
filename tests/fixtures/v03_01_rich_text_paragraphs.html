@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>V03-01 Rich Text and Paragraphs</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background-color: #e8edf5; }
+    .slide {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        display: none;
+        overflow: hidden;
+        background-color: #f8fafc;
+        font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    .slide.active { display: block; }
+    .card {
+        position: absolute;
+        background-color: #ffffff;
+        border: 2px solid #cbd5e1;
+        border-radius: 20px;
+    }
+    .textbox { position: absolute; color: #172033; }
+    .canonical-run {
+        font-family: Georgia, serif;
+        font-size: 30px;
+        font-weight: 700;
+        color: #0f6b78;
+    }
+    .slide-counter {
+        position: fixed;
+        right: 20px;
+        bottom: 16px;
+        color: #64748b;
+        font: 16px "Segoe UI", sans-serif;
+        user-select: none;
+    }
+</style>
+</head>
+<body>
+<main id="deck">
+    <section class="slide active" aria-label="Rich text and paragraph fidelity fixture">
+        <div class="textbox" id="title" style="left: 120px; top: 70px; width: 1680px; height: 90px; font-size: 48px; line-height: 1.15; font-weight: 700; color: #0f3d66;">
+            V03-01 原生文本与段落 / Native Rich Text
+        </div>
+
+        <div class="card" style="left: 120px; top: 200px; width: 800px; height: 340px;"></div>
+        <div class="textbox" id="mixed-runs" style="left: 170px; top: 250px; width: 700px; height: 235px; font-size: 30px; line-height: 1.45; color: #24324a;">
+            常规 Regular · <strong style="font-family: Georgia, serif; font-size: 34px; color: #0f6b78;">粗体 Bold</strong> · <em style="font-size: 28px; color: #9a3412;">斜体 Italic</em> · <u style="color: #4338ca;">下划线 Underline</u> · 数字 2026 · emoji 🚀<br>
+            Canonical: <span class="canonical-run" data-canonical-part="1">North</span><span class="canonical-run" data-canonical-part="2"> Africa</span>
+        </div>
+
+        <div class="card" style="left: 1000px; top: 200px; width: 800px; height: 340px;"></div>
+        <div class="textbox" id="paragraphs" style="left: 1050px; top: 245px; width: 700px; height: 245px; font-size: 28px; line-height: 1.35; text-align: left; color: #24324a;">
+            <span data-run-across-br="true" style="font-weight: 700; color: #9a3412;">跨段样式 A<br>Cross-break style B</span><br><br>Second paragraph after an empty paragraph.<br>第三段：显式换行后仍可编辑。
+        </div>
+
+        <div class="card" style="left: 120px; top: 590px; width: 800px; height: 360px;"></div>
+        <div class="textbox" id="soft-wrap" style="left: 170px; top: 640px; width: 650px; height: 220px; font-size: 31px; line-height: 1.35; color: #24324a;">
+            Chromium decides this bilingual soft wrap：浏览器决定视觉换行，PowerPoint 保留可编辑段落与原始阅读顺序。
+        </div>
+
+        <div class="card" style="left: 1000px; top: 590px; width: 800px; height: 360px;"></div>
+        <ul id="unordered-list" style="position: absolute; left: 1080px; top: 635px; width: 300px; font-size: 27px; line-height: 1.35; color: #24324a; padding-left: 42px;">
+            <li style="margin-bottom: 14px;">原生项目符号</li>
+            <li>缩进与段落边界</li>
+        </ul>
+        <ol id="ordered-list" style="position: absolute; left: 1450px; top: 635px; width: 270px; font-size: 27px; line-height: 1.35; color: #24324a; padding-left: 42px;">
+            <li style="margin-bottom: 14px;">First step</li>
+            <li>第二步 2️⃣</li>
+        </ol>
+    </section>
+</main>
+<div class="slide-counter" aria-hidden="true">1 / 1</div>
+<script>
+    const slides = [...document.querySelectorAll('.slide')];
+    let current = 0;
+    function goTo(index) {
+        current = Math.max(0, Math.min(index, slides.length - 1));
+        slides.forEach((slide, i) => slide.classList.toggle('active', i === current));
+    }
+    function next() { goTo(current + 1); }
+    function previous() { goTo(current - 1); }
+    document.addEventListener('keydown', event => {
+        if (['ArrowRight', 'PageDown', ' '].includes(event.key)) next();
+        if (['ArrowLeft', 'PageUp'].includes(event.key)) previous();
+        if (event.key === 'Home') goTo(0);
+        if (event.key === 'End') goTo(slides.length - 1);
+    });
+</script>
+</body>
+</html>

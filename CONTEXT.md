@@ -165,6 +165,38 @@ path, an openable editable PPTX with complete evidence, `compileall`, and
 mode, the full Algeria regression, or WSL2 validation.
 _Avoid_: certification program, multi-layer release framework
 
+**User-Path Acceptance**:
+Completion evidence produced through the installed product's public command
+sequence: `capabilities`, `doctor`, `check`, `build`, Visual Review, and
+`finalize`. Internal module tests may diagnose failures but cannot substitute
+for this evidence.
+_Avoid_: compiler-only acceptance, internal-test completion
+
+**Native List Paragraph**:
+A PowerPoint paragraph whose bullet or automatic numbering, level, and
+indentation are stored as native paragraph properties. Literal `•` or `1.` text
+prefixes are content, not Native List Paragraphs.
+_Avoid_: marker-prefixed text, simulated list
+
+**Native List Textbox**:
+The single PowerPoint text-bearing object produced from one top-level HTML
+`ul` or `ol`; each direct `li` becomes one Native List Paragraph inside it.
+Nested lists are outside the initial V03-01 acceptance surface.
+_Avoid_: one textbox per list item, grouped marker text
+
+**Paragraph-local Run**:
+A native PowerPoint text run wholly contained by one paragraph. A styled HTML
+inline element that crosses `<br>` becomes separate Paragraph-local Runs with
+the same resolved formatting; no run range includes a paragraph separator.
+_Avoid_: cross-paragraph run, separator-inclusive range
+
+**Canonical Run**:
+The normalized native run defined by a formatting or supported-semantic
+boundary rather than an HTML node boundary. Adjacent source runs in the same
+paragraph and list item merge only when their resolved formatting and supported
+semantic attributes are identical, without changing text or whitespace.
+_Avoid_: DOM-node run, cross-boundary merge, whitespace-normalized run
+
 **Finalization**:
 A lightweight validation of the completed Visual Review record and its
 association with one Evidence Bundle. It never recompiles, rerenders, performs
