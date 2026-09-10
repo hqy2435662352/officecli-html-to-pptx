@@ -199,6 +199,110 @@ CANONICAL_RUN_POLICY = {
     "range_units": "utf-16-code-units",
 }
 
+# The paragraph-layout surface is the block-level text surface this product
+# really supports end to end.  Like ``SUPPORTED_INLINE_ELEMENTS`` it is declared
+# once here and consumed by both the checker and the lowering pass, so the
+# public capability manifest cannot drift from the paragraph alignment and
+# soft-wrap behavior the compiler applies.
+TEXT_ALIGNMENT_VALUES = ("center", "justify", "left", "right")
+TEXT_ALIGNMENT_DEFAULT = "left"
+TEXT_ALIGNMENT_MAPPING = {
+    "start": {"ltr": "left", "rtl": "right"},
+    "end": {"ltr": "right", "rtl": "left"},
+}
+LINE_HEIGHT_PROPERTY = "line-height"
+PARAGRAPH_SPACING_PROPERTIES = ("margin-top", "margin-bottom")
+# The lowering pass keeps the released V0.2 CSS-pixel projection (a px
+# line-height is scaled by 0.75) except for the one reviewed source-fidelity
+# label below, which opts into the raw browser ratio.
+LINE_HEIGHT_PX_PROJECTION_SCALE = 0.75
+SOURCE_FIDELITY_LINE_SPACING_TEXT = "ALGERIA PRODUCT LINE-UP"
+SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX = 45.0
+# Chromium's measured visual lines are the soft-wrap authority.  They become the
+# native paragraph boundaries of the one authored text object; no new
+# soft-line-break representation exists in the PPT Object IR.
+SOFT_WRAP_MODEL = {
+    "representation": "chromium-visual-lines-as-native-paragraph-boundaries",
+    "measured_property": "visualLines",
+    "unit": "native-paragraph",
+    "requires": [
+        "one-source-paragraph",
+        "one-source-run",
+        "visual-lines-rejoin-to-the-authored-text",
+        "ordered-soft-wrap-sequence",
+    ],
+    "fallback": "authored-paragraph-when-the-visual-lines-are-not-a-repartition",
+    "object_per_source": 1,
+    "object_kind": "textbox",
+    "new_soft_line_break_representation": False,
+}
+
+
+def paragraph_layout_surface() -> dict[str, Any]:
+    """Declare the paragraph-layout surface from its single authority.
+
+    ``author_capability_manifest`` publishes this, and both the Contract
+    checker and the OfficeCLI lowering pass resolve alignment through
+    ``_resolve_text_alignment`` in this module, so the published surface is the
+    same data the pipeline is held to rather than a parallel handwritten matrix.
+    """
+    return {
+        "alignment": {
+            "property": "text-align",
+            "values": sorted(TEXT_ALIGNMENT_VALUES),
+            "default": TEXT_ALIGNMENT_DEFAULT,
+            "mapping": {
+                name: dict(directions)
+                for name, directions in TEXT_ALIGNMENT_MAPPING.items()
+            },
+            "native": "paragraph-align",
+        },
+        "line_height": {
+            "property": LINE_HEIGHT_PROPERTY,
+            "native": "lineSpacing",
+            "unitless": "line-height / font-size",
+            "length_with_px_projection": (
+                f"(line-height x {LINE_HEIGHT_PX_PROJECTION_SCALE}) / font-size"
+            ),
+            "length_with_source_fidelity_projection": "line-height / font-size",
+            "omitted_when_ratio_within": 0.01,
+            "precision": "0.001x",
+            "default": "absent",
+            "source_fidelity_text": SOURCE_FIDELITY_LINE_SPACING_TEXT,
+            "source_fidelity_min_font_size_px": (
+                SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX
+            ),
+        },
+        "paragraph_spacing": {
+            "properties": list(PARAGRAPH_SPACING_PROPERTIES),
+            "native": ["spaceBefore", "spaceAfter"],
+            "unit": "pt",
+            "projection": "css-margin-px-to-native-paragraph-points",
+            "default": "absent",
+            "emitted_at": ["table-cell-paragraph"],
+            "standalone_text_block": "margins-are-already-in-the-measured-bounds",
+        },
+        "soft_wrap": {
+            key: (list(value) if isinstance(value, list) else value)
+            for key, value in SOFT_WRAP_MODEL.items()
+        },
+    }
+
+
+def _resolve_text_alignment(element: Mapping[str, Any]) -> str:
+    """Resolve a measured ``text-align`` to its native paragraph alignment.
+
+    The OfficeCLI lowering of a text body, a shape, and a table cell all use
+    this one resolution, so a declared alignment value cannot be one the
+    compiler would silently rewrite.
+    """
+    value = str(element.get("textAlign", "start") or "start").lower()
+    direction = str(element.get("direction", "ltr") or "ltr").lower()
+    relative = TEXT_ALIGNMENT_MAPPING.get(value)
+    if relative is not None:
+        return relative["rtl"] if direction == "rtl" else relative["ltr"]
+    return value if value in TEXT_ALIGNMENT_VALUES else TEXT_ALIGNMENT_DEFAULT
+
 
 def author_capability_manifest() -> dict[str, Any]:
     """Return the Author support claims owned by the Contract checker."""
@@ -220,6 +324,7 @@ def author_capability_manifest() -> dict[str, Any]:
                 for key, value in CANONICAL_RUN_POLICY.items()
             },
         },
+        "paragraph_layout_surface": paragraph_layout_surface(),
         "accepted_resources": {
             "picture_source": AUTHOR_PICTURE_SOURCE,
             "external_resources": AUTHOR_EXTERNAL_RESOURCES_ALLOWED,
@@ -1129,12 +1234,22 @@ __all__ = [
     "SUPPORTED_INLINE_ELEMENTS",
     "MIXED_RUN_ATTRIBUTES",
     "CANONICAL_RUN_POLICY",
+    "TEXT_ALIGNMENT_VALUES",
+    "TEXT_ALIGNMENT_DEFAULT",
+    "TEXT_ALIGNMENT_MAPPING",
+    "LINE_HEIGHT_PROPERTY",
+    "LINE_HEIGHT_PX_PROJECTION_SCALE",
+    "SOURCE_FIDELITY_LINE_SPACING_TEXT",
+    "SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX",
+    "PARAGRAPH_SPACING_PROPERTIES",
+    "SOFT_WRAP_MODEL",
     "CSS_CLASSIFICATIONS",
     "CSS_PROPERTY_CLASSIFICATIONS",
     "SUPPORTED_CSS_PROPERTIES",
     "ContractDiagnostic",
     "ContractReport",
     "author_capability_manifest",
+    "paragraph_layout_surface",
     "check_contract",
 ]
 

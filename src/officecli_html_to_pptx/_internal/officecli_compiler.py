@@ -30,11 +30,15 @@ from PIL import Image
 from lxml import html as _lxml_html
 
 from ..contract import (
+    LINE_HEIGHT_PX_PROJECTION_SCALE,
+    SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX,
+    SOURCE_FIDELITY_LINE_SPACING_TEXT,
     SUPPORTED_INLINE_ELEMENTS,
     ContractReport,
     _inline_styles,
     _officehtml_parser,
     _officehtml_picture_source,
+    _resolve_text_alignment,
     check_contract,
 )
 from ..measurement import extract_measurements
@@ -1405,9 +1409,10 @@ def _line_spacing(
         # measured in browser pixels.  Existing non-target text and the
         # table-cell path retain the established OfficeCLI 1.0.147 projection;
         # the targeted Author title opts into the browser ratio so it does not
-        # become 25% tighter.
+        # become 25% tighter.  Both branches are declared by the Contract
+        # ``paragraph_layout_surface`` line-height entry.
         if legacy_css_pixel_projection and line_height.lower().strip().endswith("px"):
-            line_height_value *= 0.75
+            line_height_value *= LINE_HEIGHT_PX_PROJECTION_SCALE
         ratio = line_height_value / font_size
     if abs(ratio - 1.0) < 0.01:
         return None
@@ -1415,13 +1420,8 @@ def _line_spacing(
 
 
 def _text_alignment(element: dict[str, Any]) -> str:
-    value = str(element.get("textAlign", "start") or "start").lower()
-    direction = str(element.get("direction", "ltr") or "ltr").lower()
-    if value == "start":
-        return "right" if direction == "rtl" else "left"
-    if value == "end":
-        return "left" if direction == "rtl" else "right"
-    return value if value in {"left", "center", "right", "justify"} else "left"
+    """Native paragraph alignment, resolved by the declared Contract surface."""
+    return _resolve_text_alignment(element)
 
 
 def _vertical_alignment(element: dict[str, Any]) -> str:
@@ -1489,8 +1489,9 @@ def _tight_single_line_font_scale(
 def _source_fidelity_line_spacing(element: dict[str, Any]) -> bool:
     """Use browser-computed CSS pixels for the reviewed slide-1 title only."""
     return (
-        _text_of(element).strip() == "ALGERIA PRODUCT LINE-UP"
-        and _number(element.get("fontSize")) >= 45
+        _text_of(element).strip() == SOURCE_FIDELITY_LINE_SPACING_TEXT
+        and _number(element.get("fontSize"))
+        >= SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX
     )
 
 
