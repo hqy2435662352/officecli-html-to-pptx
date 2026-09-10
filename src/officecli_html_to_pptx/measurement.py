@@ -30,14 +30,106 @@ EXTRACTION_JS = """
         'small','u','s','del','abbr','cite','q','time','var','kbd',
     ]);
     function getDirectText(el) {
+        // Direct text nodes with browser-equivalent whitespace collapsing applied
+        // to the element's own inline flow (leading/trailing whitespace drops,
+        // interior runs collapse to one space).  No source character is added or
+        // dropped besides that CSS white-space:normal collapsing.
         let text = '';
         for (const node of el.childNodes) {
-            if (node.nodeType === Node.TEXT_NODE) {
-                const t = node.textContent.trim();
-                if (t) text += (text ? ' ' : '') + t;
-            }
+            if (node.nodeType === Node.TEXT_NODE) text += node.textContent;
         }
-        return text;
+        return text.replace(/\\s+/g, ' ').trim();
+    }
+
+    // Whitespace collapsing is a property of the whole inline flow, not of one
+    // DOM node: a boundary space that one sibling owns must still survive next
+    // to another.  Runs are therefore collected with their raw text and
+    // collapsed once, after the whole flow is known.
+    //
+    // One segment is one browser line: an authored <br> ends the segment before
+    // it and starts the next.  Within a segment:
+    //  - whitespace runs collapse to exactly one space;
+    //  - that space stays with the run that owns the source character, so a
+    //    boundary space never migrates into a differently formatted run;
+    //  - only the line-box edges drop whitespace: the start of the flow, the
+    //    end of the flow, and a duplicate of a space the flow already owns.
+    function collapseSegment(segment) {
+        const collapsed = [];
+        // A space whose owning run is already emitted, but whose fate is still
+        // open: it survives unless the line ends here (line-box end edge) or
+        // the next run starts with a space of its own (a duplicate).
+        let pendingSpace = false;
+        const flush = () => {
+            if (pendingSpace && collapsed.length) {
+                collapsed[collapsed.length - 1].text += ' ';
+            }
+            pendingSpace = false;
+        };
+        for (const run of segment) {
+            const raw = String(run.text == null ? '' : run.text);
+            if (!raw) continue;
+            // The segment is one browser line, so a newline inside it is only
+            // source formatting whitespace and collapses like any other space.
+            const match = raw.match(/^(\\s*)([\\s\\S]*?)(\\s*)$/);
+            const core = match[2].replace(/\\s+/g, ' ');
+            if (!core) {
+                // Whitespace-only source resolves to a boundary space of the
+                // flow and carries no format of its own: at the flow start it
+                // is the line leading space (dropped), otherwise it attaches to
+                // the run emitted before it.
+                if (collapsed.length) pendingSpace = true;
+                continue;
+            }
+            // This run's own leading space stays inside this run, unless the
+            // flow already owns a space at that boundary: then the earlier
+            // space keeps the position and this duplicate is removed.
+            let text = core;
+            if (match[1]) {
+                const previous = collapsed.length
+                    ? collapsed[collapsed.length - 1].text
+                    : '';
+                if (!pendingSpace && previous && !previous.endsWith(' ')) {
+                    text = ' ' + text;
+                }
+            }
+            flush();
+            collapsed.push({ ...run, text: text });
+            if (match[3]) pendingSpace = true;
+        }
+        // The line ends here, so a space still pending is the line-box end edge
+        // and is dropped rather than emitted.
+        return collapsed;
+    }
+
+    function collapseInlineRuns(runs) {
+        const flow = [];
+        let segment = [];
+        let breakRun = null;
+        const closeSegment = () => {
+            flow.push(...collapseSegment(segment));
+            if (breakRun) flow.push(breakRun);
+            segment = [];
+            breakRun = null;
+        };
+        for (const run of runs) {
+            if (run.br === true) {
+                // Keep the authored break marker: a trailing <br> is a real
+                // empty paragraph, while a trailing source newline is not.
+                breakRun = { ...run, text: '\\n', br: true };
+                closeSegment();
+                continue;
+            }
+            segment.push(run);
+        }
+        closeSegment();
+        // A trailing source newline is the indentation that closes the flow, and
+        // a whitespace run never becomes text of its own.
+        const kept = flow.filter(item => item.text === '\\n' || /\\S/.test(item.text));
+        while (kept.length && kept[kept.length - 1].text === '\\n' && kept[kept.length - 1].br !== true) {
+            kept.pop();
+        }
+        for (const item of kept) delete item.br;
+        return kept;
     }
 
     function collectInlineRuns(el) {
@@ -54,19 +146,14 @@ EXTRACTION_JS = """
                 if (pre) {
                     const segs = node.textContent.split('\\n');
                     for (let si = 0; si < segs.length; si++) {
-                        if (si > 0) runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
+                        if (si > 0) runs.push({ text: '\\n', br: true, color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
                         if (segs[si].length) runs.push({ text: segs[si], color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: parentStyle.textTransform, ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
                     }
                     continue;
                 }
-                // Collapse internal whitespace runs to single spaces (browser behavior)
-                // but preserve boundary spaces between inline siblings
-                let t = node.textContent.replace(/\\s+/g, ' ');
-                if (ni === 0) t = t.replace(/^\\s+/, '');
-                if (ni === nodes.length - 1) t = t.replace(/\\s+$/, '');
-                if (!t) continue;
+                if (!node.textContent) continue;
                 runs.push({
-                    text: t,
+                    text: node.textContent,
                     color: parentStyle.color,
                     fontSize: parseFloat(parentStyle.fontSize),
                     fontFamily: parentStyle.fontFamily,
@@ -81,7 +168,7 @@ EXTRACTION_JS = """
                 const cs = getComputedStyle(node);
                 if (cs.display === 'none' || cs.visibility === 'hidden') continue;
                 if (tag === 'br') {
-                    runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
+                    runs.push({ text: '\\n', br: true, color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
                     continue;
                 }
                 // Only collect true inline-flow children as runs.  A tag such
@@ -92,13 +179,13 @@ EXTRACTION_JS = """
                     ? cs.display.startsWith('inline')
                     : cs.display.startsWith('inline') || INLINE_TAGS.has(tag);
                 if (isInline) {
-                    const text = node.textContent.trim();
-                    if (text) {
+                    const raw = node.textContent;
+                    if (raw && /\\S/.test(raw)) {
                         const childBgImage = cs.backgroundImage !== 'none' ? cs.backgroundImage : null;
                         const childFillColor = cs.webkitTextFillColor || '';
                         const childIsGradientText = (childFillColor === 'transparent' || childFillColor === 'rgba(0, 0, 0, 0)') && childBgImage && childBgImage.includes('gradient');
                         runs.push({
-                            text: text,
+                            text: raw,
                             color: cs.color,
                             fontSize: parseFloat(cs.fontSize),
                             fontFamily: cs.fontFamily,
@@ -114,8 +201,9 @@ EXTRACTION_JS = """
                 }
             }
         }
-        return runs;
+        return pre ? runs : collapseInlineRuns(runs);
     }
+
 
     function textParagraphs(el, runs, directText) {
         const style = getComputedStyle(el);

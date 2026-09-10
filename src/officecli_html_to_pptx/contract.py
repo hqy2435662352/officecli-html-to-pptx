@@ -155,6 +155,50 @@ CSS_PROPERTY_CLASSIFICATIONS = {
 }
 SUPPORTED_CSS_PROPERTIES = frozenset(CSS_PROPERTY_CLASSIFICATIONS)
 
+# The mixed-run surface is the inline formatting surface this product really
+# supports end to end.  It is declared once here and consumed by both the
+# Contract checker (``check``) and the OfficeCLI lowering pass, so the public
+# capability manifest cannot drift from what is actually enforced.
+SUPPORTED_INLINE_ELEMENTS = (
+    "span",
+    "strong",
+    "em",
+    "b",
+    "i",
+    "a",
+    "code",
+    "mark",
+    "sub",
+    "sup",
+    "small",
+    "u",
+    "s",
+    "del",
+    "abbr",
+    "cite",
+    "q",
+    "time",
+    "var",
+    "kbd",
+)
+MIXED_RUN_ATTRIBUTES = {
+    "font_family": "font-family",
+    "font_size": "font-size",
+    "bold": "font-weight",
+    "italic": "font-style",
+    "color": "color",
+    "underline": "text-decoration",
+}
+CANONICAL_RUN_POLICY = {
+    "scope": "paragraph",
+    "requires": [
+        "identical resolved formatting",
+        "identical supported semantic attributes",
+    ],
+    "forbidden_across": ["paragraph", "list_item", "hard_break"],
+    "range_units": "utf-16-code-units",
+}
+
 
 def author_capability_manifest() -> dict[str, Any]:
     """Return the Author support claims owned by the Contract checker."""
@@ -165,6 +209,16 @@ def author_capability_manifest() -> dict[str, Any]:
         "css_properties": {
             name: CSS_PROPERTY_CLASSIFICATIONS[name]
             for name in sorted(CSS_PROPERTY_CLASSIFICATIONS)
+        },
+        "mixed_run_surface": {
+            "attributes": dict(MIXED_RUN_ATTRIBUTES),
+            "inline_elements": sorted(SUPPORTED_INLINE_ELEMENTS),
+            "canonical_run": {
+                key: (
+                    list(value) if isinstance(value, list) else value
+                )
+                for key, value in CANONICAL_RUN_POLICY.items()
+            },
         },
         "accepted_resources": {
             "picture_source": AUTHOR_PICTURE_SOURCE,
@@ -1072,6 +1126,9 @@ __all__ = [
     "AUTHOR_TABLE_CELL_SPANS",
     "SUPPORTED_PROFILES",
     "SUPPORTED_OBJECT_KINDS",
+    "SUPPORTED_INLINE_ELEMENTS",
+    "MIXED_RUN_ATTRIBUTES",
+    "CANONICAL_RUN_POLICY",
     "CSS_CLASSIFICATIONS",
     "CSS_PROPERTY_CLASSIFICATIONS",
     "SUPPORTED_CSS_PROPERTIES",
