@@ -1,0 +1,20 @@
+{
+  "name": "officecli-v02-local",
+  "interface": {
+    "displayName": "Officecli V02 Local"
+  },
+  "plugins": [
+    {
+      "name": "officecli-html-to-pptx",
+      "source": {
+        "source": "local",
+        "path": "./plugins/officecli-html-to-pptx"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

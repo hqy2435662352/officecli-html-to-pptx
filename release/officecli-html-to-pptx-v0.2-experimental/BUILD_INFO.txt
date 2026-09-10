@@ -1,0 +1,6 @@
+Product: officecli-html-to-pptx 0.2.0 Experimental
+Base commit: b331fbee08474358ca7b5185562716966799efc6
+Compatibility change: OfficeCLI >=1.0.147
+Build platform: Windows, Python 3.12.13
+Wheel SHA256: 0bec94745a7e94a82bea5f29a4b66ac7e44ae026419b6d99050ce97f7c6037f2
+Acceptance: clean wheel install PASS; OfficeCLI 1.0.148 doctor/check/build/finalize PASS

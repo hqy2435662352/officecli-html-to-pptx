@@ -1,0 +1,30 @@
+{
+  "name": "officecli-html-to-pptx",
+  "version": "0.2.0",
+  "description": "Build new editable PowerPoint decks from Contract-checked HTML.",
+  "author": {
+    "name": "Design Arena"
+  },
+  "license": "MIT",
+  "keywords": [
+    "powerpoint",
+    "pptx",
+    "html",
+    "slides",
+    "editable"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "OfficeCLI HTML-to-PPTX",
+    "shortDescription": "Build editable PPTX decks from checked Author HTML",
+    "longDescription": "Guide new-deck creation from HTML, visual references, or a content brief through a checked Author HTML workbench, an editable PPTX build, an Evidence Bundle, and visual finalization.",
+    "developerName": "Design Arena",
+    "category": "Productivity",
+    "capabilities": [
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Build a new editable PowerPoint deck from this HTML, brief, or visual reference."
+    ]
+  }
+}

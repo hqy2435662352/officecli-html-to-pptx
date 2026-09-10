@@ -41,11 +41,6 @@ dev = [
 [project.scripts]
 officecli-html-to-pptx = "officecli_html_to_pptx.cli:main"
 
-[project.urls]
-Homepage = "https://github.com/Design-Arena/html-to-pptx"
-Repository = "https://github.com/Design-Arena/html-to-pptx"
-Issues = "https://github.com/Design-Arena/html-to-pptx/issues"
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/officecli_html_to_pptx"]
 

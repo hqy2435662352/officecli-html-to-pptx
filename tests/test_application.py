@@ -41,6 +41,7 @@ def test_capabilities_are_author_only_and_use_product_envelope() -> None:
         "finalize",
     ]
     assert payload["data"]["contract"]["profile"] == "author"
+    assert payload["data"]["rendering_compatibility"]["officecli"] == ">=1.0.147"
     assert payload["data"]["scope"]["officehtml_import"] is False
     assert "profile" not in payload["data"]["contract"]["css_properties"]
 
@@ -124,7 +125,7 @@ def _patch_successful_build(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda **_: result(
             "doctor",
             "PASS",
-            data={"runtime": {"formal_pair": {"officecli": "1.0.147"}}},
+            data={"runtime": {"formal_pair": {"officecli": ">=1.0.147"}}},
         ),
     )
 

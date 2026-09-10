@@ -26,9 +26,11 @@ def test_doctor_reports_missing_external_tools_without_mutation(monkeypatch: pyt
     assert {"missing_node", "missing_officecli", "missing_playwright", "missing_chromium"} <= codes
 
 
-def test_doctor_accepts_the_exact_formal_pair(
+@pytest.mark.parametrize("officecli_version", ["1.0.147", "1.0.148"])
+def test_doctor_accepts_the_minimum_and_newer_officecli(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
+    officecli_version: str,
 ) -> None:
     monkeypatch.setattr(runtime.platform, "system", lambda: "Windows")
     executable = tmp_path / "chrome.exe"
@@ -39,13 +41,15 @@ def test_doctor_accepts_the_exact_formal_pair(
         lambda: ("1.62.0", "1234", str(executable)),
     )
     executables = {"node": "C:\\runtime\\node.exe", "officecli": "C:\\runtime\\officecli.exe"}
-    versions = {"node": "v22.1.0", "officecli": "1.0.147"}
+    versions = {"node": "v22.1.0", "officecli": officecli_version}
     diagnosis = runtime.diagnose_environment(
         which=executables.get,
         runner=_runner_factory(versions),
     )
 
     assert diagnosis.compatible
+    assert diagnosis.snapshot["formal_pair"]["officecli"] == ">=1.0.147"
+    assert diagnosis.snapshot["officecli"]["required_version"] == ">=1.0.147"
     assert diagnosis.snapshot["officecli"]["compatible"] is True
     assert diagnosis.snapshot["chromium"]["compatible"] is True
 
@@ -60,7 +64,7 @@ def test_doctor_blocks_mismatched_and_malformed_tools(tmp_path, monkeypatch: pyt
         lambda: ("9.9.9", "9999", str(executable)),
     )
     executables = {"node": "C:\\runtime\\node.exe", "officecli": "C:\\runtime\\officecli.exe"}
-    versions = {"node": "not-a-version", "officecli": "1.0.148"}
+    versions = {"node": "not-a-version", "officecli": "1.0.146"}
     diagnosis = runtime.diagnose_environment(
         which=executables.get,
         runner=_runner_factory(versions),

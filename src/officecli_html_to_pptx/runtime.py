@@ -143,7 +143,7 @@ def diagnose_environment(
             "compatible": platform_ok,
         },
         "formal_pair": {
-            "officecli": FORMAL_OFFICECLI_VERSION,
+            "officecli": f">={FORMAL_OFFICECLI_VERSION}",
             "playwright": FORMAL_PLAYWRIGHT_VERSION,
             "chromium_revision": FORMAL_CHROMIUM_REVISION,
         },
@@ -218,9 +218,14 @@ def diagnose_environment(
     if officecli_executable:
         officecli_raw, officecli_text = _run_version(officecli_executable, runner=runner)
     officecli_version = _version_tuple(officecli_raw)
-    officecli_ok = _version_text(officecli_version) == FORMAL_OFFICECLI_VERSION
+    officecli_floor = _version_tuple(FORMAL_OFFICECLI_VERSION)
+    officecli_ok = (
+        officecli_version is not None
+        and officecli_floor is not None
+        and officecli_version >= officecli_floor
+    )
     snapshot["officecli"] = {
-        "required_version": FORMAL_OFFICECLI_VERSION,
+        "required_version": f">={FORMAL_OFFICECLI_VERSION}",
         "executable": officecli_executable,
         "discovered_version": officecli_text,
         "compatible": officecli_ok,
@@ -228,15 +233,15 @@ def diagnose_environment(
     if officecli_executable is None:
         code = "missing_officecli"
         message = "OfficeCLI was not found on PATH."
-        remediation = "Install and pin OfficeCLI 1.0.147 through the approved OfficeCLI package source, then verify with officecli --version."
+        remediation = "Install OfficeCLI 1.0.147 or newer through the approved OfficeCLI package source, then verify with officecli --version."
     elif officecli_version is None:
         code = "malformed_officecli_version"
         message = f"OfficeCLI returned an unparseable version: {officecli_text!r}."
-        remediation = "Repair the OfficeCLI installation so officecli --version returns 1.0.147."
+        remediation = "Repair the OfficeCLI installation so officecli --version returns 1.0.147 or newer."
     elif not officecli_ok:
         code = "officecli_version_mismatch"
-        message = f"OfficeCLI {officecli_text} is not the formal baseline {FORMAL_OFFICECLI_VERSION}; newer or older versions are not implicitly compatible."
-        remediation = f"Install or select OfficeCLI {FORMAL_OFFICECLI_VERSION}, then verify with officecli --version."
+        message = f"OfficeCLI {officecli_text} is below the minimum supported version {FORMAL_OFFICECLI_VERSION}."
+        remediation = f"Install or select OfficeCLI {FORMAL_OFFICECLI_VERSION} or newer, then verify with officecli --version."
     else:
         code = message = remediation = ""
     if code:

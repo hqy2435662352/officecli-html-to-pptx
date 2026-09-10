@@ -191,7 +191,7 @@ def get_capabilities() -> CommandResult:
         "contract": contract_capabilities,
         "platform": SUPPORTED_PLATFORM,
         "rendering_compatibility": {
-            "officecli": FORMAL_OFFICECLI_VERSION,
+            "officecli": f">={FORMAL_OFFICECLI_VERSION}",
             "playwright": FORMAL_PLAYWRIGHT_VERSION,
             "chromium_revision": FORMAL_CHROMIUM_REVISION,
         },
