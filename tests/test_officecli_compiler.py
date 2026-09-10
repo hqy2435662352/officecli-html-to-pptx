@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-import html_to_pptx.officecli_compiler as officecli_compiler
-from html_to_pptx import (
+import officecli_html_to_pptx._internal.officecli_compiler as officecli_compiler
+from officecli_html_to_pptx._internal.officecli_compiler import (
     OfficeCLICompilationError,
     compile_officecli,
 )

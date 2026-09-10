@@ -1,10 +1,9 @@
 """OfficeCLI-first compiler for native PowerPoint object slices.
 
-The legacy :mod:`html_to_pptx.converter` renderer remains untouched.  This
-module reuses its Chromium measurement stage, lowers the resulting plain
-dictionaries into a small presentation-object IR, and sends one JSON batch to
-OfficeCLI.  The explicit ``officehtml`` profile consumes OfficeCLI's
-fixed-coordinate object projection for object-level round trips.
+The compiler lowers renderer-neutral Chromium measurements into a small
+presentation-object IR and sends one JSON batch to OfficeCLI. The explicit
+``officehtml`` profile consumes OfficeCLI's fixed-coordinate object projection
+for internal object-level round trips.
 """
 
 from __future__ import annotations
@@ -30,14 +29,15 @@ from xml.etree import ElementTree
 from PIL import Image
 from lxml import html as _lxml_html
 
-from .contract import (
+from ..contract import (
     ContractReport,
     _inline_styles,
     _officehtml_parser,
     _officehtml_picture_source,
     check_contract,
 )
-from .converter import _resolve_pptx_font, extract_measurements
+from ..measurement import extract_measurements
+from ..styles import resolve_pptx_font as _resolve_pptx_font
 
 SLIDE_WIDTH_PT = 960.0
 SLIDE_HEIGHT_PT = 540.0

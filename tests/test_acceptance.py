@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from html_to_pptx.acceptance import (
+from officecli_html_to_pptx._internal.acceptance import (
     KNOWN_BASELINE_ISSUES,
     KNOWN_BASELINE_DIFFERENCE,
     PENDING,

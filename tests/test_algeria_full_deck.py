@@ -13,7 +13,8 @@ from typing import Any
 
 import pytest
 
-from html_to_pptx import compile_officecli, extract_measurements
+from officecli_html_to_pptx.measurement import extract_measurements
+from officecli_html_to_pptx._internal.officecli_compiler import compile_officecli
 
 
 _DEFAULT_AUTHOR_HTML = (

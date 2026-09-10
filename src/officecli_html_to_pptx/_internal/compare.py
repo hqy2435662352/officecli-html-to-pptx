@@ -1,29 +1,16 @@
-"""Visual comparison tool for verifying HTML-to-PPTX conversion quality.
+"""Internal visual capture helpers used by the V0.2 build operation.
 
-For each HTML file:
-  1. Screenshot each slide via Playwright (ground truth)
-  2. Convert HTML -> PPTX via the converter
-  3. Convert PPTX -> PDF via LibreOffice, then PDF pages -> PNGs
-  4. Create side-by-side comparison images (HTML left, PPTX right)
-
-Requires the ``compare`` extra: ``pip install html-to-pptx[compare]``
-and LibreOffice (``soffice``) on PATH for PPTX-to-PNG rendering.
-
-Usage::
-
-    html-to-pptx-compare deck.html                  # full pipeline
-    html-to-pptx-compare deck.html --only-convert    # skip comparison
-    html-to-pptx-compare slides/*.html -o results/   # batch mode
+The public command is implemented in :mod:`officecli_html_to_pptx.cli`.  This
+module intentionally contains no standalone comparison command: build owns
+the temporary screenshot lifecycle and persists only combined per-slide
+Comparison Images in its Evidence Bundle.
 """
 
 from __future__ import annotations
 
-import argparse
-import asyncio
 import logging
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -169,10 +156,11 @@ def create_comparison(
             font = ImageFont.truetype("Arial", 18)
         except OSError:
             font = ImageFont.load_default()
-        draw.text((8, 6), f"HTML (slide {i})", fill=(80, 80, 80), font=font)
+        slide_number = i + 1
+        draw.text((8, 6), f"HTML (slide {slide_number})", fill=(80, 80, 80), font=font)
         draw.text(
             (html_img.width + GAP_PX + 8, 6),
-            f"PPTX (slide {i})", fill=(80, 80, 80), font=font,
+            f"PPTX (slide {slide_number})", fill=(80, 80, 80), font=font,
         )
 
         canvas.paste(html_img, (0, LABEL_HEIGHT_PX))
@@ -183,95 +171,3 @@ def create_comparison(
         comparisons.append(out_path)
 
     return comparisons
-
-
-async def process_file(
-    html_path: Path, output_dir: Path, *, only_convert: bool = False,
-) -> None:
-    """Full pipeline for one HTML file."""
-    from html_to_pptx.converter import convert
-
-    name = html_path.stem
-    sample_out = output_dir / name
-    if sample_out.exists():
-        shutil.rmtree(sample_out)
-    sample_out.mkdir(parents=True)
-
-    logger.info("\n=== %s ===", html_path.name)
-
-    pptx_path = sample_out / "output.pptx"
-    logger.info("  Converting HTML -> PPTX...")
-    await convert(str(html_path), str(pptx_path))
-
-    if only_convert:
-        logger.info("  Done (--only-convert). PPTX: %s", pptx_path)
-        return
-
-    logger.info("  Screenshotting HTML slides...")
-    html_pngs = await screenshot_html_slides(html_path, sample_out)
-    logger.info("  Got %d HTML screenshots", len(html_pngs))
-
-    logger.info("  Converting PPTX -> PNGs via LibreOffice...")
-    pptx_pngs = pptx_to_pngs(pptx_path, sample_out)
-    logger.info("  Got %d PPTX screenshots", len(pptx_pngs))
-
-    if html_pngs and pptx_pngs:
-        logger.info("  Generating comparisons...")
-        comparisons = create_comparison(html_pngs, pptx_pngs, sample_out)
-        logger.info("  Created %d comparison images", len(comparisons))
-    else:
-        logger.warning("  Skipping comparison (missing screenshots)")
-
-    logger.info("  Output: %s/", sample_out)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        prog="html-to-pptx-compare",
-        description=(
-            "Convert HTML slide decks to PPTX and generate side-by-side "
-            "visual comparisons to verify conversion quality."
-        ),
-    )
-    parser.add_argument(
-        "files", nargs="+", help="HTML file(s) to process",
-    )
-    parser.add_argument(
-        "-o", "--output", default="output",
-        help="Output directory (default: ./output)",
-    )
-    parser.add_argument(
-        "--only-convert", action="store_true",
-        help="Only convert to PPTX, skip visual comparison",
-    )
-    parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Enable debug logging",
-    )
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(message)s",
-    )
-
-    output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    html_files = [Path(f) for f in args.files]
-    for f in html_files:
-        if not f.exists():
-            logger.error("File not found: %s", f)
-            sys.exit(1)
-
-    async def run_all() -> None:
-        for html_path in html_files:
-            await process_file(
-                html_path, output_dir, only_convert=args.only_convert,
-            )
-        logger.info("\nDone. Results in %s/", output_dir)
-
-    asyncio.run(run_all())
-
-
-if __name__ == "__main__":
-    main()

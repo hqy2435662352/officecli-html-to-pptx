@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from html_to_pptx import extract_measurements
+from officecli_html_to_pptx.measurement import extract_measurements
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

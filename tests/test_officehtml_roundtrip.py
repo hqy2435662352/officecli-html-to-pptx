@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-import html_to_pptx.officecli_compiler as compiler_module
-from html_to_pptx import compile_officecli
-from html_to_pptx.contract import check_contract
+import officecli_html_to_pptx._internal.officecli_compiler as compiler_module
+from officecli_html_to_pptx._internal.officecli_compiler import compile_officecli
+from officecli_html_to_pptx.contract import check_contract
 
 
 _DEFAULT_AUTHOR_HTML = (

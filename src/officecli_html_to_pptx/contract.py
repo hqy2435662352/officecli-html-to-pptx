@@ -19,6 +19,10 @@ CONTRACT_VERSION = "1.0"
 OFFICECLI_COMPATIBILITY_BASELINE = "1.0.147"
 SUPPORTED_PROFILES = ("author", "officehtml")
 SUPPORTED_OBJECT_KINDS = frozenset({"shape", "textbox", "picture", "table"})
+AUTHOR_CANVAS_SIZES = ((1920.0, "px", 1080.0, "px"), (960.0, "px", 540.0, "px"))
+AUTHOR_PICTURE_SOURCE = "data:image/..."
+AUTHOR_EXTERNAL_RESOURCES_ALLOWED = False
+AUTHOR_TABLE_CELL_SPANS = False
 CSS_CLASSIFICATIONS = (
     "measurement-only",
     "rendered",
@@ -150,6 +154,24 @@ CSS_PROPERTY_CLASSIFICATIONS = {
     **{name: "unsupported" for name in _UNSUPPORTED_CSS_PROPERTIES},
 }
 SUPPORTED_CSS_PROPERTIES = frozenset(CSS_PROPERTY_CLASSIFICATIONS)
+
+
+def author_capability_manifest() -> dict[str, Any]:
+    """Return the Author support claims owned by the Contract checker."""
+    return {
+        "version": CONTRACT_VERSION,
+        "profile": "author",
+        "object_kinds": sorted(SUPPORTED_OBJECT_KINDS),
+        "css_properties": {
+            name: CSS_PROPERTY_CLASSIFICATIONS[name]
+            for name in sorted(CSS_PROPERTY_CLASSIFICATIONS)
+        },
+        "accepted_resources": {
+            "picture_source": AUTHOR_PICTURE_SOURCE,
+            "external_resources": AUTHOR_EXTERNAL_RESOURCES_ALLOWED,
+        },
+        "table_cell_spans": AUTHOR_TABLE_CELL_SPANS,
+    }
 
 _CSS_BLOCK_RE = re.compile(r"(?P<selectors>[^{}]+)\{(?P<body>[^{}]*)\}", re.DOTALL)
 _CSS_DECL_RE = re.compile(r"(?P<name>[a-zA-Z-]+)\s*:\s*(?P<value>[^;]+)")
@@ -706,7 +728,7 @@ def _check_author(
             ):
                 width = declarations.get("width", width)
                 height = declarations.get("height", height)
-        valid_canvases = {(1920.0, "px", 1080.0, "px"), (960.0, "px", 540.0, "px")}
+        valid_canvases = set(AUTHOR_CANVAS_SIZES)
         parsed_canvas = (*(_parse_length(width) or (None, None)), *(_parse_length(height) or (None, None)))
         if parsed_canvas not in valid_canvases:
             _emit(
@@ -1041,32 +1063,13 @@ def check_contract(input_html: str | Path, profile: str = "author") -> ContractR
     return ContractReport(str(path), profile, tuple(findings), tuple(classifications))
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI for the profile-aware contract checker."""
-    import argparse
-    import json
-
-    parser = argparse.ArgumentParser(description="Check the OfficeCLI HTML Contract v1.")
-    parser.add_argument("input", help="HTML input path")
-    parser.add_argument("--profile", choices=SUPPORTED_PROFILES, default="author")
-    parser.add_argument("--json", dest="json_path", help="write the report to a JSON file")
-    args = parser.parse_args(argv)
-    try:
-        report = check_contract(args.input, args.profile)
-    except (FileNotFoundError, ValueError) as exc:
-        parser.error(str(exc))
-        return 3
-    if args.json_path:
-        Path(args.json_path).write_text(
-            json.dumps(report.as_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
-    return 2 if report.blocked else 0
-
-
 __all__ = [
     "CONTRACT_VERSION",
     "OFFICECLI_COMPATIBILITY_BASELINE",
+    "AUTHOR_CANVAS_SIZES",
+    "AUTHOR_PICTURE_SOURCE",
+    "AUTHOR_EXTERNAL_RESOURCES_ALLOWED",
+    "AUTHOR_TABLE_CELL_SPANS",
     "SUPPORTED_PROFILES",
     "SUPPORTED_OBJECT_KINDS",
     "CSS_CLASSIFICATIONS",
@@ -1074,6 +1077,7 @@ __all__ = [
     "SUPPORTED_CSS_PROPERTIES",
     "ContractDiagnostic",
     "ContractReport",
+    "author_capability_manifest",
     "check_contract",
 ]
 

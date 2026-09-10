@@ -1,8 +1,8 @@
-"""Repeatable OfficeCLI acceptance gate for the Algeria golden case.
+"""Internal OfficeCLI acceptance helpers for the Algeria regression asset.
 
-The gate deliberately uses OfficeCLI for PPTX validation, inventory, reverse
-projection, and screenshots.  ``python-pptx`` is not an oracle for the new
-OfficeCLI path.
+The V0.2 public product uses :mod:`officecli_html_to_pptx.application`; this
+module is retained only for focused release-regression evidence and build
+visual capture.  It is not a public command or API.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import zipfile
 from PIL import Image
 
 from .compare import create_comparison, screenshot_html_slides
-from .contract import (
+from ..contract import (
     CONTRACT_VERSION,
     OFFICECLI_COMPATIBILITY_BASELINE,
     ContractReport,
@@ -1893,33 +1893,6 @@ async def run_algeria_acceptance(
     return report
 
 
-def main(argv: list[str] | None = None) -> int:
-    import argparse
-    import asyncio
-    import sys
-
-    parser = argparse.ArgumentParser(description="Run the Algeria OfficeCLI Contract v1 acceptance gate.")
-    parser.add_argument("--input", default=str(DEFAULT_AUTHOR_HTML), help="Algeria Author HTML path")
-    parser.add_argument("--output-dir", default="acceptance-output/algeria", help="empty output directory for artifacts")
-    parser.add_argument(
-        "--visual-review",
-        default=None,
-        help="JSON file containing one PASS/PENDING/FAIL visual result per slide",
-    )
-    args = parser.parse_args(argv)
-    report = asyncio.run(run_algeria_acceptance(args.input, args.output_dir, args.visual_review))
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-    print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
-    return {
-        PASS: 0,
-        KNOWN_BASELINE_DIFFERENCE: 0,
-        PENDING: 1,
-        UNSUPPORTED_INPUT: 2,
-        REGRESSION: 1,
-    }[report.status]
-
-
 __all__ = [
     "PASS",
     "PENDING",
@@ -1936,7 +1909,3 @@ __all__ = [
     "normalize_visual_review",
     "run_algeria_acceptance",
 ]
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

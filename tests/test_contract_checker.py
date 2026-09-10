@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from html_to_pptx.contract import (
+from officecli_html_to_pptx.contract import (
     CONTRACT_VERSION,
     OFFICECLI_COMPATIBILITY_BASELINE,
     check_contract,
