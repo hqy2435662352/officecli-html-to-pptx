@@ -30,6 +30,7 @@ from ..contract import (
     check_contract,
 )
 from .officecli_compiler import OfficeCLICompilationError, compile_officecli
+from ..runtime import PPTX_SCREENSHOT_DEFAULT_RENDER, officecli_pptx_screenshot_render
 
 PASS = "PASS"
 PENDING = "PENDING"
@@ -1349,9 +1350,30 @@ def _project_to_officehtml(pptx_path: Path, html_path: Path) -> None:
 def _screenshot_pptx(pptx_path: Path, output_dir: Path, slide_count: int) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     screenshots: list[Path] = []
+    # The Comparison Image is Gate 3 evidence, so its PPTX panel must come from
+    # a renderer that can draw the authored text.  OfficeCLI's default Windows
+    # path is a native rasterizer that cannot compose a keycap cluster (U+20E3
+    # comes out as a missing-glyph box) and draws monochrome emoji, which
+    # presents a correct PPTX as broken content.  Its HTML projection renders
+    # both correctly; ``doctor`` records which path the runtime in force uses.
+    screenshot_render = officecli_pptx_screenshot_render()
+    render_arguments: tuple[str, ...] = (
+        ("--render", screenshot_render)
+        if screenshot_render != PPTX_SCREENSHOT_DEFAULT_RENDER
+        else ()
+    )
     for slide_number in range(1, slide_count + 1):
         path = output_dir / f"slide_{slide_number:02d}.png"
-        _run_officecli("view", pptx_path, "screenshot", "--page", str(slide_number), "--out", path)
+        _run_officecli(
+            "view",
+            pptx_path,
+            "screenshot",
+            *render_arguments,
+            "--page",
+            str(slide_number),
+            "--out",
+            path,
+        )
         if not path.is_file():
             raise _AcceptanceToolError(f"OfficeCLI did not create screenshot {path}")
         screenshots.append(path)

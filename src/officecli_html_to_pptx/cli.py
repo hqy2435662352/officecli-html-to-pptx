@@ -85,7 +85,27 @@ def _write_human(result: CommandResult) -> None:
         print(f"{diagnostic.severity}: {diagnostic.message}", file=sys.stderr)
 
 
+def _use_utf8_streams() -> None:
+    """Make the result envelope independent of the console's code page.
+
+    ``--json`` is the machine-readable channel and JSON is UTF-8, but ``print``
+    encodes with ``sys.stdout.encoding``.  On a console whose code page cannot
+    represent an authored character - a Chinese Windows GBK console against a
+    finding that quotes the fixture's ``2\u20e3`` keycap, for example - the
+    command died with ``UnicodeEncodeError`` instead of emitting its envelope.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (OSError, ValueError):  # pragma: no cover - platform dependent
+            continue
+
+
 def _emit(result: CommandResult, json_mode: bool) -> int:
+    _use_utf8_streams()
     if json_mode:
         print(result.to_json())
     else:

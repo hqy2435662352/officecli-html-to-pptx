@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -68,6 +70,44 @@ def test_protocol_exit_classes_and_cli_json_stdout_boundary(
     assert code == 3
     assert captured.err == ""
     assert json.loads(captured.out)["status"] == "ERROR"
+
+
+def test_json_envelope_survives_a_console_code_page_that_cannot_encode_the_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The machine-readable channel is UTF-8, not the console's code page.
+
+    A Chinese Windows console is GBK by default, which cannot encode the
+    fixture's ``2\u20e3`` keycap or its emoji.  The envelope used to die with
+    ``UnicodeEncodeError`` instead of reporting the finding that quoted them.
+    """
+    buffer = io.BytesIO()
+    monkeypatch.setattr(
+        sys, "stdout", io.TextIOWrapper(buffer, encoding="gbk", newline="")
+    )
+    monkeypatch.setattr(
+        sys, "stderr", io.TextIOWrapper(io.BytesIO(), encoding="gbk", newline="")
+    )
+    envelope = result(
+        "finalize",
+        "REVISION_REQUIRED",
+        diagnostics=(
+            Diagnostic(
+                "review_major_finding",
+                "major",
+                "The PPTX panel rendered 2\u20e3 as a missing-glyph box.",
+                True,
+            ),
+        ),
+    )
+
+    code = cli._emit(envelope, json_mode=True)
+    sys.stdout.flush()
+
+    assert code == 2
+    payload = json.loads(buffer.getvalue().decode("utf-8"))
+    assert payload["status"] == "REVISION_REQUIRED"
+    assert "2\u20e3" in payload["diagnostics"][0]["message"]
 
 
 def test_check_pass_and_block_keep_contract_detail(tmp_path: Path) -> None:

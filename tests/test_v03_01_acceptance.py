@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image
 
 from officecli_html_to_pptx import cli
 from officecli_html_to_pptx._internal.acceptance import (
@@ -79,6 +80,16 @@ pytestmark = pytest.mark.skipif(
 FIXTURES = Path(__file__).parent / "fixtures"
 FIXTURE = FIXTURES / "v03_01_rich_text_paragraphs.html"
 NEGATIVE_DIR = FIXTURES / "v03_01_negative"
+
+# The published Comparison Image is the HTML panel beside the PPTX panel, with a
+# 4 px gap and a 32 px label strip (see ``compare.create_comparison``).  Both
+# panels are the 1920x1080 slide canvas.
+COMPARISON_PANEL_PX = 1920
+COMPARISON_GAP_PX = 4
+COMPARISON_LABEL_PX = 32
+# The ordered list's second item (``第二步 2️⃣``) in slide CSS pixels: its
+# keycap is the only filled blue key pad in this box.
+ORDERED_LIST_KEYCAP_BOX = (1480, 675, 1720, 730)
 
 # ---------------------------------------------------------------------------
 # Independent expected literals
@@ -1478,6 +1489,55 @@ def test_evidence_bundle_has_one_comparison_and_an_immutably_bound_record(
         for slide in review["slides"]
         for finding in slide.get("findings", [])
     )
+
+
+def test_comparison_image_shows_the_authored_keycap_in_the_pptx_panel(
+    built_pair: Mapping[str, Any],
+) -> None:
+    """The fixture's keycap must reach the evidence as a keycap, not a tofu box.
+
+    OfficeCLI's default Windows screenshot path is a native rasterizer that
+    cannot compose a keycap cluster: it drew a missing-glyph box for U+20E3 and
+    monochrome emoji while the PPTX itself was correct, so a numeric ink probe
+    scored it as a pass and the defect only surfaced when a human looked at the
+    image.  This guard compares the *colour* signature the keycap owns in both
+    halves of the published Comparison Image, which a missing-glyph box cannot
+    reproduce.
+
+    The keycap's blue is located in the HTML half rather than hard-coded, so the
+    guard follows the fixture instead of a pixel coordinate.
+    """
+    comparison = built_pair["evidence"] / "comparisons" / "slide-001.png"
+    with Image.open(comparison) as raw:
+        image = raw.convert("RGB")
+
+    assert image.size == (COMPARISON_PANEL_PX * 2 + COMPARISON_GAP_PX,
+                          COMPARISON_PANEL_PX * 9 // 16 + COMPARISON_LABEL_PX)
+
+    def keycap_blue(offset_x: int) -> dict[str, Any]:
+        count = 0
+        left, top, right, bottom = 10**9, 10**9, -1, -1
+        for x in range(ORDERED_LIST_KEYCAP_BOX[0], ORDERED_LIST_KEYCAP_BOX[2]):
+            for y in range(ORDERED_LIST_KEYCAP_BOX[1], ORDERED_LIST_KEYCAP_BOX[3]):
+                red, green, blue = image.getpixel(
+                    (offset_x + x, COMPARISON_LABEL_PX + y)
+                )
+                if blue - red > 40 and blue > 120:
+                    count += 1
+                    left, top = min(left, x), min(top, y)
+                    right, bottom = max(right, x), max(bottom, y)
+        return {"count": count, "box": (left, top, right, bottom)}
+
+    html_half = keycap_blue(0)
+    pptx_half = keycap_blue(COMPARISON_PANEL_PX + COMPARISON_GAP_PX)
+
+    # The authored keycap is a filled blue key pad in both panels.
+    assert html_half["count"] > 400, html_half
+    assert pptx_half["count"] >= html_half["count"] * 0.6, (html_half, pptx_half)
+    # ... and it sits where the HTML panel puts it, so the panel is not merely
+    # blue for some other reason.
+    for html_edge, pptx_edge in zip(html_half["box"], pptx_half["box"]):
+        assert abs(html_edge - pptx_edge) <= 4, (html_half, pptx_half)
 
 
 def test_authored_review_record_finalizes_as_an_accepted_pair(

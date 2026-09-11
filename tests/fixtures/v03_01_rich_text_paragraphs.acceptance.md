@@ -205,24 +205,30 @@ failure. They are diagnostic evidence only and cannot complete the ticket.
 - [x] The Evidence Bundle contains the single required Comparison Image and a
       review record associated with the same build id and hashes. Evidence:
       `comparisons/slide-001.png` only (sha256
-      `a0fd3eb8d3fa05adcf6912f56b1f65279d52637135394e812c6d875550397091`), and
+      `24dbf8589223b80104554bfe5f53eb28103609300fb132b79676e599f11337de`), and
       `visual-review.json` binds `build_id`
-      `141bbcab-de13-47f0-b411-dfdb64b826e7` with Author HTML
+      `598de213-df11-472e-848c-38304d1db855` with Author HTML
       `25061c706aa6ee59501e529753dd20748d48293d1725cd0ff9bce9a670ac8d9d` and
-      PPTX `1e3d08c96e991fea9344825c54988e8a18cb4c53c0bbd5d8d7799dcc88d64f4b`,
+      PPTX `437afd39c42da54b01d9d16e0a05fd467c6d1c84a2466b4b3134edb4c5ab90e1`,
       identical to the hashes in `result.json`.
 - [x] Visual Review checks mixed-run appearance, hard/empty paragraphs,
       line-height/spacing, soft-wrap line placement, list markers, and indentation.
-      Evidence: measurement-based review of the one Comparison Image — whole
-      panel 48x27 tile diff `1.0622` ink ratio with `0 html-only / 0 pptx-only`
-      tiles, per-object region probe for all six authored regions, horizontal
-      marker-column probe for both lists, plus the structural readback above.
+      Evidence: the published Comparison Image was **looked at** (not only
+      measured) and then measured — whole-panel 48x27 tile diff `1.1608` ink
+      ratio, per-object region probe for all six authored regions, and a
+      horizontal marker-column probe for both lists. `doctor` records the render
+      path that drew the PPTX panel (`pptx_screenshot.render = html`).
 - [x] No material clipping, overlap, missing content, reordered text, or visible
-      line-placement regression exists. Evidence: `0 html-only / 0 pptx-only`
-      tiles; every region's ink ratio and vertical ink centroid is identical to
-      the accepted V03-01-04 measurement; markers and item text edges are within
-      1 px of the browser; the only recorded finding is minor (the released V0.2
-      line-spacing projection of the 13.5pt list items) and no finding carries a
+      line-placement regression exists. Evidence: visual inspection of both
+      panels at native scale; every region's vertical ink centroid is within
+      3.2 px (title `-0.06`, `#mixed-runs` `+2.20`, `#paragraphs` `+3.18`,
+      `#soft-wrap` `-2.44`, `#unordered-list` `+0.43`, `#ordered-list` `-0.89`);
+      markers and item text edges are within 1 px of the browser; the authored
+      `2\u20e3` keycap and `\U0001F680` emoji render in the PPTX panel. One
+      `html-only` tile remains at the end of `#soft-wrap` line 2 where the PPTX
+      panel's CJK advance is ~30 px narrower across a 635 px line (a font-metric
+      difference present in both render paths, with identical characters — see
+      the recorded decision V03-01-007). The only findings are minor and carry no
       material category.
 - [x] `finalize --json` mechanically returns `PASS` or `PASS_WITH_FINDINGS`; any
       Major Finding keeps the artifact at `REVISION_REQUIRED`. Evidence:
@@ -230,6 +236,8 @@ failure. They are diagnostic evidence only and cannot complete the ticket.
       minor, exit 0, `finalization.json` written); the same bundle with a Major
       finding authored in a relocated copy → `REVISION_REQUIRED` with a blocking
       `review_major_finding` (exit 2), while the published pair stays accepted.
+      The keycap Major finding that the first review missed was re-adjudicated
+      the same way on the pre-fix bundle → `REVISION_REQUIRED`.
 
 ### Proportional verification
 
@@ -240,8 +248,8 @@ failure. They are diagnostic evidence only and cannot complete the ticket.
       committed evidence.
 - [x] Focused tests, the existing relevant suite, `compileall`, and
       `git diff --check` pass after implementation. Evidence:
-      `tests/test_v03_01_acceptance.py` 28 passed;
-      `.\.venv\Scripts\python.exe -m pytest -q` 155 passed;
+      `tests/test_v03_01_acceptance.py` 29 passed;
+      `.\.venv\Scripts\python.exe -m pytest -q` 162 passed;
       `.\.venv\Scripts\python.exe -m compileall -q src` clean;
       `git diff --check` clean.
 - [x] A real fresh PPTX plus readback and visual evidence is retained as the
@@ -303,43 +311,59 @@ Negative fixtures (neighbouring one-slide Author inputs):
 | `multi_paragraph_list_item` | `tests/fixtures/v03_01_negative/multi_paragraph_list_item.html` | `/html/body/main/section/ul/li/p[1]` | `BLOCK` (exit 2) | `BLOCK`, no `.pptx`, no `.evidence`, no staging directory |
 
 Measurement-based Visual Review of the one Comparison Image (this build vs the
-accepted V03-01-04 numbers in `.scratch/v03-01/verify-05/region_probe.json`):
+accepted V03-01-04 numbers in `.scratch/v03-01/verify-05/region_probe.json`,
+which were measured against the native rasterizer the evidence path used before
+decision V03-01-007):
 
-| region | ink ratio | vertical centroid delta (px) | V03-01-04 ratio / delta |
+| region | ink ratio | vertical centroid delta (px) | earlier native-path delta (px) |
 | --- | --- | --- | --- |
-| title | 0.919 | -5.04 | 0.919 / -5.04 |
-| `#mixed-runs` | 1.166 | -1.85 | 1.166 / -1.85 |
-| `#paragraphs` | 1.132 | -4.63 | 1.132 / -4.63 |
-| `#soft-wrap` | 1.007 | -10.89 | 1.007 / -10.89 |
-| `#unordered-list` | 0.945 | -4.34 | 0.945 / -4.34 |
-| `#ordered-list` | 0.860 | -10.46 | 0.860 / -10.46 |
+| title | 1.160 | -0.06 | -5.04 |
+| `#mixed-runs` | 1.289 | +2.20 | -1.85 |
+| `#paragraphs` | 1.288 | +3.18 | -4.63 |
+| `#soft-wrap` | 1.140 | -2.44 | -10.89 |
+| `#unordered-list` | 1.220 | +0.43 | -4.34 |
+| `#ordered-list` | 1.186 | -0.89 | -10.46 |
 
-Whole-panel 48x27 tile diff: ink ratio `1.0622`, `0` html-only tiles, `0`
-pptx-only tiles. Marker columns: browser bullet `1096-1105` vs native
-`1096-1104` with item text at `1122` vs `1123`; browser number
-`1467-1473`/`1480-1483` vs native `1467-1475`/`1480-1484` with item text at
-`1494` vs `1494`.
+Whole-panel 48x27 tile diff: ink ratio `1.1608`, `1` html-only tile (the CJK
+advance difference at the end of `#soft-wrap` line 2), `0` pptx-only tiles.
+Marker columns: browser bullet `1096-1105` vs PPTX `1096-1106` with item text at
+`1122` vs `1121`; browser number `1465-1477`/`1480-1483` vs PPTX
+`1465-1478`/`1480-1484` with item text at `1492` vs `1492`.
+
+Keycap visibility (the defect this review originally missed):
+
+| half of the Comparison Image | keycap blue pixels in the `#ordered-list` item box |
+| --- | --- |
+| HTML panel | 806 |
+| PPTX panel before the render-path correction | 314 (missing-glyph box) |
+| PPTX panel after the correction | 877 |
+
+`tests/test_v03_01_acceptance.py::test_comparison_image_shows_the_authored_keycap_in_the_pptx_panel`
+locates the keycap's blue in the HTML half and requires the PPTX half to
+reproduce it (ratio ≥ 0.6 and edges within 4 px), so the defect cannot return
+unnoticed.
 
 Artifact Pair and finalization:
 
 | item | value |
 | --- | --- |
-| build id | `141bbcab-de13-47f0-b411-dfdb64b826e7` |
+| build id | `598de213-df11-472e-848c-38304d1db855` |
 | Author HTML sha256 | `25061c706aa6ee59501e529753dd20748d48293d1725cd0ff9bce9a670ac8d9d` |
-| PPTX sha256 | `1e3d08c96e991fea9344825c54988e8a18cb4c53c0bbd5d8d7799dcc88d64f4b` |
-| Comparison Image sha256 | `a0fd3eb8d3fa05adcf6912f56b1f65279d52637135394e812c6d875550397091` |
+| PPTX sha256 | `437afd39c42da54b01d9d16e0a05fd467c6d1c84a2466b4b3134edb4c5ab90e1` |
+| Comparison Image sha256 | `24dbf8589223b80104554bfe5f53eb28103609300fb132b79676e599f11337de` |
 | `validate` | `PASS` — `Validation passed: no errors found.` |
 | `view … issues` | `count = 0`, `issues = []` |
 | `finalize` | `PASS_WITH_FINDINGS` (0 major / 1 minor, exit 0) |
 | Major probe (relocated copy) | `REVISION_REQUIRED`, blocking `review_major_finding`, exit 2 |
+| Pre-fix bundle + keycap Major finding | `REVISION_REQUIRED` (the corrected adjudication) |
 
 ## Verification
 
 ```text
-.\.venv\Scripts\python.exe -m pytest -q                                  155 passed
+.\.venv\Scripts\python.exe -m pytest -q                                  162 passed
 .\.venv\Scripts\python.exe -m compileall -q src                          clean
 git diff --check                                                         clean
-.\.venv\Scripts\python.exe -m pytest tests\test_v03_01_acceptance.py -q   28 passed
+.\.venv\Scripts\python.exe -m pytest tests\test_v03_01_acceptance.py -q   29 passed
 ```
 
 ## Recorded Decision V03-01-003
@@ -389,6 +413,31 @@ list-item, or `<br>` boundaries, and whenever formatting or supported semantic
 attributes differ. Normalization must not mutate text or whitespace.
 Acceptance compares the Canonical Run structure rather than source HTML node
 count.
+
+## Recorded Decision V03-01-007
+
+Status: `APPROVED`
+
+The PPTX panel of the Comparison Image is rendered through OfficeCLI's HTML
+projection (`officecli view <pptx> screenshot --render html`) instead of the
+native rasterizer that `auto` selects on Windows. The native rasterizer cannot
+compose a keycap cluster — it drew the fixture's `2\u20e3` as the digit `2`
+followed by a missing-glyph box, and drew `\U0001f680` monochrome — while the
+PPTX itself was correct, so a numeric ink probe scored the result as a pass and
+the defect only surfaced when a human looked at the image. That is a Major
+Finding by the CONTEXT.md definition (visible content changed), which keeps the
+Artifact Pair at `REVISION_REQUIRED`.
+
+The HTML projection composes the keycap cluster, draws colour emoji, and agrees
+with the Playwright HTML panel far more closely than the native path did (every
+region's vertical ink centroid within 3.2 px, against up to 10.5 px before).
+`doctor` publishes the render path in force as `runtime.pptx_screenshot`
+(`render`, `option`, `supported`, `renderer`) so the Evidence Bundle never
+claims a rendering authority it did not use, and a runtime that does not
+advertise `--render` keeps the default path instead of failing. A residual CJK
+advance difference of up to ~30 px across a 635 px line remains and is recorded
+as minor: the characters, order, markers and indentation are identical, and the
+difference is present in both render paths.
 
 ## Baseline Observation
 
