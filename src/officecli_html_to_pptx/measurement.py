@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 SLIDE_CANVAS_WIDTH_PX = 1920
 SLIDE_CANVAS_HEIGHT_PX = 1080
-MAX_HTML_SIZE_MB = 10
 PLAYWRIGHT_TIMEOUT_MS = 30_000
 FONT_LOAD_WAIT_MS = 1_000
 
@@ -823,7 +822,7 @@ async def extract_measurements(
 
     Raises:
         FileNotFoundError: If html_path does not exist.
-        ValueError: If the file exceeds the size limit or contains no slides.
+        ValueError: If the file contains no slides.
         ImportError: If Playwright is not installed.
     """
     from playwright.async_api import async_playwright
@@ -832,13 +831,11 @@ async def extract_measurements(
     if not os.path.isfile(abs_path):
         raise FileNotFoundError(f"HTML file not found: {abs_path}")
 
-    file_size_mb = os.path.getsize(abs_path) / (1024 * 1024)
-    if file_size_mb > MAX_HTML_SIZE_MB:
-        raise ValueError(
-            f"HTML file is {file_size_mb:.1f} MB, exceeds {MAX_HTML_SIZE_MB} MB limit"
-        )
-
-    logger.info("Loading %s (%.1f MB)", abs_path, file_size_mb)
+    logger.info(
+        "Loading %s (%.1f MB)",
+        abs_path,
+        os.path.getsize(abs_path) / (1024 * 1024),
+    )
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
