@@ -14,7 +14,12 @@ import officecli_html_to_pptx.application as application
 from officecli_html_to_pptx import cli
 from officecli_html_to_pptx._internal.officecli_compiler import OfficeCLICompilationResult
 from officecli_html_to_pptx.protocol import Diagnostic, exit_code_for_status, result
-from officecli_html_to_pptx.runtime import SUPPORTED_PLATFORMS, current_platform
+from officecli_html_to_pptx.runtime import (
+    SUPPORTED_PLATFORMS,
+    UNVALIDATED_PLATFORM_NOTE,
+    VALIDATED_PLATFORM_SCOPE,
+    current_platform,
+)
 
 
 AUTHOR_HTML = """<!doctype html><html><head><style>
@@ -49,6 +54,15 @@ def test_capabilities_are_author_only_and_use_product_envelope() -> None:
     assert payload["data"]["platform"] == current_platform()
     assert payload["data"]["supported_platforms"] == list(SUPPORTED_PLATFORMS)
     assert payload["data"]["platform"] in payload["data"]["supported_platforms"]
+    # A supported key is coarse ("Linux" matches every distribution), so the
+    # accepted environment and the not-implied list are published beside it and a
+    # key cannot be read as a broader claim than the acceptance evidence.
+    scope = payload["data"]["validated_platform_scope"]
+    assert scope["accepted"] == VALIDATED_PLATFORM_SCOPE
+    assert scope["not_implied"] == UNVALIDATED_PLATFORM_NOTE
+    for platform_key in payload["data"]["supported_platforms"]:
+        assert scope["accepted"][platform_key]
+    assert "other Linux distributions" in scope["not_implied"]
     assert payload["data"]["rendering_compatibility"]["officecli"] == ">=1.0.147"
     assert payload["data"]["scope"]["officehtml_import"] is False
     assert "profile" not in payload["data"]["contract"]["css_properties"]

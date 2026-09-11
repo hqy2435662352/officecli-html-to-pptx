@@ -163,11 +163,16 @@ def test_doctor_accepts_linux_as_a_supported_build_platform(
     )
 
     assert diagnosis.compatible
-    assert diagnosis.snapshot["platform"] == {
-        "required": list(runtime.SUPPORTED_PLATFORMS),
-        "discovered": "Linux",
-        "compatible": True,
-    }
+    snapshot_platform = diagnosis.snapshot["platform"]
+    assert snapshot_platform["required"] == list(runtime.SUPPORTED_PLATFORMS)
+    assert snapshot_platform["discovered"] == "Linux"
+    assert snapshot_platform["compatible"] is True
+    # The supported key "Linux" is coarse, so the accepted environment must travel
+    # with it and the not-implied list must be explicit.
+    assert snapshot_platform["validated_scope"] == runtime.VALIDATED_PLATFORM_SCOPE["Linux"]
+    assert snapshot_platform["not_implied"] == runtime.UNVALIDATED_PLATFORM_NOTE
+    assert "Ubuntu 24.04" in snapshot_platform["validated_scope"]
+    assert "other Linux distributions" in snapshot_platform["not_implied"]
     assert "unsupported_platform" not in {item.code for item in diagnosis.diagnostics}
     # The HTML projection is the only render path available without PowerPoint,
     # so it is the path a Linux build must record.

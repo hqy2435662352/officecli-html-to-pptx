@@ -57,12 +57,21 @@ documented supported ranges.
 _Avoid_: latest available tools, optimistic renderer range
 
 **Supported Platform**:
-An operating-system environment that has passed the platform acceptance track
+An operating-system environment that has passed the Platform Acceptance Track
 against the Rendering Compatibility Pair and is therefore listed by
-`runtime.SUPPORTED_PLATFORMS`. Windows and Linux are supported. The product
-avoids unnecessary platform coupling, but it does not claim macOS or any other
-platform without end-to-end acceptance evidence of its own.
+`runtime.SUPPORTED_PLATFORMS`. Windows and Linux are supported. The listed keys
+are `platform.system()` values and so are coarse — the single key `Linux`
+matches every distribution — which is why the accepted environment is declared
+separately as the Validated Platform Scope and published beside the key.
 _Avoid_: theoretically portable, cross-platform by dependency, all POSIX systems
+
+**Validated Platform Scope**:
+What a Supported Platform key actually stands for: the specific environment that
+ran the acceptance track, plus an explicit list of what the key does *not*
+imply. Published by `capabilities --json` and by the `doctor` snapshot through
+`runtime.VALIDATED_PLATFORM_SCOPE` and `runtime.UNVALIDATED_PLATFORM_NOTE`, so
+that no caller sees a coarse key without its evidence boundary.
+_Avoid_: reading a supported key as a blanket claim, "Linux works everywhere"
 
 **Platform Acceptance Track**:
 The evidence required before an operating system joins the Supported Platform

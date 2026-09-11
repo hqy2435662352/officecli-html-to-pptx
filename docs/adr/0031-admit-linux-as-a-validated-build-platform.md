@@ -28,15 +28,35 @@ part list, and all 45 media pixel-identical. The residual differences were the
 PNG encoder, the theme East-Asian typeface, relationship GUIDs, and host text
 stack behaviour.
 
-A track certifies only the environment it exercised. WSL2 on Ubuntu 24.04 is
-accepted; other distributions and native installations are not, and will be
-recorded here only when they have their own run. macOS is not claimed.
+A track certifies only the environment it exercised. The gate keys are
+`platform.system()` values and are therefore coarse — the single key `"Linux"`
+matches every distribution — so the accepted environment is declared separately
+and published beside the key. `capabilities --json` and the `doctor` snapshot
+both carry `validated_platform_scope.accepted` and
+`validated_platform_scope.not_implied`, so a supported key is never read as a
+broader claim than the evidence supports.
+
+```text
+Accepted:
+- Windows 10 or 11, x86_64, normal user account, declared fonts installed
+- WSL2 on Ubuntu 24.04, x86_64, non-root user, Chromium-owning environment
+  active, declared fonts installed
+
+Not implied:
+- other Linux distributions
+- native (non-WSL2) Linux installations
+- container images
+- other CPU architectures
+- macOS
+```
+
+Each of those needs its own Platform Acceptance Track, and will be added to the
+accepted list only when it has one.
 
 `capabilities --json` reports two separate facts, because one is not derivable
 from the other: `platform` is where the command is running, and
 `supported_platforms` is what this build supports. The unsupported-platform
 diagnostic names every supported platform rather than the first one.
-
 Three host conditions are part of the Linux acceptance and are documented for
 operators rather than enforced by `doctor`. The product launches Chromium
 without `--no-sandbox`, so it must not run as root. OfficeCLI's PPTX screenshot

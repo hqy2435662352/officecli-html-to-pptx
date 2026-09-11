@@ -52,6 +52,8 @@ from .runtime import (
     NODE_TESTED_RANGE,
     PYTHON_TESTED_RANGE,
     SUPPORTED_PLATFORMS,
+    UNVALIDATED_PLATFORM_NOTE,
+    VALIDATED_PLATFORM_SCOPE,
     current_platform,
     diagnose_environment as _diagnose_runtime,
 )
@@ -191,11 +193,16 @@ def get_capabilities() -> CommandResult:
     data = {
         "contract": contract_capabilities,
         # ``platform`` is where this command is running; ``supported_platforms``
-        # is what this build supports.  Keeping them separate and keeping
-        # ``platform`` a string means a caller can answer "am I supported here?"
-        # without a type change or by inferring it from the name.
+        # is what this build supports.  A supported key is coarse -- the single
+        # key "Linux" matches every distribution -- so the validated scope is
+        # published beside it and a key is never read as a broader claim than the
+        # Platform Acceptance Track supports.
         "platform": current_platform(),
         "supported_platforms": list(SUPPORTED_PLATFORMS),
+        "validated_platform_scope": {
+            "accepted": dict(VALIDATED_PLATFORM_SCOPE),
+            "not_implied": UNVALIDATED_PLATFORM_NOTE,
+        },
         "rendering_compatibility": {
             "officecli": f">={FORMAL_OFFICECLI_VERSION}",
             "playwright": FORMAL_PLAYWRIGHT_VERSION,

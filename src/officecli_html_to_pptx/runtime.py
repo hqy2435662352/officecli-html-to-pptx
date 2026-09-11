@@ -28,12 +28,35 @@ FORMAL_PPTX_SCREENSHOT_RENDER = "html"
 PPTX_SCREENSHOT_DEFAULT_RENDER = "default"
 PYTHON_TESTED_RANGE = ">=3.10,<3.15"
 NODE_TESTED_RANGE = ">=20,<23"
-# The only authority for platform policy.  A platform belongs here once it has
-# been accepted against the Rendering Compatibility Pair above, so the runtime
-# diagnosis is a membership test rather than a claim of theoretical portability.
-# Linux was accepted by the WSL2 track; see
+# The platform keys the gate accepts.  These are ``platform.system()`` values, so
+# they are inherently coarse: the single key "Linux" covers every distribution.
+# What was actually accepted is narrower, and is declared in
+# ``VALIDATED_PLATFORM_SCOPE`` so that a caller never sees the coarse key without
+# the environment it stands for.  Linux was accepted by the WSL2 track; see
 # ``docs/adr/0031-admit-linux-as-a-validated-build-platform.md``.
 SUPPORTED_PLATFORMS = ("Windows", "Linux")
+
+# What each accepted key actually stands for: the environment that ran the
+# Platform Acceptance Track, not every system the key matches.
+VALIDATED_PLATFORM_SCOPE = {
+    "Windows": (
+        "Windows 10 or 11, x86_64, a normal user account, with the declared "
+        "fonts installed"
+    ),
+    "Linux": (
+        "WSL2 on Ubuntu 24.04, x86_64, a non-root user, the environment owning "
+        "the pinned Playwright Chromium active, and the declared fonts installed"
+    ),
+}
+
+# Published next to the scope so a supported key is never read as a broader
+# claim than the evidence supports.
+UNVALIDATED_PLATFORM_NOTE = (
+    "Not implied by a supported platform key: other Linux distributions, native "
+    "(non-WSL2) Linux installations, container images, and other CPU "
+    "architectures. Each needs its own Platform Acceptance Track before it can "
+    "be relied on."
+)
 
 
 def current_platform() -> str:
@@ -232,6 +255,10 @@ def diagnose_environment(
             "required": list(SUPPORTED_PLATFORMS),
             "discovered": actual_platform,
             "compatible": platform_ok,
+            # A supported key is coarse ("Linux" matches every distribution), so
+            # the accepted environment travels with it.
+            "validated_scope": VALIDATED_PLATFORM_SCOPE.get(actual_platform),
+            "not_implied": UNVALIDATED_PLATFORM_NOTE,
         },
         "formal_pair": {
             "officecli": f">={FORMAL_OFFICECLI_VERSION}",
@@ -445,6 +472,8 @@ __all__ = [
     "PPTX_SCREENSHOT_DEFAULT_RENDER",
     "PYTHON_TESTED_RANGE",
     "SUPPORTED_PLATFORMS",
+    "UNVALIDATED_PLATFORM_NOTE",
+    "VALIDATED_PLATFORM_SCOPE",
     "RuntimeDiagnosis",
     "current_platform",
     "diagnose_environment",
