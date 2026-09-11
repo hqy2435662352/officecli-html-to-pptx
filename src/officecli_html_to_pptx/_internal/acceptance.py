@@ -1375,7 +1375,18 @@ def _screenshot_pptx(pptx_path: Path, output_dir: Path, slide_count: int) -> lis
             path,
         )
         if not path.is_file():
-            raise _AcceptanceToolError(f"OfficeCLI did not create screenshot {path}")
+            # OfficeCLI exits 0 and writes nothing when it cannot find a headless
+            # browser, so the process status carries no information here.  Name
+            # the requirement, because this is the likeliest failure on a
+            # non-Windows host and the raw message would be a dead end.
+            raise _AcceptanceToolError(
+                f"OfficeCLI did not create screenshot {path}. The screenshot "
+                "path renders through a headless browser that OfficeCLI "
+                "discovers itself; when none is discoverable it warns, exits 0 "
+                "and writes no file. Activate the environment that owns the "
+                "pinned Playwright Chromium so its executable is on PATH, or "
+                "install a system Chromium, then retry."
+            )
         screenshots.append(path)
     return screenshots
 

@@ -51,7 +51,8 @@ from .runtime import (
     FORMAL_PLAYWRIGHT_VERSION,
     NODE_TESTED_RANGE,
     PYTHON_TESTED_RANGE,
-    SUPPORTED_PLATFORM,
+    SUPPORTED_PLATFORMS,
+    current_platform,
     diagnose_environment as _diagnose_runtime,
 )
 
@@ -189,7 +190,12 @@ def get_capabilities() -> CommandResult:
     contract_capabilities = author_capability_manifest()
     data = {
         "contract": contract_capabilities,
-        "platform": SUPPORTED_PLATFORM,
+        # ``platform`` is where this command is running; ``supported_platforms``
+        # is what this build supports.  Keeping them separate and keeping
+        # ``platform`` a string means a caller can answer "am I supported here?"
+        # without a type change or by inferring it from the name.
+        "platform": current_platform(),
+        "supported_platforms": list(SUPPORTED_PLATFORMS),
         "rendering_compatibility": {
             "officecli": f">={FORMAL_OFFICECLI_VERSION}",
             "playwright": FORMAL_PLAYWRIGHT_VERSION,

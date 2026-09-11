@@ -54,7 +54,10 @@ page dimensions.
 
 ## Environment setup
 
-The current Contract is pinned to OfficeCLI `1.0.147`.
+The current Contract is pinned to OfficeCLI `1.0.147`. Windows and Linux are
+supported build platforms; `doctor --json` decides for the machine in front of
+you, and `capabilities --json` reports the running platform alongside the
+supported set.
 
 From the repository root on Windows PowerShell:
 
@@ -65,6 +68,12 @@ Set-Location 'D:\Opencodeworkspace\html-to-pptx\officecli-html-to-pptx-mvp'
 officecli --version
 .\.venv\Scripts\python.exe -c "import html_to_pptx; print(html_to_pptx.__file__)"
 ```
+
+On Linux use the same commands through `.venv/bin/`, and activate the
+environment first: OfficeCLI discovers a headless browser through a
+Playwright-capable `python3` on `PATH`, so its PPTX screenshot stage fails
+without it. Do not run the product as root, and install the fonts the Author
+HTML declares — see `DEPLOYMENT.zh-CN.md`, "在 Linux 上部署".
 
 Expected OfficeCLI output:
 

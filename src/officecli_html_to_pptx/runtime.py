@@ -28,7 +28,31 @@ FORMAL_PPTX_SCREENSHOT_RENDER = "html"
 PPTX_SCREENSHOT_DEFAULT_RENDER = "default"
 PYTHON_TESTED_RANGE = ">=3.10,<3.15"
 NODE_TESTED_RANGE = ">=20,<23"
-SUPPORTED_PLATFORM = "Windows"
+# The only authority for platform policy.  A platform belongs here once it has
+# been accepted against the Rendering Compatibility Pair above, so the runtime
+# diagnosis is a membership test rather than a claim of theoretical portability.
+# Linux was accepted by the WSL2 track; see
+# ``docs/adr/0031-admit-linux-as-a-validated-build-platform.md``.
+SUPPORTED_PLATFORMS = ("Windows", "Linux")
+
+
+def current_platform() -> str:
+    """Return the platform this process runs on, as ``platform.system()`` reports it.
+
+    Kept here so that platform knowledge has one owner: callers ask the runtime
+    module instead of importing :mod:`platform` and comparing strings themselves.
+    """
+    return platform.system()
+
+
+def supported_platforms_text(platforms: Sequence[str] = SUPPORTED_PLATFORMS) -> str:
+    """Render the supported set for a human-readable diagnostic."""
+    names = list(platforms)
+    if not names:
+        return "no platform"
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + f" or {names[-1]}"
 
 
 @dataclass(frozen=True)
@@ -201,11 +225,11 @@ def diagnose_environment(
 ) -> RuntimeDiagnosis:
     """Inspect prerequisites without installing or mutating anything."""
     diagnostics: list[Diagnostic] = []
-    actual_platform = platform.system()
-    platform_ok = actual_platform == SUPPORTED_PLATFORM
+    actual_platform = current_platform()
+    platform_ok = actual_platform in SUPPORTED_PLATFORMS
     snapshot: dict[str, Any] = {
         "platform": {
-            "required": SUPPORTED_PLATFORM,
+            "required": list(SUPPORTED_PLATFORMS),
             "discovered": actual_platform,
             "compatible": platform_ok,
         },
@@ -221,13 +245,18 @@ def diagnose_environment(
         "chromium": {},
     }
     if not platform_ok:
+        supported = supported_platforms_text()
         diagnostics.append(
             Diagnostic(
                 "unsupported_platform",
                 "error",
-                f"Formal V0.2 builds require {SUPPORTED_PLATFORM}; discovered {actual_platform or 'unknown'}.",
+                f"Formal builds support {supported}; discovered {actual_platform or 'unknown'}.",
                 True,
-                remediation="Run the formal build on Windows; Linux is limited to the later WSL2 validation track.",
+                remediation=(
+                    f"Run the formal build on {supported}. A platform is added to "
+                    "the supported set only after it passes the WSL2-style "
+                    "acceptance track against the Rendering Compatibility Pair."
+                ),
                 recheck="officecli-html-to-pptx doctor --json",
             )
         )
@@ -415,8 +444,10 @@ __all__ = [
     "NODE_TESTED_RANGE",
     "PPTX_SCREENSHOT_DEFAULT_RENDER",
     "PYTHON_TESTED_RANGE",
-    "SUPPORTED_PLATFORM",
+    "SUPPORTED_PLATFORMS",
     "RuntimeDiagnosis",
+    "current_platform",
     "diagnose_environment",
     "officecli_pptx_screenshot_render",
+    "supported_platforms_text",
 ]

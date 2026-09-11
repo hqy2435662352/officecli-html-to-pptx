@@ -14,6 +14,7 @@ import officecli_html_to_pptx.application as application
 from officecli_html_to_pptx import cli
 from officecli_html_to_pptx._internal.officecli_compiler import OfficeCLICompilationResult
 from officecli_html_to_pptx.protocol import Diagnostic, exit_code_for_status, result
+from officecli_html_to_pptx.runtime import SUPPORTED_PLATFORMS, current_platform
 
 
 AUTHOR_HTML = """<!doctype html><html><head><style>
@@ -43,6 +44,11 @@ def test_capabilities_are_author_only_and_use_product_envelope() -> None:
         "finalize",
     ]
     assert payload["data"]["contract"]["profile"] == "author"
+    # ``platform`` answers "where am I running"; ``supported_platforms`` answers
+    # "what does this build support".  Both are needed to decide "supported here".
+    assert payload["data"]["platform"] == current_platform()
+    assert payload["data"]["supported_platforms"] == list(SUPPORTED_PLATFORMS)
+    assert payload["data"]["platform"] in payload["data"]["supported_platforms"]
     assert payload["data"]["rendering_compatibility"]["officecli"] == ">=1.0.147"
     assert payload["data"]["scope"]["officehtml_import"] is False
     assert "profile" not in payload["data"]["contract"]["css_properties"]

@@ -57,16 +57,32 @@ documented supported ranges.
 _Avoid_: latest available tools, optimistic renderer range
 
 **Supported Platform**:
-Windows is the only formally supported V0.2 operating-system environment. The
-product avoids unnecessary platform coupling, but it does not claim macOS or
-Linux compatibility without end-to-end acceptance evidence.
-_Avoid_: theoretically portable, cross-platform by dependency
+An operating-system environment that has passed the platform acceptance track
+against the Rendering Compatibility Pair and is therefore listed by
+`runtime.SUPPORTED_PLATFORMS`. Windows and Linux are supported. The product
+avoids unnecessary platform coupling, but it does not claim macOS or any other
+platform without end-to-end acceptance evidence of its own.
+_Avoid_: theoretically portable, cross-platform by dependency, all POSIX systems
 
-**WSL2 Validation Track**:
-The planned first Linux validation environment, using WSL2 on the current
-Windows machine. It is a future acceptance track rather than a V0.2 support
-claim; passing it does not automatically imply support for all Linux systems.
-_Avoid_: current Linux support, generic Linux certification
+**Platform Acceptance Track**:
+The evidence required before an operating system joins the Supported Platform
+set: the declared Rendering Compatibility Pair discoverable on that system, and
+one real `doctor` -> `check` -> `build` -> Visual Review -> `finalize` run
+producing a complete Artifact Pair with a derived outcome. WSL2 on Ubuntu 24.04
+was the first Linux track and admitted Linux. A track certifies only the
+environment it exercised; other distributions and native installations need
+their own run.
+_Avoid_: generic Linux certification, support by analogy
+
+**WSL2 Host Requirements**:
+The three conditions a Linux build host must satisfy, none of which `doctor`
+reports as a failure. The product launches Chromium without `--no-sandbox`, so
+it must not run as root. OfficeCLI's PPTX screenshot stage discovers a headless
+browser through a Playwright-capable `python3` on `PATH`, so the environment
+owning the pinned Chromium must be active. The host must have the font families
+and weight faces the Author HTML declares, because text geometry is measured on
+the build host.
+_Avoid_: Linux works out of the box, font substitution is cosmetic
 
 **Product Namespace**:
 The Python import namespace `officecli_html_to_pptx`, aligned with the Product
@@ -162,7 +178,8 @@ The deliberately small V0.2 release check: relevant tests and the existing
 suite, one representative real Author HTML run through the complete product
 path, an openable editable PPTX with complete evidence, `compileall`, and
 `git diff --check`. It does not repeat a platform matrix, every Skill entry
-mode, the full Algeria regression, or WSL2 validation.
+mode, the full Algeria regression, or a fresh run of every Platform Acceptance
+Track.
 _Avoid_: certification program, multi-layer release framework
 
 **User-Path Acceptance**:

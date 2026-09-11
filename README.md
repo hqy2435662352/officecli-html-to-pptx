@@ -25,8 +25,9 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
-See [`DEPLOYMENT.zh-CN.md`](DEPLOYMENT.zh-CN.md) for the complete Windows,
-Codex Plugin, five-command workflow, evidence, and troubleshooting guide.
+See [`DEPLOYMENT.zh-CN.md`](DEPLOYMENT.zh-CN.md) for the complete deployment,
+Codex Plugin, five-command workflow, evidence, and troubleshooting guide. It
+covers the Windows path and the Linux host requirements.
 Package-index installation is available only after the distribution has been
 published to the configured index:
 
@@ -36,9 +37,11 @@ python -m playwright install chromium
 ```
 
 OfficeCLI and Node.js are external prerequisites. The product never installs,
-downloads, upgrades, or rewrites runtime configuration. Formal V0.2 builds use
-Windows, OfficeCLI `1.0.147` or newer, Playwright `1.62.0`, and its accepted
-Chromium revision. Check the local state without mutation:
+downloads, upgrades, or rewrites runtime configuration. Formal builds use
+Windows or Linux, OfficeCLI `1.0.147` or newer, Playwright `1.62.0`, and its
+accepted Chromium revision. `capabilities --json` reports both the platform the
+command is running on and the platforms the build supports. Check the local
+state without mutation:
 
 ```bash
 officecli-html-to-pptx doctor --json

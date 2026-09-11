@@ -6,11 +6,25 @@ import pytest
 
 import officecli_html_to_pptx.runtime as runtime
 
+WINDOWS_TOOLS = {"node": "C:\\runtime\\node.exe", "officecli": "C:\\runtime\\officecli.exe"}
+LINUX_TOOLS = {"node": "/usr/local/bin/node", "officecli": "/usr/local/bin/officecli"}
+
+
+def _tool_key(executable: str) -> str:
+    """Name the tool behind an executable path on any supported platform.
+
+    Matching on ``node.exe`` would only work on Windows, so the leaf name is
+    extracted without :mod:`pathlib`: a POSIX ``Path`` does not treat ``\\`` as a
+    separator, so parsing ``C:\\runtime\\node.exe`` with it on Linux would not
+    yield ``node``.
+    """
+    leaf = executable.replace("\\", "/").rsplit("/", 1)[-1]
+    return "node" if leaf.split(".", 1)[0].lower() == "node" else "officecli"
+
 
 def _runner_factory(versions: dict[str, str]):
     def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
-        key = "node" if command[0].lower().endswith("node.exe") else "officecli"
-        value = versions[key]
+        value = versions[_tool_key(command[0])]
         return subprocess.CompletedProcess(command, 0, (value + "\n").encode(), b"")
 
     return runner
@@ -40,7 +54,7 @@ def test_doctor_accepts_the_minimum_and_newer_officecli(
         "_playwright_chromium",
         lambda: ("1.62.0", "1234", str(executable)),
     )
-    executables = {"node": "C:\\runtime\\node.exe", "officecli": "C:\\runtime\\officecli.exe"}
+    executables = WINDOWS_TOOLS
     versions = {"node": "v22.1.0", "officecli": officecli_version}
     diagnosis = runtime.diagnose_environment(
         which=executables.get,
@@ -61,9 +75,8 @@ def _view_help_runner(help_text: str):
     def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
         if command[1:3] == ["view", "--help"]:
             return subprocess.CompletedProcess(command, 0, help_text.encode(), b"")
-        key = "node" if command[0].lower().endswith("node.exe") else "officecli"
         return subprocess.CompletedProcess(
-            command, 0, (versions[key] + "\n").encode(), b""
+            command, 0, (versions[_tool_key(command[0])] + "\n").encode(), b""
         )
 
     return runner
@@ -95,10 +108,9 @@ def test_doctor_records_the_pptx_screenshot_render_path(
     )
 
     diagnosis = runtime.diagnose_environment(
-        which={"node": "C:\\runtime\\node.exe", "officecli": "C:\\runtime\\officecli.exe"}.get,
+        which=WINDOWS_TOOLS.get,
         runner=_view_help_runner(help_text),
     )
-
     screenshot = diagnosis.snapshot["pptx_screenshot"]
     assert diagnosis.compatible
     assert screenshot["render"] == expected_render
@@ -116,7 +128,7 @@ def test_doctor_blocks_mismatched_and_malformed_tools(tmp_path, monkeypatch: pyt
         "_playwright_chromium",
         lambda: ("9.9.9", "9999", str(executable)),
     )
-    executables = {"node": "C:\\runtime\\node.exe", "officecli": "C:\\runtime\\officecli.exe"}
+    executables = WINDOWS_TOOLS
     versions = {"node": "not-a-version", "officecli": "1.0.146"}
     diagnosis = runtime.diagnose_environment(
         which=executables.get,
@@ -125,3 +137,66 @@ def test_doctor_blocks_mismatched_and_malformed_tools(tmp_path, monkeypatch: pyt
 
     codes = {item.code for item in diagnosis.diagnostics}
     assert {"malformed_node_version", "officecli_version_mismatch", "playwright_version_mismatch", "chromium_revision_mismatch"} <= codes
+
+
+def test_doctor_accepts_linux_as_a_supported_build_platform(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Linux passed the WSL2 acceptance track, so the platform gate must not block it.
+
+    The same runtime that Windows accepts is accepted here, on POSIX tool paths
+    and with the render path OfficeCLI advertises off Windows.
+    """
+    monkeypatch.setattr(runtime.platform, "system", lambda: "Linux")
+    executable = tmp_path / "chrome"
+    executable.write_bytes(b"chrome")
+    monkeypatch.setattr(
+        runtime,
+        "_playwright_chromium",
+        lambda: ("1.62.0", "1234", str(executable)),
+    )
+
+    diagnosis = runtime.diagnose_environment(
+        which=LINUX_TOOLS.get,
+        runner=_view_help_runner("Options:\n  --render <render>  Screenshot rendering path\n"),
+    )
+
+    assert diagnosis.compatible
+    assert diagnosis.snapshot["platform"] == {
+        "required": list(runtime.SUPPORTED_PLATFORMS),
+        "discovered": "Linux",
+        "compatible": True,
+    }
+    assert "unsupported_platform" not in {item.code for item in diagnosis.diagnostics}
+    # The HTML projection is the only render path available without PowerPoint,
+    # so it is the path a Linux build must record.
+    assert diagnosis.snapshot["pptx_screenshot"]["render"] == runtime.FORMAL_PPTX_SCREENSHOT_RENDER
+
+
+def test_doctor_blocks_a_platform_outside_the_supported_set(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Widening the set must not accept an unaccepted platform."""
+    monkeypatch.setattr(runtime.platform, "system", lambda: "Darwin")
+    executable = tmp_path / "chrome"
+    executable.write_bytes(b"chrome")
+    monkeypatch.setattr(
+        runtime,
+        "_playwright_chromium",
+        lambda: ("1.62.0", "1234", str(executable)),
+    )
+
+    diagnosis = runtime.diagnose_environment(
+        which=LINUX_TOOLS.get,
+        runner=_runner_factory({"node": "v22.23.2", "officecli": "1.0.149"}),
+    )
+
+    blocking = {item.code for item in diagnosis.diagnostics if item.blocking}
+    assert blocking == {"unsupported_platform"}
+    assert not diagnosis.compatible
+    message = next(item.message for item in diagnosis.diagnostics if item.code == "unsupported_platform")
+    # The diagnostic must name every supported platform, not only the first one.
+    for supported in runtime.SUPPORTED_PLATFORMS:
+        assert supported in message
