@@ -187,13 +187,38 @@ SUPPORTED_INLINE_ELEMENTS = (
     "var",
     "kbd",
 )
+# Canonical Run identity is declared exactly once, here.  A Canonical Run
+# boundary is a formatting boundary, so the published mixed-run surface and the
+# lowering pass that merges a paragraph's runs must read one declaration instead
+# of each restating it.  Each row is
+#
+#   (normalized lowering field, published mixed-run attribute, CSS property)
+#
+# The published attribute and the CSS property are ``None`` for a supported
+# *semantic* attribute that is not part of the declared CSS surface (an anchor
+# target, a gradient-text fill).  The published attributes are the ones the
+# capability manifest has always declared, so deriving them from this
+# declaration republishes the same surface; the lowering pass builds its merge
+# key from the same rows, so an identity dimension cannot be published without
+# being implemented, or implemented without being published.
+CANONICAL_RUN_IDENTITY = (
+    ("font_family", "font_family", "font-family"),
+    ("font_size_pt", "font_size", "font-size"),
+    ("bold", "bold", "font-weight"),
+    ("italic", "italic", "font-style"),
+    ("color", "color", "color"),
+    ("underline", "underline", "text-decoration"),
+    ("href", None, None),
+    ("is_gradient_text", None, None),
+    ("background_image", None, None),
+)
+CANONICAL_RUN_IDENTITY_FIELDS = tuple(
+    field for field, _attribute, _property in CANONICAL_RUN_IDENTITY
+)
 MIXED_RUN_ATTRIBUTES = {
-    "font_family": "font-family",
-    "font_size": "font-size",
-    "bold": "font-weight",
-    "italic": "font-style",
-    "color": "color",
-    "underline": "text-decoration",
+    attribute: css_property
+    for _field, attribute, css_property in CANONICAL_RUN_IDENTITY
+    if attribute is not None
 }
 CANONICAL_RUN_POLICY = {
     "scope": "paragraph",
@@ -1411,6 +1436,8 @@ __all__ = [
     "SUPPORTED_PROFILES",
     "SUPPORTED_OBJECT_KINDS",
     "SUPPORTED_INLINE_ELEMENTS",
+    "CANONICAL_RUN_IDENTITY",
+    "CANONICAL_RUN_IDENTITY_FIELDS",
     "MIXED_RUN_ATTRIBUTES",
     "CANONICAL_RUN_POLICY",
     "TEXT_ALIGNMENT_VALUES",

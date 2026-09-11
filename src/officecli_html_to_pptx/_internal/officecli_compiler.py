@@ -30,6 +30,7 @@ from PIL import Image
 from lxml import html as _lxml_html
 
 from ..contract import (
+    CANONICAL_RUN_IDENTITY_FIELDS,
     LINE_HEIGHT_PX_PROJECTION_SCALE,
     LIST_MARKER_PRESETS,
     SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX,
@@ -462,18 +463,15 @@ def _canonical_run_key(run: dict[str, Any]) -> tuple[Any, ...]:
     A run boundary is a formatting boundary, not a DOM node boundary.  Two
     adjacent runs with the same resolved formatting and the same supported
     semantic attributes are one Canonical Run; anything else stays a boundary.
+    The identity dimensions are exactly the ones
+    ``contract.CANONICAL_RUN_IDENTITY`` declares, which is also the declaration
+    ``capabilities`` publishes, so the published mixed-run surface and this key
+    cannot drift apart.  Every value is read from the normalization above, which
+    already produced the canonical type of each field (a bool for
+    ``bold``/``italic``/``is_gradient_text``, ``None`` or a non-empty string for
+    ``href``/``background_image``), so no coercion can distinguish two runs.
     """
-    return (
-        run.get("font_family"),
-        run.get("font_size_pt"),
-        bool(run.get("bold")),
-        bool(run.get("italic")),
-        run.get("underline"),
-        run.get("color"),
-        str(run.get("href") or ""),
-        bool(run.get("is_gradient_text")),
-        str(run.get("background_image") or ""),
-    )
+    return tuple(run.get(field) for field in CANONICAL_RUN_IDENTITY_FIELDS)
 
 
 def _canonical_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -494,6 +492,87 @@ def _canonical_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return merged
 
 
+def _canonical_source_runs(
+    raw_paragraph: dict[str, Any],
+    element: dict[str, Any],
+    scale_x: float,
+    backdrop: tuple[int, int, int],
+    element_opacity: float,
+) -> list[dict[str, Any]]:
+    """Normalize one measured paragraph's runs and merge them canonically.
+
+    This is the one place a measured run becomes a lowering run, so the object
+    text, the Canonical Runs, the native run ranges and the soft-wrap decision
+    all read the same normalized sequence.
+    """
+    normalized_runs: list[dict[str, Any]] = []
+    for raw_run in raw_paragraph.get("runs") or []:
+        text = str(raw_run.get("text", ""))
+        if not text:
+            continue
+        color = _parse_css_color(raw_run.get("color"))
+        if color is None:
+            color_value = None
+        else:
+            rgb, alpha = color
+            if element_opacity < 0.999:
+                color_value = _hex_with_alpha(rgb, alpha * element_opacity)
+            else:
+                color_value = _hex(
+                    rgb if alpha >= 0.999 else _blend(rgb, alpha, backdrop)
+                )
+        font_size = _number(
+            raw_run.get("fontSize"), _number(element.get("fontSize"))
+        )
+        normalized_runs.append(
+            {
+                "text": text,
+                "font_family": _resolve_pptx_font(
+                    str(raw_run.get("fontFamily") or element.get("fontFamily") or "")
+                ),
+                "font_size_pt": _pt(font_size, scale_x) if font_size > 0 else 0.0,
+                "bold": _is_bold(raw_run.get("fontWeight", element.get("fontWeight"))),
+                "italic": str(
+                    raw_run.get("fontStyle", element.get("fontStyle", ""))
+                ).lower() in {"italic", "oblique"},
+                "underline": _underline_value(
+                    raw_run.get("textDecoration", raw_run.get("text-decoration"))
+                ),
+                "color": color_value,
+                # Supported semantic attributes participate in run identity:
+                # a hyperlink target or a gradient-text fill is a real
+                # boundary and is never merged away.
+                "href": raw_run.get("href"),
+                "is_gradient_text": bool(raw_run.get("isGradientText")),
+                "background_image": raw_run.get("backgroundImage"),
+            }
+        )
+    return _canonical_runs(normalized_runs)
+
+
+def _is_one_canonical_run(
+    raw_paragraph: dict[str, Any],
+    element: dict[str, Any],
+    scale_x: float,
+    backdrop: tuple[int, int, int],
+    element_opacity: float,
+) -> bool:
+    """Return whether a measured paragraph resolves to one Canonical Run.
+
+    The declared soft-wrap model requires one source run, because the visual
+    lines of the browser can only become native paragraph boundaries when every
+    line carries the same run formatting.  That question is asked of the one
+    Canonical Run identity: a paragraph whose source nodes resolve to identical
+    formatting is one run, whatever the node count, and can therefore keep the
+    visual-line boundaries Chromium measured.
+    """
+    return len(
+        _canonical_source_runs(
+            raw_paragraph, element, scale_x, backdrop, element_opacity
+        )
+    ) == 1
+
+
 def _text_paragraphs(
     element: dict[str, Any],
     scale_x: float,
@@ -506,12 +585,15 @@ def _text_paragraphs(
 ) -> tuple[dict[str, Any], ...]:
     raw_paragraphs = element.get("paragraphs") or []
     visual_lines = element.get("visualLines")
+    element_opacity = max(0.0, min(1.0, _number(element.get("opacity"), 1.0)))
     if (
         visual_lines_as_paragraphs
         and isinstance(visual_lines, list)
         and len(visual_lines) > 1
         and len(raw_paragraphs) == 1
-        and len(raw_paragraphs[0].get("runs") or []) == 1
+        and _is_one_canonical_run(
+            raw_paragraphs[0], element, scale_x, backdrop, element_opacity
+        )
     ):
         visual_texts = [str(line) for line in visual_lines if str(line)]
         raw_text = str(raw_paragraphs[0].get("text", ""))
@@ -567,52 +649,10 @@ def _text_paragraphs(
             }]
 
     result: list[dict[str, Any]] = []
-    element_opacity = max(0.0, min(1.0, _number(element.get("opacity"), 1.0)))
     for raw_paragraph in raw_paragraphs:
-        raw_runs = raw_paragraph.get("runs") or []
-        normalized_runs: list[dict[str, Any]] = []
-        for raw_run in raw_runs:
-            text = str(raw_run.get("text", ""))
-            if not text:
-                continue
-            color = _parse_css_color(raw_run.get("color"))
-            if color is None:
-                color_value = None
-            else:
-                rgb, alpha = color
-                if element_opacity < 0.999:
-                    color_value = _hex_with_alpha(rgb, alpha * element_opacity)
-                else:
-                    color_value = _hex(
-                        rgb if alpha >= 0.999 else _blend(rgb, alpha, backdrop)
-                    )
-            font_size = _number(
-                raw_run.get("fontSize"), _number(element.get("fontSize"))
-            )
-            normalized_runs.append(
-                {
-                    "text": text,
-                    "font_family": _resolve_pptx_font(
-                        str(raw_run.get("fontFamily") or element.get("fontFamily") or "")
-                    ),
-                    "font_size_pt": _pt(font_size, scale_x) if font_size > 0 else 0.0,
-                    "bold": _is_bold(raw_run.get("fontWeight", element.get("fontWeight"))),
-                    "italic": str(
-                        raw_run.get("fontStyle", element.get("fontStyle", ""))
-                    ).lower() in {"italic", "oblique"},
-                    "underline": _underline_value(
-                        raw_run.get("textDecoration", raw_run.get("text-decoration"))
-                    ),
-                    "color": color_value,
-                    # Supported semantic attributes participate in run identity:
-                    # a hyperlink target or a gradient-text fill is a real
-                    # boundary and is never merged away.
-                    "href": raw_run.get("href"),
-                    "is_gradient_text": bool(raw_run.get("isGradientText")),
-                    "background_image": raw_run.get("backgroundImage"),
-                }
-            )
-        normalized_runs = _canonical_runs(normalized_runs)
+        normalized_runs = _canonical_source_runs(
+            raw_paragraph, element, scale_x, backdrop, element_opacity
+        )
         paragraph_text = "".join(run["text"] for run in normalized_runs)
         direction = str(
             raw_paragraph.get("direction", element.get("direction", "ltr")) or "ltr"

@@ -69,6 +69,10 @@ EXTRACTION_JS = """
     //    boundary space never migrates into a differently formatted run;
     //  - only the line-box edges drop whitespace: the start of the flow, the
     //    end of the flow, and a duplicate of a space the flow already owns.
+    //
+    // Collapsing is formatting-free: which adjacent runs are one Canonical Run
+    // is a lowering decision, so the one Canonical Run identity lives in the
+    // compiler and is never restated here.
     function collapseSegment(segment) {
         const collapsed = [];
         // A space whose owning run is already emitted, but whose fate is still
@@ -98,52 +102,23 @@ EXTRACTION_JS = """
             }
             // This run's own leading space stays inside this run, unless the
             // flow already owns a space at that boundary: then the earlier
-            // space keeps the position and this duplicate is removed.  A space
-            // left pending by the previous run of *this same* format is the
-            // same boundary space, so it is claimed rather than duplicated.
+            // space keeps the position and this duplicate is removed.
             let text = core;
             if (match[1]) {
                 const last = collapsed.length
                     ? collapsed[collapsed.length - 1]
                     : null;
-                const format = inlineRunFormat(run);
-                if (pendingSpace && last && last._format === format) {
-                    // The boundary space the previous run left pending belongs
-                    // to the run this text joins, so it moves inside the joined
-                    // text rather than being appended after the merge.
-                    text = ' ' + text;
-                    pendingSpace = false;
-                } else if (!pendingSpace && last && !last.text.endsWith(' ')) {
+                if (!pendingSpace && last && !last.text.endsWith(' ')) {
                     text = ' ' + text;
                 }
             }
             flush();
-            const format = inlineRunFormat(run);
-            const last = collapsed.length ? collapsed[collapsed.length - 1] : null;
-            if (last && last._format === format) {
-                last.text += text;
-            } else {
-                collapsed.push({ ...run, text: text, _format: format });
-            }
+            collapsed.push({ ...run, text: text });
             if (match[3]) pendingSpace = true;
         }
         // The line ends here, so a space still pending is the line-box end edge
         // and is dropped rather than emitted.
         return collapsed;
-    }
-
-    // A run boundary is a formatting boundary, not a DOM node boundary.  Two
-    // runs merge only inside one authored line and only with identical
-    // resolved formatting, so a nested <strong> inside a <span> still wins and
-    // a differently formatted neighbour is never absorbed.  The identity rides
-    // on the run as a private '_format' key the compiler never reads.
-    function inlineRunFormat(run) {
-        return [
-            run.color, run.fontSize, run.fontFamily, run.fontWeight,
-            run.fontStyle, run.textTransform,
-            run.textDecoration === undefined ? 'none' : run.textDecoration,
-            run.href === undefined || run.href === null ? '' : run.href,
-        ].join('\\u0000');
     }
 
     function collapseInlineRuns(runs) {
@@ -183,7 +158,6 @@ EXTRACTION_JS = """
         }
         for (const item of kept) {
             delete item.br;
-            delete item._format;
         }
         return kept;
     }
@@ -212,11 +186,11 @@ EXTRACTION_JS = """
 
     // ``topLevel`` marks the inline flow of the measured element.  Whitespace
     // collapsing is a property of the whole flow, so it runs exactly once, at
-    // the top: a nested inline element contributes its raw runs and is folded
-    // with the flow around it.  Collapsing a nested element on its own would
-    // resolve its leading space against a line edge that does not exist and
-    // drop a boundary space the authored line keeps (``Canonical: `` followed
-    // by ``<span>North</span><span> Africa</span>``).
+    // the top: a nested inline element contributes its raw runs and is
+    // collapsed with the flow around it.  Collapsing a nested element on its
+    // own would resolve its leading space against a line edge that does not
+    // exist and drop a boundary space the authored line keeps
+    // (``Canonical: `` followed by ``<span>North</span><span> Africa</span>``).
     //
     // ``href`` is the nearest enclosing anchor target: an <a> hands its own
     // target to the whole subtree it wraps, so a link's text keeps its
@@ -266,8 +240,8 @@ EXTRACTION_JS = """
                 // is a real hard break, and every nested text node keeps the
                 // computed style of its *nearest* inline element (<strong>
                 // inside <span> still wins).  The nested runs stay separate
-                // here: identical formatting is folded once, by the flow-level
-                // collapse below.
+                // here: which adjacent runs are one Canonical Run is resolved
+                // by the lowering pass, which owns that identity.
                 const childRuns = collectInlineRuns(
                     node,
                     cs,
