@@ -65,11 +65,15 @@ _RENDERED_CSS_PROPERTIES = frozenset(
         "padding-top",
         "text-align",
         "text-decoration",
-        "text-transform",
         "transform",
         "vertical-align",
     }
 )
+# ``text-transform`` is measured but never lowered: no Canonical Run key, run
+# property or readback carries the case transform, so a browser that shows
+# ``uppercase`` text would be silently checked as supported while the PPTX keeps
+# the authored case.  It is therefore declared unsupported and blocked until
+# lowering, readback and visual evidence exist for it.
 _MEASUREMENT_ONLY_CSS_PROPERTIES = frozenset(
     {
         "align-content",
@@ -136,6 +140,8 @@ _UNSUPPORTED_CSS_PROPERTIES = frozenset(
         "clip-path",
         "filter",
         "mix-blend-mode",
+        # Measured but never lowered: see the note above.
+        "text-transform",
         "text-shadow",
         "transition",
         "transition-delay",

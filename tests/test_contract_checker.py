@@ -284,3 +284,26 @@ def test_author_profile_rejects_external_font_face_source(tmp_path: Path) -> Non
         item.code == "external_resource" and "font-face" in item.message
         for item in report.diagnostics
     )
+
+
+def test_text_transform_blocks_because_nothing_lowers_it() -> None:
+    """Declared-rendered must mean lowered, not silently dropped.
+
+    ``text-transform`` is measured but no Canonical Run key, run property or
+    readback carries the case transform, so a browser that shows ``uppercase``
+    text would be checked as supported while the PPTX keeps the authored case.
+    It is declared unsupported instead, and this neighbouring negative fixture
+    pins that until lowering, readback and visual evidence exist for it.
+    """
+    fixture = Path(__file__).parent / "fixtures" / "unsupported_text_transform.html"
+
+    report = check_contract(fixture, "author")
+
+    assert report.blocked
+    assert [
+        item.code for item in report.diagnostics if item.blocking
+    ] == ["unsupported_visible_css"]
+    diagnostic = report.diagnostics[0]
+    assert "text-transform" in diagnostic.message
+    # The finding carries the source context of the transformed element.
+    assert diagnostic.source_object == "/html/body/section/div"
