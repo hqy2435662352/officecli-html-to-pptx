@@ -1616,7 +1616,15 @@ _RECONSTRUCTABLE_MEMBER_KINDS = frozenset(
 # names the same value ``color``; a connector's preset is ``shape`` on both
 # sides.  Bridging the two spellings is what lets a connector -- and a container
 # built from connectors -- be reconstructed at all.
-_MEMBER_TEXT_PROPERTIES = ("size", "font", "color", "align", "bold", "italic")
+#
+# The same text properties are carried by a text-bearing object's own proxy: an
+# object whose visible content is its text is not represented by an image of its
+# bare rectangle.  A base-only text object is exactly that case -- its text
+# colour is inherited, which is why it cannot be declared natively, and the
+# inherited colour is not reproducible here, so the proxy carries the object's
+# own text and its slide-owned text properties.
+_TEXTUAL_KINDS = frozenset({"shape", "textbox"})
+_TEXT_PROPERTIES = ("size", "font", "color", "align", "bold", "italic")
 
 
 @dataclass(frozen=True)
@@ -1898,6 +1906,71 @@ def rebuild_keys(object_kind: str) -> tuple[str, ...]:
     return _REBUILD_PROPERTIES
 
 
+def _add_text_paint(
+    rebuild: dict[str, str], text: Any, properties: Mapping[str, Any]
+) -> None:
+    """Add the text that *is* a text-bearing object's paint to its reconstruction.
+
+    One rule for both reconstructions that carry text -- a container's
+    text-bearing member and a text-bearing object's own proxy -- so the two can
+    never drift into disagreeing about what a text object's visible content is.
+    The text properties are set only where the object's own readback supplies
+    them, so an inherited value is never invented as if the slide owned it.
+    """
+    body = str(text or "")
+    if body:
+        rebuild["text"] = body
+    for key in _TEXT_PROPERTIES:
+        value = properties.get(key)
+        if value is None:
+            continue
+        property_text = str(value).strip()
+        if property_text and property_text.lower() != "none":
+            rebuild.setdefault(key, property_text)
+
+
+_GRADIENT_STOP_RE = re.compile(r"#[0-9a-fA-F]{6,8}")
+
+
+def proxy_paint_value(
+    key: str, value: Any, properties: Mapping[str, Any]
+) -> str | None:
+    """Return an OfficeCLI-acceptable colour for a proxy's ``fill``/``line``.
+
+    OfficeCLI's readback names a non-solid paint by its *kind* -- a gradient
+    shape reports ``fill=gradient`` and carries the stops in a separate
+    ``gradient`` property -- but its write path only accepts an actual colour
+    token, so writing the readback value straight back fails with
+    ``Invalid color value: 'gradient'`` and the whole projection is refused.
+
+    Such an object is not canonical-editable either way: a gradient is outside
+    the canonical Author fill surface, so it is classified ``locked-visual-proxy``
+    and only ever appears through an object-local proxy.  The proxy therefore
+    reproduces the object's *representative* paint -- the first gradient stop --
+    which keeps the proxy local to the object and honest about not reproducing
+    the gradient, instead of failing the run.
+
+    Returns ``None`` when the paint cannot be rendered at all, in which case the
+    caller omits the property rather than writing an invalid token.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in {"none", "transparent"}:
+        return text
+    if parse_color(text) is not None:
+        return text
+    if text.lower() in {"gradient", "gradfill"} or "gradient" in properties:
+        stops = _GRADIENT_STOP_RE.findall(str(properties.get("gradient", "")))
+        for stop in stops:
+            parsed = parse_color(stop)
+            if parsed is not None:
+                return parsed
+    return None
+
+
 def connector_stroke(properties: Mapping[str, Any]) -> str | None:
     """Return a connector's stroke value under either OfficeCLI spelling."""
     for key in ("line", "color"):
@@ -1959,12 +2032,16 @@ class IsolatedRenderer:
         media_path: str | Path | None = None,
         guard_px: int = 2,
         placements: Sequence[ContainerPlacement] = (),
+        text: str = "",
     ) -> Path:
         """Rebuild ``source_object`` alone and crop it to ``bounds_pt``.
 
-        ``properties`` is the object's OfficeCLI ``format`` mapping, and
-        ``media_path`` is the extracted picture payload when the object is a
-        picture.  Both come from the same read that produced ``bounds_pt``.
+        ``properties`` is the object's OfficeCLI ``format`` mapping, ``text`` is
+        its own captured text, and ``media_path`` is the extracted picture
+        payload when the object is a picture.  All three come from the same read
+        that produced ``bounds_pt``.  ``text`` is passed separately because
+        OfficeCLI reports an object's text as its own field rather than as one of
+        its ``format`` properties.
 
         A paint-less container has no paint of its own, so ``placements`` carries
         the candidate readings of its visible content: its own children, each
@@ -2033,6 +2110,7 @@ class IsolatedRenderer:
                                 self._rebuild_properties(
                                     object_kind, bounds_pt, properties,
                                     media_path=media_path,
+                                    text=text,
                                 ),
                             )
                         ]
@@ -2225,8 +2303,19 @@ class IsolatedRenderer:
         properties: Mapping[str, Any],
         *,
         media_path: str | Path | None,
+        text: str = "",
     ) -> dict[str, str]:
-        """Return the OfficeCLI ``add`` props that reproduce the object's paint."""
+        """Return the OfficeCLI ``add`` props that reproduce the object's paint.
+
+        A text-bearing object's paint is its text, so a ``shape`` or ``textbox``
+        proxy carries the object's own text and text properties exactly as a
+        container's text-bearing member does.  Without them the proxy is an image
+        of the object's bare rectangle: the paint the object is *for* is dropped
+        from the rebuilt deck, which is the one thing a locked visual proxy may
+        never do.  The inherited value that made the object base-only in the
+        first place -- a theme colour, typically -- is still not reproduced, and
+        the object is still reported as base-only scope evidence for it.
+        """
         rebuild: dict[str, str] = {
             "name": "isolated-object",
             "x": f"{bounds_pt[0]:g}pt",
@@ -2245,6 +2334,15 @@ class IsolatedRenderer:
             # it for a length or a geometry.
             if text.lower() == "none" and key not in {"fill", "line"}:
                 continue
+            if key in {"fill", "line"}:
+                # A non-solid paint (a gradient, say) is named by kind in the
+                # readback and is not a colour OfficeCLI accepts on write, so the
+                # proxy carries the object's representative stop instead.
+                paint = proxy_paint_value(key, text, properties)
+                if paint is None:
+                    continue
+                rebuild[key] = paint
+                continue
             rebuild[key] = text
         if object_kind == "connector":
             # The stroke a connector read back as ``color`` is written back as
@@ -2252,6 +2350,8 @@ class IsolatedRenderer:
             stroke = connector_stroke(properties)
             if stroke is not None:
                 rebuild["line"] = stroke
+        if object_kind in _TEXTUAL_KINDS:
+            _add_text_paint(rebuild, text, properties)
         if object_kind == "picture":
             if not media_path:
                 raise ObjectIsolationError(
@@ -2288,21 +2388,22 @@ class IsolatedRenderer:
                 continue
             if text.lower() == "none" and key not in {"fill", "line"}:
                 continue
+            if key in {"fill", "line"}:
+                # Same rule as a single-object proxy: a paint named by kind in
+                # the readback becomes the member's representative colour so the
+                # container's reconstruction still renders.
+                paint = proxy_paint_value(key, text, properties)
+                if paint is None:
+                    continue
+                rebuild[key] = paint
+                continue
             rebuild[key] = text
         if member.source_kind == "connector":
             stroke = connector_stroke(properties)
             if stroke is not None:
                 rebuild["line"] = stroke
-        if member.source_kind in {"shape", "textbox"}:
-            if member.text:
-                rebuild["text"] = member.text
-            for key in _MEMBER_TEXT_PROPERTIES:
-                value = properties.get(key)
-                if value is None:
-                    continue
-                text = str(value).strip()
-                if text and text.lower() != "none":
-                    rebuild.setdefault(key, text)
+        if member.source_kind in _TEXTUAL_KINDS:
+            _add_text_paint(rebuild, member.text, properties)
         if member.source_kind == "picture":
             if not member.media_path:
                 raise ObjectIsolationError(

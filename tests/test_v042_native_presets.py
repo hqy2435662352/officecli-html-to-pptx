@@ -1367,7 +1367,13 @@ def test_the_group_proxy_is_the_groups_own_rectangle_at_the_canvas_factor(
 def test_the_group_proxy_carries_its_children_paint(
     container_run: ProjectionResult,
 ) -> None:
-    """A blank image is never published as a representation."""
+    """A blank image is never published as a representation.
+
+    This is also the projector-side half of the delta gate's target-survival
+    rule: the gate measures a proxy's own bytes and refuses one that is nothing
+    but its own background, so a reconstruction that publishes an image here has
+    to carry paint here.
+    """
     from PIL import Image
 
     projected = _projected(container_run, GROUP_NAME)
@@ -1375,8 +1381,16 @@ def test_the_group_proxy_carries_its_children_paint(
         rgb = image.convert("RGB")
         colors = rgb.getcolors(1 << 16)
         child_fill = _pixel_count_near(image, _hex_rgb(GROUP_CHILD_BOX_FILL))
+        background = rgb.getpixel((0, 0))
+        exact_background = sum(
+            count for count, colour in (colors or ()) if colour == background
+        )
     assert colors is not None and len(colors) > 1, "the proxy must not be blank"
     assert child_fill > 0, "the container's own child must be visible in its proxy"
+    assert exact_background < rgb.width * rgb.height, (
+        "the proxy's own bytes must carry paint, not just the background it was "
+        "cropped out of"
+    )
 
 
 def test_group_owned_children_are_recorded_as_owned_without_an_identity(

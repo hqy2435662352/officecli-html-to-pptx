@@ -187,6 +187,22 @@ PROJECTED_KIND_PICTURE = "picture"
 PROJECTED_KIND_TABLE = "table"
 PROJECTED_KIND_IMAGE = "image"
 
+# The New Deck compiler names an emitted object after the object it actually
+# creates, so a projected kind that is a *canvas* kind rather than a compiled
+# kind has to be translated before it can be used as an emitted name.  A locked
+# proxy is a canvas ``image``: the compiler rebuilds it as one native picture,
+# so its emitted name says ``picture``.  Every other projected kind is already
+# the compiler's own kind word.  Without this map, ``emitted_name`` would name an
+# object the rebuilt deck does not contain, and a readback could only locate the
+# proxy by geometry.
+COMPILED_KIND_BY_PROJECTED_KIND = {
+    PROJECTED_KIND_SHAPE: PROJECTED_KIND_SHAPE,
+    PROJECTED_KIND_TEXTBOX: PROJECTED_KIND_TEXTBOX,
+    PROJECTED_KIND_PICTURE: PROJECTED_KIND_PICTURE,
+    PROJECTED_KIND_TABLE: PROJECTED_KIND_TABLE,
+    PROJECTED_KIND_IMAGE: PROJECTED_KIND_PICTURE,
+}
+
 _INLINE_SEMANTIC = {
     ("bold", "single"): "strong",
     ("italic", "single"): "em",
@@ -593,14 +609,17 @@ class ProjectedObject:
         """The object name the New Deck compiler gives this projection slot.
 
         The compiler names every emitted object ``slide-NNN-<kind>-<ordinal>``
-        where NNN is the *output* slide index and the ordinal counts every
-        object that slide emitted before it, so the readback is located from
-        the projection's own identity rather than by geometry or ordinal
+        where NNN is the *output* slide index, ``<kind>`` is the compiled
+        object's own kind word (a locked proxy is compiled as a ``picture``, not
+        as the canvas ``image`` it is drawn with), and the ordinal counts every
+        object that slide emitted before it.  The readback is therefore located
+        from the projection's own identity rather than by geometry or ordinal
         guessing.
         """
         return (
             f"slide-{self.output_slide:03d}-"
-            f"{self.projected_kind}-{self.emitted_ordinal:03d}"
+            f"{COMPILED_KIND_BY_PROJECTED_KIND.get(self.projected_kind, self.projected_kind)}"
+            f"-{self.emitted_ordinal:03d}"
         )
 
     @property
@@ -2540,6 +2559,7 @@ def _isolated_proxy(
             media_path=media_path,
             guard_px=PROXY_GUARD_PX,
             placements=placements,
+            text=obj.text,
         )
     finally:
         if media_path is not None:
@@ -3056,6 +3076,7 @@ __all__ = [
     "AmbiguousMappingError",
     "BLOCKING_DISPOSITIONS",
     "CANVAS_TOLERANCE_PX",
+    "COMPILED_KIND_BY_PROJECTED_KIND",
     "DISPOSITION_BASE_ONLY",
     "DISPOSITION_CANONICAL",
     "DISPOSITION_LOCKED",
