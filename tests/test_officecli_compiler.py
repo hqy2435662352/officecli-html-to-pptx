@@ -252,7 +252,7 @@ def _table_deck_html() -> str:
 </style></head><body>
   <section class="slide active">
     <table aria-label="native table">
-      <thead><tr><th>MODEL</th><th>VARIANT</th><th>INDOOR SIZE</th><th>OUTDOOR SIZE</th><th>TCL CODE</th></tr></thead>
+      <thead><tr><th>MODEL</th><th>VARIANT</th><th>INDOOR SIZE</th><th>OUTDOOR SIZE</th><th>PART CODE</th></tr></thead>
       <tbody>
         <tr><td>Capacity Class</td><td>12K, one</td><td>12K</td><td>18K</td><td>Z4U20101035061</td></tr>
         <tr><td>Cooling Capacity</td><td>12000</td><td>18100</td><td>22000</td><td>R32</td></tr>
@@ -336,6 +336,12 @@ def _mixed_runs_html() -> str:
 
 
 def _flex_labels_html() -> str:
+    """Flex children must lower to separate text objects, never one merged run.
+
+    The labels are deliberately generic placeholders.  This fixture previously
+    carried wording lifted from a customer deck, which a public repository should
+    not fingerprint; keep replacement text synthetic rather than domain-flavoured.
+    """
     return """<!doctype html>
 <html><head><style>
   * { box-sizing: border-box; }
@@ -348,8 +354,8 @@ def _flex_labels_html() -> str:
   .nav { position: absolute; left: 40px; top: 120px; display: flex; gap: 18px; }
   .nav span { font-size: 12px; }
 </style></head><body><section class="slide">
-  <div class="header"><strong>AIR CONDITIONER</strong><small>PRODUCT LINE-UP</small></div>
-  <div class="nav"><span>COMFORT</span><span>RELIABILITY</span><span>INTELLIGENCE</span></div>
+  <div class="header"><strong>SECTION TITLE</strong><small>SECTION SUBTITLE</small></div>
+  <div class="nav"><span>FIRST</span><span>SECOND</span><span>THIRD</span></div>
 </section></body></html>"""
 
 
@@ -426,13 +432,13 @@ async def test_public_compiler_keeps_flex_children_as_separate_text_objects(
         for item in result.manifest["objects"]
         if item["kind"] in {"shape", "textbox"} and item["text"]
     ]
-    assert "AIR CONDITIONER" in texts
-    assert "PRODUCT LINE-UP" in texts
-    assert "COMFORT" in texts
-    assert "RELIABILITY" in texts
-    assert "INTELLIGENCE" in texts
-    assert "AIR CONDITIONERPRODUCT LINE-UP" not in texts
-    assert "COMFORTRELIABILITYINTELLIGENCE" not in texts
+    assert "SECTION TITLE" in texts
+    assert "SECTION SUBTITLE" in texts
+    assert "FIRST" in texts
+    assert "SECOND" in texts
+    assert "THIRD" in texts
+    assert "SECTION TITLESECTION SUBTITLE" not in texts
+    assert "FIRSTSECONDTHIRD" not in texts
 
 
 @pytest.mark.asyncio
