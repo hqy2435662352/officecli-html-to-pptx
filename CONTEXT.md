@@ -110,6 +110,32 @@ or incompatible prerequisite reported by the Environment Doctor. Neither a
 build request nor a failed prerequisite check grants permission to perform it.
 _Avoid_: transparent install, build-time download
 
+**Build Preflight**:
+The two host conditions `build` settles after the Contract check and before
+compilation: whether the host can supply the font families and weight faces the
+Author HTML declares, and whether OfficeCLI can still produce the PPTX
+screenshot the Evidence Bundle needs. It reports through the Command Result
+Envelope and blocks on either, so a build is never discarded after it was
+compiled and a deck is never published with geometry measured in a family the
+PPTX does not declare. It never repairs the host.
+_Avoid_: environment repair, doctor duplicate, early compiler validation
+
+**Measured Font Family**:
+The family Chromium actually drew Author text with on the build host, reported
+by the renderer itself rather than inferred from a platform font registry. A
+declared family the host cannot supply is replaced by the renderer silently, so
+the Visible Finding is not the substitution but the disagreement between the
+measured geometry and the family the PPTX declares.
+_Avoid_: font substitution score, platform font inventory, fontconfig check
+
+**Renderer Capability Probe**:
+One real screenshot of a disposable document through the same render path the
+Evidence Bundle will use, judged by the written PNG rather than the process exit
+status, because OfficeCLI exits `0` while rendering nothing. The probe document
+is closed on every path so a resident that cached a failed browser discovery
+cannot survive to fail a corrected retry.
+_Avoid_: version-string inference, browser discovery reimplementation, resident cleanup step
+
 **Capability Manifest**:
 The machine-readable description returned by `capabilities --json`, generated
 from the installed product's contract and version authorities. It tells an

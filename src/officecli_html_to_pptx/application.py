@@ -45,6 +45,7 @@ from .protocol import (
     PRODUCT_VERSION,
     result,
 )
+from .preflight import preflight
 from .runtime import (
     FORMAL_CHROMIUM_REVISION,
     FORMAL_OFFICECLI_VERSION,
@@ -367,6 +368,21 @@ def _runtime_block_result(diagnosis: CommandResult) -> CommandResult:
     )
 
 
+def preflight_author_html(input_html: str | Path) -> CommandResult:
+    """Settle both host preconditions before the build path does any work.
+
+    Returns the public envelope so ``build`` can gate on ``status`` without
+    re-deriving blocking from the raw findings, exactly as ``doctor`` is used.
+    """
+    report = preflight(input_html)
+    return result(
+        "build",
+        "PASS" if report.compatible else "BLOCK",
+        diagnostics=report.diagnostics,
+        data={"preflight": report.as_dict()},
+    )
+
+
 def _review_seed(
     *,
     build_id: str,
@@ -463,6 +479,19 @@ async def build_author_html(
     if diagnosis.status != "PASS":
         return _runtime_block_result(diagnosis)
 
+    # The two host conditions that fail silently (font substitution) or late
+    # (no discoverable renderer browser) are settled before the expensive work,
+    # so a build is never discarded after it has already been compiled.
+    host = await asyncio.to_thread(preflight_author_html, input_path)
+    if host.status != "PASS":
+        return result(
+            "build",
+            "BLOCK",
+            diagnostics=host.diagnostics,
+            data=host.data,
+        )
+
+    preflight_report = host.data.get("preflight", {})
     html_hash = _sha256(input_path)
     build_id = str(uuid4())
     staging_dir = Path(
@@ -519,6 +548,10 @@ async def build_author_html(
             "contract_version": CONTRACT_VERSION,
             "officecli_compatibility_baseline": OFFICECLI_COMPATIBILITY_BASELINE,
             "runtime": diagnosis.data.get("runtime", {}),
+            # The host conditions the geometry depends on are build evidence: a
+            # reviewer reading this bundle can see which families and which
+            # renderer actually produced it.
+            "preflight": preflight_report,
             "author_html": {"path": str(input_path), "sha256": html_hash},
             "pptx": {"path": str(output_path), "sha256": pptx_hash},
             "pptx_path": str(output_path),
@@ -942,4 +975,5 @@ __all__ = [
     "diagnose_environment",
     "finalize_build",
     "get_capabilities",
+    "preflight_author_html",
 ]

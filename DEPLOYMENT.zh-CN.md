@@ -161,3 +161,46 @@ Bundle、`doctor --json` 输出和产品版本号。
 - `BLOCK` from `check`：按 diagnostics 修复 Candidate HTML，不要绕过 Contract；
 - output collision：选择新输出名，不要删除或覆盖已有 Artifact Pair；
 - `REVISION_REQUIRED`：根据 major findings 修改 HTML，重新 `check` 和 `build`。
+
+## 主机字体与渲染器前置检查
+
+`build` 在编译之前先验证两个主机条件，两者的结果都会写入 Evidence Bundle 的
+`result.json` 的 `preflight` 字段。
+
+### 字体
+
+Author HTML 声明的字体族和字重面必须由构建主机真实提供。Chromium 是测量的权威，
+因此检查直接询问 Chromium 本身：`FontFace(local(...))` 判断字体族是否存在，
+DevTools Protocol 的 `CSS.getPlatformFontsForNode` 报告 Chromium 实际绘制的字重面。
+
+| diagnostic | 级别 | 含义 |
+| --- | --- | --- |
+| `declared_font_family_absent` | **阻断** | 主机缺少声明的字体族，Chromium 已用替代字体测量。此时量出的文本框尺寸与 PPTX 声明的字体不一致，属于静默错误。 |
+| `font_weight_face_substituted` | 提示 | 字体族存在，但请求的字重落到了更轻的字重面。PPTX 声明的是字体族，PowerPoint 会做同样的替代，因此不阻断。 |
+| `declared_font_family_skipped` | 提示 | 声明了主机没有的字体族，但 Chromium 跳过了它并落到 PPTX 实际声明的那一族，几何是正确的。 |
+
+### 渲染器
+
+Evidence Bundle 的 PPTX 面板依赖 `officecli view <pptx> screenshot --render html`，
+它需要一个可被 OfficeCLI 发现的无头浏览器。检查会用一次性文档真实截一次图，并且
+**只认生成的 PNG 文件**——OfficeCLI 在没有渲染出任何内容时仍然返回退出码 `0`。
+
+| diagnostic | 级别 | 含义 |
+| --- | --- | --- |
+| `renderer_browser_missing` | **阻断** | 主机上完全没有找到浏览器。 |
+| `renderer_browser_unreachable` | **阻断** | 主机上存在浏览器，但 OfficeCLI 找不到它。这是更常见的情况，修复方式不同。 |
+
+修复方式：在 `PATH` 中提供带 Playwright 的 `python3`，或把系统 Chromium
+（`chromium` / `google-chrome` / `chromium-browser`）暴露到 `PATH`，然后直接重试。
+探测使用一次性文档并在 `finally` 中关闭 resident，因此修正环境后不需要手工清理
+resident 就能成功。
+
+### 字体供应
+
+文本几何由构建主机上的 Chromium 测量，PPTX 则声明 Author HTML 解析出的字体族。
+主机缺少该字体族时 Chromium 会静默替代，量出的文本框按替代字体定尺寸，成品在
+每一条命令都报告成功的情况下依然是错的。同理，字体族存在但缺少所需字重面时
+（例如 `Arial` 没有 900 面时要在 `Arial Black` 与合成粗体之间取舍），会产生逐页漂移。
+
+因此请在构建主机上安装 Author HTML 实际使用的字体。产品只做诊断，不安装字体
+（ADR-0016）。

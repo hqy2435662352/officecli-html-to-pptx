@@ -168,6 +168,23 @@ def _patch_successful_build(monkeypatch: pytest.MonkeyPatch) -> None:
             data={"runtime": {"formal_pair": {"officecli": ">=1.0.147"}}},
         ),
     )
+    # Both host preconditions are real work (a Chromium launch and a probe
+    # screenshot), so the seam is stubbed here and exercised for real in
+    # tests/test_preflight.py.
+    monkeypatch.setattr(
+        application,
+        "preflight_author_html",
+        lambda *_, **__: result(
+            "build",
+            "PASS",
+            data={
+                "preflight": {
+                    "renderer": {"available": True, "render": "html"},
+                    "fonts": {"compatible": True, "stacks": []},
+                }
+            },
+        ),
+    )
 
     async def fake_compile(input_html: str, profile: str, output: str) -> OfficeCLICompilationResult:
         assert profile == "author"
@@ -265,6 +282,119 @@ def test_build_failure_removes_staging_and_publishes_neither_target(
     assert not output.exists()
     assert not (tmp_path / "deck.evidence").exists()
     assert not list(tmp_path.glob(".deck-*-*"))
+
+
+def test_build_is_blocked_by_a_host_precondition_before_any_compilation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #11/#12: a mis-measuring or non-rendering host fails first.
+
+    The gate is placed before the compiler precisely so the expensive work is
+    not done and then discarded, so the assertion is that compilation never ran.
+    """
+    monkeypatch.setattr(
+        application,
+        "diagnose_environment",
+        lambda **_: result("doctor", "PASS", data={"runtime": {}}),
+    )
+    compiled = False
+
+    async def should_not_compile(*_: object, **__: object) -> OfficeCLICompilationResult:
+        nonlocal compiled
+        compiled = True
+        raise AssertionError("compiler should not run when the host is unsuitable")
+
+    monkeypatch.setattr(application, "compile_officecli", should_not_compile)
+    monkeypatch.setattr(
+        application,
+        "preflight_author_html",
+        lambda *_, **__: result(
+            "build",
+            "BLOCK",
+            diagnostics=(
+                Diagnostic(
+                    "declared_font_family_absent",
+                    "error",
+                    "Slide 1 declares font stack [Inter, sans-serif], but this "
+                    "build host cannot supply 'Inter'.",
+                    True,
+                ),
+            ),
+            data={"preflight": {"fonts": {"compatible": False, "stacks": []}}},
+        ),
+    )
+    author = _author(tmp_path)
+    output = tmp_path / "deck.pptx"
+
+    value = asyncio.run(application.build_author_html(author, output))
+
+    assert value.status == "BLOCK"
+    assert value.exit_code == 2
+    assert [item.code for item in value.diagnostics] == ["declared_font_family_absent"]
+    assert value.diagnostics[0].blocking is True
+    assert value.data["preflight"]["fonts"]["compatible"] is False
+    assert compiled is False
+    assert not output.exists()
+    assert not (tmp_path / "deck.evidence").exists()
+
+
+def test_build_reports_an_unreachable_renderer_before_compilation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #12: the renderer dependency is a precondition, not a late surprise."""
+    monkeypatch.setattr(
+        application,
+        "diagnose_environment",
+        lambda **_: result("doctor", "PASS", data={"runtime": {}}),
+    )
+
+    async def should_not_compile(*_: object, **__: object) -> OfficeCLICompilationResult:
+        raise AssertionError("compiler should not run when the renderer is unreachable")
+
+    monkeypatch.setattr(application, "compile_officecli", should_not_compile)
+    monkeypatch.setattr(
+        application,
+        "preflight_author_html",
+        lambda *_, **__: result(
+            "build",
+            "BLOCK",
+            diagnostics=(
+                Diagnostic(
+                    "renderer_browser_unreachable",
+                    "error",
+                    "OfficeCLI cannot produce a PPTX screenshot.",
+                    True,
+                ),
+            ),
+            data={"preflight": {"renderer": {"available": False}}},
+        ),
+    )
+    author = _author(tmp_path)
+
+    value = asyncio.run(application.build_author_html(author, tmp_path / "deck.pptx"))
+
+    assert value.status == "BLOCK"
+    assert [item.code for item in value.diagnostics] == [
+        "renderer_browser_unreachable"
+    ]
+
+
+def test_a_warning_only_preflight_does_not_block_the_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reported weight substitution is visible without stopping delivery."""
+    _patch_successful_build(monkeypatch)
+    author = _author(tmp_path)
+    output = tmp_path / "deck.pptx"
+
+    value = asyncio.run(application.build_author_html(author, output))
+
+    assert value.status == "VISUAL_REVIEW_REQUIRED"
+    assert output.is_file()
+    assert value.data["preflight"]["fonts"]["compatible"] is True
 
 
 def test_finalize_derives_minor_and_major_outcomes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
