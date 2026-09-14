@@ -89,19 +89,31 @@ _FONT_EQUIVALENTS = {
     "courier": "Courier New",
 }
 
-# CSS generic keyword -> concrete safe default (same family class).
+# CSS generic keyword -> concrete safe default (same family class).  This is
+# every generic family keyword a browser can put in a computed ``font-family``,
+# because each one asks the environment to choose a face rather than naming one:
+# passing it through as a typeface would hand PowerPoint an unresolvable name
+# and let it substitute silently.
 _GENERIC_FALLBACK = {
     "serif": "Georgia",
     "sans-serif": "Calibri",
     "monospace": "Consolas",
     "cursive": "Segoe Script",
+    "fantasy": "Segoe UI",
     "system-ui": "Segoe UI",
-    "-apple-system": "Segoe UI",
-    "blinkmacsystemfont": "Segoe UI",
     "ui-sans-serif": "Segoe UI",
     "ui-serif": "Georgia",
     "ui-monospace": "Consolas",
+    "ui-rounded": "Segoe UI",
+    "math": "Cambria Math",
+    "emoji": "Segoe UI Emoji",
+    "fangsong": "FangSong",
+    "-apple-system": "Segoe UI",
+    "blinkmacsystemfont": "Segoe UI",
 }
+# CSS-wide keywords are not families at all: they inherit or reset, so the
+# resolved typeface is whatever the cascade produced elsewhere.
+_CSS_WIDE_KEYWORDS = frozenset({"inherit", "initial", "unset", "revert", "revert-layer"})
 
 
 def resolve_pptx_font(css_font: str) -> str:
@@ -111,14 +123,19 @@ def resolve_pptx_font(css_font: str) -> str:
       1. a family already known to be installed everywhere, else
       2. a known web font mapped to a metric-compatible safe equivalent, else
       3. the stack's own first concrete family, else
-      4. the CSS generic keyword (serif/sans-serif/monospace) default.
+      4. the CSS generic keyword default.
 
     Step 3 exists because a font stack is a *request*.  An Author HTML deck that
     asks for a named typeface — including a CJK face such as ``Microsoft YaHei``
     that is installed on the target platform — is declaring that typeface, not
     asking for a substitution, and rewriting it to a generic Latin default would
-    silently change the deck's typography.  Only a generic keyword is a request
-    for the environment to choose, so only that case takes the default.
+    silently change the deck's typography.
+
+    What step 3 must *not* accept is something that is not a family name at all.
+    A CSS-wide keyword (``inherit``) or a functional value (``var(--deck-font)``)
+    names no typeface, and writing either into the PPTX would hand PowerPoint an
+    unresolvable name and let it substitute silently — the very failure this
+    resolution exists to prevent.  Those fall through to the safe default.
     """
     if not css_font:
         return "Calibri"
@@ -136,6 +153,8 @@ def resolve_pptx_font(css_font: str) -> str:
         if low in _GENERIC_FALLBACK:
             if generic_seen is None:
                 generic_seen = _GENERIC_FALLBACK[low]
+            continue
+        if low in _CSS_WIDE_KEYWORDS or "(" in name or ")" in name:
             continue
         if declared_seen is None:
             declared_seen = name

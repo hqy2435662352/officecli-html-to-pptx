@@ -1,13 +1,18 @@
 # V0.4.1 — PPTX-to-Canonical-Author-HTML three-slide feasibility probe
 
-**Revision 2.** Supersedes the first probe report, which was rejected because the
-locked-proxy representation was produced by cropping a *composited* slide raster and
-therefore captured sibling objects. See §6 for the corrected findings and §7 for the
-revision record.
+**Revision 3.** Supersedes revisions 1 and 2, both of which claimed more for the
+locked visual proxy than the mechanism delivered. Revision 2 rendered a proxy by
+removing the slide's siblings from a *copy of the deck*; that copy still renders the
+slide's layout and master, so layout paint inside the target's rectangle was baked into
+the proxy, and a proxy for an object with no paint of its own came out as pure layout
+paint. Revision 2's counts were inflated as a result: a container was reported as a
+`locked-visual-proxy` when nothing of it was actually represented. Revision 3 rebuilds
+each proxied object alone in a fresh deck, and where that is impossible the object is
+reported `unsupported`. See §6 and §7.
 
 - Spec: [GitHub #8](https://github.com/hqy2435662352/officecli-html-to-pptx/issues/8) (`ready-for-agent`)
 - Implementation: branch `codex/v0.4.1-probe` — the projection seam, the OfficeCLI
-  object-capture reader, the seam tests, ADR 0030, this report, and the two supporting fixes
+  object-capture reader, the seam tests, ADR 0030, this report, and the supporting fixes
   described in §4.5
 - Product version: unchanged at `0.2.0`; `V0.4.1` names this development probe only
 - Contract version: `1.0`, unchanged
@@ -38,10 +43,12 @@ pretend otherwise:
 3. **Theme-token text color** — a text body whose resolved color is a theme expression such
    as `text1+lumMod65+lumOff35` rather than a plain color.
 
-Those 13 of 63 objects are reported as `locked-visual-proxy` / `base-only-semantic`, are
-excluded from every native round-trip count, and each carries a machine-readable reason. A
-broader V0.4 should decide whether to deepen the Author object surface for these three, or to
-accept a locked proxy for them permanently.
+Those 13 of 63 objects are reported as `locked-visual-proxy` (9), `base-only-semantic` (2)
+or `unsupported` (2), are excluded from every native round-trip count, and each carries a
+machine-readable reason. A broader V0.4 should decide whether to deepen the Author object
+surface for these three, or to accept a locked proxy for them permanently -- noting that one of
+the three (a container with no paint of its own) cannot be proxied at all under the isolation
+rule this report holds to.
 
 One non-blocking `view issues` entry remains on the rebuilt deck and is waived explicitly in
 §6 (finding F3). Every **structural and readback** gate is green except that waived entry. The
@@ -55,31 +62,33 @@ Canonical Author HTML still shows visible metric differences (F10).
 |---|---|
 | Source objects on slides 2/5/10 | **63** |
 | `canonical-editable` | **50** |
-| `locked-visual-proxy` | **11** |
+| `locked-visual-proxy` | **9** |
 | `base-only-semantic` | **2** |
-| `unsupported` / `unresolved` | **0 / 0** |
+| `unsupported` / `unresolved` | **2 / 0** |
 | Canonical claims verified against OfficeCLI readback | **50 / 50** |
-| Locked proxies checked for sibling contamination | **6 / 6 clean** |
+| Text-free proxies checked for foreign paint | **6 / 6 clean** |
 | Source-map mappings | **63 / 63**, one-to-one, no duplicates |
 | Existing `author` Contract | **PASS**, 0 diagnostics, 736 CSS classifications |
 | New Deck build (`build_author_html`) | `VISUAL_REVIEW_REQUIRED`, 3 slides published |
 | `officecli validate` on the rebuilt deck | *Validation passed: no errors found.* |
 | `view issues` on the rebuilt deck | 1 entry, **waived** (F3) |
 | Source PPTX SHA-256 before / after | **identical** |
-| Rebuilt deck, top-level objects | **63** = 43 text objects + 1 native table + 19 pictures |
+| Rebuilt deck, top-level objects | **61** = 43 text objects + 1 native table + 17 pictures |
 
 The rebuilt deck's own kind accounting, read from `officecli view stats`: 44 shapes (43 text
-boxes and 1 table) plus 19 pictures — 63 top-level objects in total, matching the 63 projected
-source objects exactly. The two counts describe the same thing from different angles and must
-not be read as 44 objects that also contain 19 pictures.
+boxes and 1 table) plus 17 pictures — 61 top-level objects. That is two fewer than the 63
+projected source objects precisely because the two `unsupported` containers emit nothing, which
+is the honest accounting: they are classified and diagnosed rather than represented. The two
+counts describe the same set from different angles and must not be read as 44 objects that also
+contain 17 pictures.
 
 Per slide:
 
-| Source slide | Objects | Canonical | Locked proxy | Base-only | What the slide probes |
-|---|---|---|---|---|---|
-| 2 | 37 | 28 | 8 | 1 | Shape/text forward probe + complex-object boundary |
-| 5 | 11 | **11** | 0 | 0 | Picture/table mixed probe (fully supported) |
-| 10 | 15 | 11 | 3 | 1 | Shape/text positive probe |
+| Source slide | Objects | Canonical | Locked proxy | Base-only | Unsupported | What the slide probes |
+|---|---|---|---|---|---|---|
+| 2 | 37 | 28 | 6 | 1 | 2 | Shape/text forward probe + complex-object boundary |
+| 5 | 11 | **11** | 0 | 0 | 0 | Picture/table mixed probe (fully supported) |
+| 10 | 15 | 11 | 3 | 1 | 0 | Shape/text positive probe |
 
 Slide 5 is the strongest result: **every** object on it — two pictures with source-rectangle
 crops, a 6×4 native table, five filled/bordered shapes — projected canonically and verified.
@@ -168,17 +177,28 @@ path, exact byte size, content hash, and any other identifying metadata are deli
 
 ### 4.2 Locked visual proxies are object-isolated
 
-This is the revision-2 correction. A locked proxy is an `<img>` whose source is a data URI
-rendered from a **derived working deck in which the target object is the only object left on
-its slide**, then cropped to the object's own rectangle. The derived deck is a separate file in
-the caller's scratch directory and is deleted after each render; the source deck is never
-opened for writing.
+A locked proxy is an `<img>` whose source is a data URI produced by **rebuilding the object
+alone**: a fresh deck, one blank slide, and the target object re-created from the properties
+OfficeCLI read back for it, then cropped to that object's own rectangle. The working deck is a
+separate file in the caller's scratch directory and is deleted after each render; the source
+deck is never opened for writing.
 
-The rejected approach — cropping the composited slide raster — cannot represent one object: any
-sibling painted inside the target's rectangle is captured with it. On slide 2 that meant the
-three filled ellipses (`/slide[2]/shape[@id=35,67,70]`) carried the `In 2026/2027/2028`,
-`9.50/19.00/24.70`, and `Million/USD` textboxes, which were *also* emitted as their own
-canonical text objects, so the deck painted those words twice. That is fixed.
+Two cheaper mechanisms are rejected, and the second is the one revision 2 got wrong:
+
+- **Cropping the composited slide raster.** Any sibling painted inside the target's rectangle is
+  captured with it. On slide 2 that meant the three filled ellipses
+  (`/slide[2]/shape[@id=35,67,70]`) carried the `In 2026/2027/2028`, `9.50/19.00/24.70`, and
+  `Million/USD` textboxes, which were *also* emitted as their own canonical text objects, so the
+  deck painted those words twice.
+- **Culling the slide's siblings from a copy of the deck.** This is subtler and was revision 2's
+  design. The copy still renders the slide's layout and master, and this deck's 105 layout and
+  master parts each carry four to ten painted shapes, so a layout graphic inside the target's
+  rectangle is baked into the proxy exactly as a sibling would be. For an object with no paint of
+  its own the result was a proxy made *entirely* of layout paint -- the opposite of
+  object-local, while still reporting as a represented proxy.
+
+Rebuilding removes the class of error rather than narrowing it: nothing else exists in the deck
+being rendered, so nothing else can contribute.
 
 Every text-free proxy is verified to contain only its own fill, the slide background, and a
 one-pixel antialiased rim:
@@ -353,7 +373,9 @@ is not reconstructible without rebuilding the theme.
 | F8 | **Corrected.** The slide-2 visual defect in the previous evidence was **not** a renderer font/metric artifact: the locked proxies themselves contained the sibling textboxes' glyphs, so the deck painted those words twice. The `50/50` character readback could not see it because the duplicate existed inside image bytes. Revision 2 fixes the cause (§4.2) and adds a regression that fails red on it (§8). The remaining differences between the Canonical Author HTML panel and the source are text-metric drift on the Arial-set number labels, not duplication. | fixed | slide 2 |
 | F9 | OfficeCLI intermittently exits `1` with **no output at all** on a 63 MB deck when the machine is loaded (measured at roughly two in five invocations). This is a runtime property of the shared environment, not of the projection: the identical command succeeds unchanged moments later. The reader retries with backoff, the harness gates expensive steps on a health pre-flight, and the evidence records how many attempts were needed. | environmental | whole run |
 | F10 | **Accepted visual difference, not a defect.** The Canonical Author HTML shows text-metric drift against the source on slide 2 (`Growth Rate ＞100%` / `＞30%` still crowd the neighbouring circles) and on slide 5 (one two-word label still reaches into the first icon's column). In both cases the *source object has the same box, the same font size, and `autoFit: none`*, and the source deck's own render overflows its box too; the browser simply advances Arial and `微软雅黑` slightly wider than the source renderer did. The rebuilt deck re-wraps and is readable. Slide 10's three red bullet dots are also slightly softer in the rebuilt deck because a 6.24pt ellipse is only ~16px at canvas density. None of this is object loss, duplication, or misclassification, and **none of it is a claim of pixel equivalence**. | accepted visual finding | slides 2, 5, 10 |
-| F11 | A locked group's connectors are intact. The three-way summary shows the two black connector arrows on slide 2 as little more than an arrowhead, because the rebuilt panel is rendered at 1280×720 and a 1pt line fades at that scale. Inspecting the isolated group proxy directly shows both the horizontal segment and the arrowhead present, so nothing was dropped; the summary image is simply not a measurement instrument. | reviewer note | slide 2 |
+| F11 | **Superseded by F12.** |
+| F12 | **A container with no paint of its own cannot be proxied, and is not.** Slide 2's two groups are `group` shapes whose `sp` carries no geometry, fill, or line: everything visible about them belongs to two child connectors, and OfficeCLI reports those children in the group's own child coordinate space (values far outside the group's rectangle, with a `childOffset`/`childExtent` that do not map back without the DrawingML group transform). A rebuild of the container alone therefore renders nothing. Revision 2 published that empty render as a proxy and counted it as represented; revision 3 classifies both `unsupported` with a reason. The consequence is visible and must be stated plainly: **the two connector arrows are absent from the Canonical Author HTML on slide 2**, and they are therefore absent from the rebuilt deck. | capability boundary | slide 2 |
+| F13 | **Review-driven, fixed.** Two independent review passes over revision 2 found: the seam published HTML labelled "Canonical Author HTML" without checking the Contract itself; a non-16:9 deck had its canvas silently snapped to 1920×1080 while the scale factors stayed derived from the deck, placing objects off-canvas; the stale-fingerprint test compared a value against itself; `resolve_pptx_font` could emit a CSS-wide keyword or a `var()` as a typeface, restoring the silent-substitution class it was meant to remove; and the contamination discriminator was quiet about layout paint. All five are fixed and covered by tests; see §7. | fixed | whole change |
 
 ## 7. Revision record
 
@@ -367,18 +389,40 @@ correct and is reproduced here in its own terms.
 | "`/slide[3]/shape[@id=100057]` is the first card's body." | Wrong. It is `/slide[10]/shape[@id=5]`, the middle card's body. Finding F3 corrected. |
 | "The rebuilt deck has one advisory issue; everything else is green." | Correct, but the previous report did not label it a waiver. Now explicit in F3. |
 
-What revision 2 changed:
+What revision 2 changed, and what revision 3 changed on top of it:
 
-- `IsolatedRenderer` in `_internal/pptx_reader.py`: object-isolated rendering through a derived
-  deck, with per-token descending removal order, a render that is proved to leave exactly the
-  target object on the slide, a raster density derived from the render itself (and required to
-  meet the canvas density), and a blocking failure instead of a composited fallback. OfficeCLI
-  reads of a large deck are retried with backoff (F9).
-- `_internal/author_projector.py`: proxies are produced only through the isolated renderer;
-  `proxy_isolation_unavailable` is the blocking diagnostic when isolation is impossible.
-- `tests/test_v041_projection_seam.py`: three new tests — the overlay fixture, the enclosure
-  discriminator's own self-check, and the proxy-is-not-a-crop assertion — plus a
-  resident-aware retry in the fixture builder.
+| Area | Revision 2 | Revision 3 |
+|---|---|---|
+| Proxy mechanism | cull the slide's siblings from a copy of the deck | rebuild the object alone in a fresh deck |
+| Layout/master paint in a proxy | present, undetected | impossible by construction |
+| A paint-less container | reported `locked-visual-proxy` (empty render) | reported `unsupported`, with the reason |
+| Contract check | left to the caller | the seam checks it before publishing |
+| Non-16:9 deck | canvas silently snapped to 1920×1080 | refused, naming the mismatch |
+| Proxy density gate | a 1.6 px/pt floor | the caller's actual `pixels_per_point` |
+| Degenerate font values | passed through as a typeface | CSS-wide keywords and `var()` fall back |
+| Stale-fingerprint test | compared a value against itself | projects two decks and compares bindings |
+| Counts | 50 / 11 / 2 / 0 | 50 / 9 / 2 / 2 |
+
+Revision 3's fixes came from two independent review passes over revision 2 — one on documented
+standards, one adversarial on correctness — plus a spec-conformance pass. The stored-output
+defects they found are recorded as F13.
+
+The two review passes also produced items that were examined and **not** actioned, recorded here
+so the decision is visible rather than silent:
+
+- a claim that the seam must hard-code slides 2/5/10. Rejected: the seam's parameter is the
+  selection by design, and the spec's fixed selection constrains the probe's configuration, not
+  the seam's signature.
+- a claim that the report's real-deck numbers are unsupported because the harness is not
+  committed. Accepted as a limitation, not a defect: the spec requires the real artifacts to be
+  exercised while also forbidding the deck and its derived content from the repository, so the
+  harness and bundle are task-local by design, and the bundle carries the fixture and a runnable
+  re-verification so the numbers can be re-derived.
+- reported code smells left in place: the OfficeCLI subprocess runner now exists in three
+  places, and the projector's capability vocabulary is parallel to `contract.py`'s object-kind
+  declaration. Both are real duplication and both are follow-up work; neither affects this
+  probe's correctness, and folding them in here would mean refactoring the compiler's shared
+  runner on a merge-bound branch.
 
 Two files edited by revision 1 (`styles.py`, `__init__.py`) were found reverted in the shared
 working tree, because a concurrent task switched that tree's branch while this work was in

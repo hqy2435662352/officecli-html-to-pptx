@@ -58,6 +58,7 @@ from .pptx_reader import (
     PptxReadError,
     capture_presentation,
 )
+from ..contract import check_contract
 
 PROJECTION_SCHEMA_VERSION = 1
 SOURCE_MAP_SCHEMA_VERSION = 1
@@ -315,10 +316,6 @@ def _style(pairs: Iterable[tuple[str, str]]) -> str:
     return "; ".join(f"{name}: {value}" for name, value in pairs if value)
 
 
-def _css_color(value: str | None) -> str | None:
-    return value if value else None
-
-
 def _round_rect_radius_px(obj: CapturedObject, pixels_per_point: float) -> float:
     """Return a rounded rectangle's corner radius.
 
@@ -400,9 +397,7 @@ def _run_style(
     return _style(declarations), semantic
 
 
-def _paragraph_style(
-    paragraph: CapturedParagraph, *, pixels_per_point: float
-) -> str:
+def _paragraph_style(paragraph: CapturedParagraph) -> str:
     declarations: list[tuple[str, str]] = []
     align = str(paragraph.align or ALIGNMENT_DEFAULT).lower()
     if align and align not in {ALIGNMENT_DEFAULT, "start"}:
@@ -553,7 +548,7 @@ def _emit_paragraph_html(
     for index, paragraph in enumerate(obj.paragraphs):
         if index:
             parts.append("<br>")
-        paragraph_style = _paragraph_style(paragraph, pixels_per_point=pixels_per_point)
+        paragraph_style = _paragraph_style(paragraph)
         runs = list(paragraph.runs)
         if not runs:
             continue
@@ -884,11 +879,10 @@ def _emit_object_html(
         )
 
     if projected.projected_kind == PROJECTED_KIND_IMAGE and proxy_source:
+        locked = _locked_attributes(projected)
         return (
-            f'<img id="{projected.html_id}" {attributes} '
-            f'data-projection-locked="true" '
-            f'{_reason_attribute(projected)}alt="" '
-            f'src="{_esc(proxy_source, quote=True)}" style="{proxy_style}">'
+            f'<img id="{projected.html_id}" {attributes}{locked} '
+            f'alt="" src="{_esc(proxy_source, quote=True)}" style="{proxy_style}">'
         )
 
     return _emit_shape_html(
@@ -899,9 +893,18 @@ def _emit_object_html(
     )
 
 
-def _reason_attribute(projected: ProjectedObject) -> str:
-    if not projected.reason:
-        return ""
+def _locked_attributes(projected: ProjectedObject) -> str:
+    """Return the locked-proxy attributes, each already space-prefixed.
+
+    The same two attributes are written on a proxy ``<img>`` and on a placeholder
+    ``<div>``; building them once keeps the two emitters from drifting apart.
+    """
+    rendered = ""
+    if projected.disposition in {DISPOSITION_LOCKED, DISPOSITION_BASE_ONLY}:
+        rendered += ' data-projection-locked="true"'
+    if projected.reason:
+        rendered += f' data-projection-reason="{_esc(projected.reason, quote=True)}"'
+    return rendered
     return f'data-projection-reason="{_esc(projected.reason, quote=True)}" '
 
 
@@ -1400,7 +1403,21 @@ def _build_projection(
     if abs(canvas_px[0] - AUTHOR_CANVAS_WIDTH_PX) > 0.5 or abs(
         canvas_px[1] - AUTHOR_CANVAS_HEIGHT_PX
     ) > 0.5:
-        canvas_px = (AUTHOR_CANVAS_WIDTH_PX, AUTHOR_CANVAS_HEIGHT_PX)
+        # The Author Contract accepts exactly the 1920x1080 canvas (or the legacy
+        # 960x540), and the New Deck compiler measures against that slide.  A
+        # differently proportioned deck cannot be normalized onto it without
+        # either distorting the layout or discarding the scale factors just
+        # derived from the deck's own bounds.  Refuse it rather than silently
+        # snapping the canvas and contradicting the source geometry.
+        raise ProjectionError(
+            "The source deck's slides are "
+            f"{width_pt:g}pt x {height_pt:g}pt, which normalizes to "
+            f"{canvas_px[0]:g}px x {canvas_px[1]:g}px at "
+            f"{pixels_per_point:g}px/pt and does not match the current Author "
+            f"canvas of {AUTHOR_CANVAS_WIDTH_PX:g}px x "
+            f"{AUTHOR_CANVAS_HEIGHT_PX:g}px. This probe is scoped to 16:9 decks; "
+            "a different aspect ratio is its own canvas decision."
+        )
 
     diagnostics: list[ProjectionDiagnostic] = []
     # Object-local proxies come from a render in which the target object is the
@@ -1457,24 +1474,26 @@ def _build_projection(
                         diagnostics.append(
                             ProjectionDiagnostic(
                                 code="proxy_isolation_unavailable",
-                                severity="error",
+                                severity="warning",
                                 message=(
-                                    "No object-isolated visual representation "
-                                    f"could be produced: {exc}"
+                                    "No object-local visual representation could be "
+                                    f"produced, so the object is reported unsupported "
+                                    f"rather than approximated: {exc}"
                                 ),
                                 source_slide=obj.source_slide,
                                 source_object=obj.source_object,
-                                blocking=True,
+                                blocking=False,
                             )
                         )
                         disposition = DISPOSITION_UNSUPPORTED
                         reason = (
-                            "The object could not be rendered in isolation, so no "
-                            "object-local visual representation is available. A "
-                            "composited crop is not an object-local proxy and is "
-                            "never used."
+                            "No object-local visual representation is available: "
+                            f"{exc} A composited crop is not object-local and is "
+                            "never used as a substitute."
                         )
-                        proxy_reason = None
+                        # The proxy reason is what a reviewer reads, so keep the
+                        # explanation instead of clearing it with the proxy.
+                        proxy_reason = reason
                         projected_kind = PROJECTED_KIND_SHAPE
 
             html_id = _unique_html_id(obj.source_slide, ordinal, obj.source_object)
@@ -1595,21 +1614,42 @@ def _isolated_proxy(
 ) -> tuple[str, Path]:
     """Return a deterministic data URI for one object-local locked proxy.
 
-    The proxy comes from a render in which the target object is the only object
-    on its slide, so it can never carry a sibling's content.  Cropping the
-    composited slide instead would capture every sibling painted inside the
-    target's rectangle, and the projection would then paint that content twice.
+    The proxy comes from a render of the target object *alone* -- rebuilt into a
+    fresh deck, so neither a sibling nor the slide's layout and master paint can
+    appear in it.  Cropping the composited slide, or culling only the slide's
+    siblings from a copy, would both let other paint into the rectangle.
     """
     import base64
+    import tempfile
 
-    asset = renderer.render(
-        obj.source_slide,
-        obj.source_object,
-        obj.bounds_pt,
-        pixels_per_point=pixels_per_point,
-        destination=destination,
-        guard_px=PROXY_GUARD_PX,
-    )
+    media_path: Path | None = None
+    if obj.picture is not None:
+        # OfficeCLI takes a picture source as a path or a data URI; a file keeps
+        # the batch body small and is written outside the source deck.
+        header, _, payload = obj.picture.data_uri.partition(",")
+        suffix = "." + header[5:].split(";", 1)[0].split("/")[-1].replace("+xml", "")
+        handle, name = tempfile.mkstemp(
+            prefix="projection-media-", suffix=suffix, dir=str(destination.parent)
+        )
+        media_path = Path(name)
+        with open(handle, "wb") as stream:
+            stream.write(base64.b64decode(payload))
+
+    try:
+        asset = renderer.render(
+            obj.source_slide,
+            obj.source_object,
+            obj.bounds_pt,
+            object_kind=obj.source_kind,
+            properties=obj.opaque_properties,
+            pixels_per_point=pixels_per_point,
+            destination=destination,
+            media_path=media_path,
+            guard_px=PROXY_GUARD_PX,
+        )
+    finally:
+        if media_path is not None:
+            media_path.unlink(missing_ok=True)
     return (
         "data:image/png;base64," + base64.b64encode(asset.read_bytes()).decode("ascii"),
         asset,
@@ -1730,6 +1770,21 @@ def project_pptx_to_author_html(
                 "The projection reported a blocking diagnostic and was not "
                 "published: "
                 + "; ".join(item.message for item in diagnostics if item.blocking)
+            )
+        # "Canonical Author HTML" means the current Author Contract accepts it,
+        # so the seam proves that for itself rather than publishing a document
+        # whose name it has not earned.  The check runs against the staged file,
+        # so it validates the exact bytes that would be published.
+        contract = check_contract(staged_html, "author")
+        if contract.blocked:
+            raise ProjectionError(
+                "The projected document is not Canonical Author HTML: the current "
+                "author Contract rejected it with "
+                + "; ".join(
+                    f"{item.code}: {item.message}"
+                    for item in contract.diagnostics
+                    if item.blocking
+                )
             )
         staged_html.replace(destination)
         staged_map.replace(source_map_path)

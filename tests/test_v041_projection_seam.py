@@ -647,15 +647,16 @@ def test_the_proxy_density_gate_requires_the_canvas_density() -> None:
     must therefore compare against that density rather than against some lower
     floor: a raster that merely clears a looser floor is exactly the case that
     would slip through and be shown at the wrong scale.
+
+    This drives the crop stage directly, because the density guarantee is a
+    property of that stage: whatever the renderer produced, the crop refuses a
+    raster that is too coarse.
     """
     import tempfile
 
     from PIL import Image
 
-    from officecli_html_to_pptx._internal.pptx_reader import (
-        IsolatedRenderer,
-        ObjectIsolationError,
-    )
+    from officecli_html_to_pptx._internal.pptx_reader import IsolatedRenderer, ObjectIsolationError
 
     work = Path(tempfile.mkdtemp())
     bounds = (10.0, 10.0, 20.0, 20.0)
@@ -864,18 +865,103 @@ def test_a_failed_run_leaves_no_artifact_that_looks_complete(
     assert not target.with_suffix(".projection-report.json").exists()
 
 
-def test_a_stale_source_fingerprint_is_detectable_from_the_source_map(
+def test_the_source_map_binding_tracks_the_deck_it_was_made_from(
     projection_fixture: Path, tmp_path: Path
 ) -> None:
-    """The map binds the exact source bytes, so a changed deck is detectable."""
-    target = tmp_path / "bound.html"
-    result = project_pptx_to_author_html(
-        projection_fixture, [1], target, proxy_dir=tmp_path / "proxies"
-    )
-    recorded = result.source_map["source"]["sha256"]
-    assert recorded == result.source_sha256
-    # A caller that re-runs against different bytes gets a different binding
-    # instead of silently retargeting the old projection.
-    import hashlib
+    """A projection binds the bytes it was made from, so a changed deck is visible.
 
-    assert hashlib.sha256(b"not the same deck").hexdigest() != recorded
+    Two decks that differ in content must produce different bindings.  The
+    earlier version of this test compared one run's recorded hash against itself
+    and then against an unrelated literal, which could not fail.
+    """
+    changed = tmp_path / "changed.pptx"
+    shutil.copy2(projection_fixture, changed)
+    _officecli("close", str(changed))
+    _officecli(
+        "batch",
+        str(changed),
+        "--commands",
+        json.dumps(
+            [
+                {
+                    "command": "add",
+                    "parent": "/slide[1]",
+                    "type": "textbox",
+                    "props": {
+                        "name": "later-addition",
+                        "text": "added after the first projection",
+                        "x": "40pt",
+                        "y": "480pt",
+                        "width": "300pt",
+                        "height": "30pt",
+                        "fill": "none",
+                        "line": "none",
+                    },
+                }
+            ]
+        ),
+    )
+    _officecli("close", str(changed))
+
+    first = project_pptx_to_author_html(
+        projection_fixture, [1], tmp_path / "first.html", proxy_dir=tmp_path / "p1"
+    )
+    second = project_pptx_to_author_html(
+        changed, [1], tmp_path / "second.html", proxy_dir=tmp_path / "p2"
+    )
+
+    # The two decks really are different bytes ...
+    assert first.source_sha256 != second.source_sha256
+    # ... and each projection binds its own deck rather than a stale one.
+    assert first.source_map["source"]["sha256"] == first.source_sha256
+    assert second.source_map["source"]["sha256"] == second.source_sha256
+    assert first.source_map["source"]["sha256"] != second.source_map["source"]["sha256"]
+
+
+# ---------------------------------------------------------------------------
+# The font resolution the projection relies on
+# ---------------------------------------------------------------------------
+
+
+def test_font_resolution_keeps_a_declared_face_but_never_a_non_face() -> None:
+    """A declared typeface survives; something that names no face does not.
+
+    The projection's text fidelity depends on this: a CJK deck's own face must
+    reach the PPTX, while a CSS-wide keyword or a functional value names no
+    typeface at all and must fall back rather than be written through and left
+    to PowerPoint's substitution.
+    """
+    from officecli_html_to_pptx.styles import resolve_pptx_font
+
+    # A declared family is a request for that family, including CJK faces.
+    assert resolve_pptx_font("微软雅黑, sans-serif") == "微软雅黑"
+    assert resolve_pptx_font("Microsoft YaHei, sans-serif") == "Microsoft YaHei"
+    # A safe family later in the stack still wins over an unknown first entry.
+    assert resolve_pptx_font("Sora, Arial") == "Arial"
+    assert resolve_pptx_font("Arial, sans-serif") == "Arial"
+    # Generic keywords ask the environment to choose.
+    assert resolve_pptx_font("sans-serif") == "Calibri"
+    assert resolve_pptx_font("fantasy") == "Segoe UI"
+    assert resolve_pptx_font("math") == "Cambria Math"
+    # Non-families must never be written through as a typeface.
+    for non_face in (
+        "inherit",
+        "initial",
+        "unset",
+        "revert",
+        "revert-layer",
+        "var(--deck-font)",
+    ):
+        resolved = resolve_pptx_font(non_face)
+        assert resolved not in {
+            "inherit",
+            "initial",
+            "unset",
+            "revert",
+            "revert-layer",
+            "var(--deck-font)",
+        }, non_face
+        assert resolved
+    # Degenerate inputs still produce a usable typeface.
+    assert resolve_pptx_font("") == "Calibri"
+    assert resolve_pptx_font("   ") == "Calibri"

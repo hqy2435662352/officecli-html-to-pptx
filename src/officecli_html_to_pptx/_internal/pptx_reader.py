@@ -1264,29 +1264,8 @@ _CANONICAL_TOKEN = {
     "ole": "ole",
     "media": "video",
 }
-# Removal order: tokens culled before the target's own token, so removing one
-# can never shift an index a later address depends on.
-_CULL_TOKEN_ORDER = (
-    "picture",
-    "video",
-    "table",
-    "chart",
-    "connector",
-    "group",
-    "zoom",
-    "3dmodel",
-    "ole",
-    "shape",
-)
-
-
-# OfficeCLI renders a slide into a viewport of its own choosing, so the raster's
-# own width — not the requested viewport width — is the authority for how many
-# device pixels one slide point became.  The crop factor is derived from the
-# raster and the slide's point width, and it must reach the Author canvas
-# density: the DOM draws the proxy at the object's rectangle in canvas pixels,
-# so a render below that density would be upscaled and softened.  The only
-# slack allowed is the whole-pixel rounding of the render itself.
+# The only tolerance allowed when checking a proxy render's density against the
+# Author canvas density: whole-pixel rounding of the render itself.
 PROXY_DENSITY_TOLERANCE = 0.01
 
 
@@ -1294,83 +1273,62 @@ class ObjectIsolationError(PptxReadError):
     """One object could not be rendered on its own."""
 
 
-def _object_addresses(
-    slide_number: int, children: Sequence[Mapping[str, Any]]
-) -> list[tuple[str, str]]:
-    """Return ``(canonical token, positional address)`` per slide object."""
-    counters: dict[str, int] = {}
-    addresses: list[tuple[str, str]] = []
-    for child in children:
-        token = _CANONICAL_TOKEN.get(str(child.get("type")), "shape")
-        counters[token] = counters.get(token, 0) + 1
-        addresses.append((token, f"/slide[{slide_number}]/{token}[{counters[token]}]"))
-    return addresses
+# Properties an object's own paint is reproduced from when it is rebuilt into a
+# fresh deck for its proxy.  ``crop`` is picture-specific; ``src`` is supplied
+# separately because it is a file path, not a read-back property.
+# Container kinds whose own shape carries no paint: everything visible about
+# them belongs to their children, which live in the container's child coordinate
+# space.
+_CONTAINER_KINDS_WITHOUT_PAINT = frozenset({"group", "diagram", "smartart"})
 
 
-def _cull_commands(
-    slide_number: int,
-    addresses: Sequence[tuple[str, str]],
-    keep: str,
-) -> list[dict[str, str]]:
-    """Return the removals that leave only ``keep`` on the slide.
-
-    Positional counters are per token, so each token's removals are ordered
-    descending within the token: a removal never invalidates a surviving
-    sibling's index.  Tokens other than the target's are listed first purely for
-    readability; the descending order inside each token is what makes the plan
-    correct.
-    """
-
-    def rank(item: tuple[str, str]) -> tuple[int, int]:
-        token, address = item
-        token_rank = (
-            _CULL_TOKEN_ORDER.index(token) if token in _CULL_TOKEN_ORDER else 99
-        )
-        return (token_rank, -int(address.rsplit("[", 1)[1].rstrip("]")))
-
-    return [
-        {"command": "remove", "path": address}
-        for token, address in sorted(addresses, key=rank)
-        if address != keep
-    ]
+_REBUILD_PROPERTIES = (
+    "geometry",
+    "fill",
+    "line",
+    "lineWidth",
+    "adj",
+    "rotation",
+    "opacity",
+    "crop",
+)
 
 
 class IsolatedRenderer:
-    """Render one source object at a time, without its siblings.
+    """Render one source object at a time, with nothing else on the slide.
 
     A crop of the composited slide raster is *not* an object-local
     representation: any sibling painted inside the target's rectangle is
-    captured with it, and the projection would then paint that sibling's
-    content twice.  This renderer instead renders a derived working copy of the
-    deck in which the target object is the only object left on its slide, and
-    crops the result to the object's own rectangle.
+    captured with it, and the projection would then paint that sibling's content
+    twice.
 
-    The working copy is a separate file in the caller's scratch directory, and
-    it is deleted after each render.  The source deck is never opened for
-    writing.
+    Removing the slide's sibling objects from a copy of the deck is **also** not
+    enough, and that is the subtle half.  Such a copy still renders the slide's
+    layout and master, so a layout graphic inside the target's rectangle is
+    baked into the proxy exactly the same way -- a proxy of a transparent object
+    can come out as pure layout paint rather than as the object at all.  Culling
+    the layout parts from the derived package would mean rewriting a 60 MB
+    archive once per object.
+
+    So the render is a **reconstruction**: a brand-new deck, one blank slide, and
+    the target object re-created from the properties OfficeCLI read back for it.
+    Nothing else can contribute, because nothing else exists in that deck.  The
+    object's own rectangle is then cropped out of that render.
     """
 
     def __init__(self, source_path: str | Path, work_dir: str | Path) -> None:
         self.source_path = Path(source_path).expanduser().resolve()
         self.work_dir = Path(work_dir).expanduser().resolve()
         self.work_dir.mkdir(parents=True, exist_ok=True)
-        self._listing_cache: dict[int, list[Mapping[str, Any]]] = {}
         node = _run_officecli_json("get", str(self.source_path), "/", "--depth", "0")
         root_format = dict(node.get("format") or {})
         self.slide_width_pt = length_to_points(root_format.get("slideWidth"))
-        if self.slide_width_pt <= 0:
+        self.slide_height_pt = length_to_points(root_format.get("slideHeight"))
+        if self.slide_width_pt <= 0 or self.slide_height_pt <= 0:
             raise PptxReadError(
-                "The presentation did not report a slideWidth, so an isolated "
+                "The presentation did not report its slide bounds, so an isolated "
                 "render cannot be scaled to the object's rectangle."
             )
-
-    def _listing(self, slide_number: int) -> list[Mapping[str, Any]]:
-        if slide_number not in self._listing_cache:
-            node = _run_officecli_json(
-                "get", str(self.source_path), f"/slide[{slide_number}]", "--depth", "0"
-            )
-            self._listing_cache[slide_number] = list(_children(node))
-        return self._listing_cache[slide_number]
 
     def render(
         self,
@@ -1378,54 +1336,87 @@ class IsolatedRenderer:
         source_object: str,
         bounds_pt: tuple[float, float, float, float],
         *,
+        object_kind: str,
+        properties: Mapping[str, Any],
         pixels_per_point: float,
         destination: str | Path,
+        media_path: str | Path | None = None,
         guard_px: int = 2,
     ) -> Path:
-        """Render ``source_object`` alone and crop it to ``bounds_pt``."""
+        """Rebuild ``source_object`` alone and crop it to ``bounds_pt``.
+
+        ``properties`` is the object's OfficeCLI ``format`` mapping, and
+        ``media_path`` is the extracted picture payload when the object is a
+        picture.  Both come from the same read that produced ``bounds_pt``.
+        """
         target = Path(destination)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        children = self._listing(slide_number)
-        addresses = _object_addresses(slide_number, children)
-        matching = [
-            address
-            for (_, address), child in zip(addresses, children)
-            if str(child.get("path")) == source_object
-        ]
-        if len(matching) != 1:
+        if object_kind in _CONTAINER_KINDS_WITHOUT_PAINT:
+            # A container's own shape has no geometry, fill, or line: all of its
+            # visible content belongs to its children, and OfficeCLI reports
+            # those in the group's own child coordinate space, which needs the
+            # DrawingML group transform to map back onto the slide.  Rebuilding
+            # the container alone renders nothing, so say so instead of
+            # publishing a blank proxy as if it represented the object.
             raise ObjectIsolationError(
-                f"Source object {source_object} on slide {slide_number} resolved "
-                f"to {len(matching)} address(es); an isolated render needs exactly one."
+                f"{object_kind!r} has no paint of its own; its visible content "
+                "belongs to its children, which cannot be rebuilt into the slide's "
+                "coordinate space without the group transform."
             )
-        keep = matching[0]
-        commands = _cull_commands(slide_number, addresses, keep)
+        token = _CANONICAL_TOKEN.get(object_kind)
+        if token is None:
+            raise ObjectIsolationError(
+                f"{object_kind!r} has no canonical OfficeCLI element to rebuild."
+            )
+        rebuild = self._rebuild_properties(
+            object_kind, bounds_pt, properties, media_path=media_path
+        )
 
-        derived = self.work_dir / f"isolated-slide-{slide_number:03d}.pptx"
-        raster = self.work_dir / f"isolated-slide-{slide_number:03d}.png"
-        shutil.copy2(self.source_path, derived)
+        stem = f"isolated-{slide_number:03d}-{abs(hash(source_object)) % 10**8:08d}"
+        deck = self.work_dir / f"{stem}.pptx"
+        raster = self.work_dir / f"{stem}.png"
+        deck.unlink(missing_ok=True)
+        raster.unlink(missing_ok=True)
         try:
-            if commands:
-                _run_officecli("batch", str(derived), "--commands", json.dumps(commands))
-            remaining = _run_officecli_json(
-                "get", str(derived), f"/slide[{slide_number}]", "--depth", "0"
+            _run_officecli("create", str(deck))
+            commands: list[dict[str, Any]] = [
+                {
+                    "command": "set",
+                    "path": "/",
+                    "props": {
+                        "slideWidth": f"{self.slide_width_pt:g}pt",
+                        "slideHeight": f"{self.slide_height_pt:g}pt",
+                    },
+                },
+                {
+                    "command": "add",
+                    "parent": "/",
+                    "type": "slide",
+                    "props": {"name": "isolated"},
+                },
+                {
+                    "command": "add",
+                    "parent": "/slide[1]",
+                    "type": token,
+                    "props": rebuild,
+                },
+            ]
+            _run_officecli("batch", str(deck), "--commands", json.dumps(commands))
+            _run_officecli("close", str(deck))
+
+            rendered = _run_officecli_json(
+                "get", str(deck), "/slide[1]", "--depth", "0"
             )
-            left = list(_children(remaining))
-            # The address is positional, so removing lower-indexed siblings
-            # renumbers the survivor; verify by the object's own stable id path.
-            if len(left) != 1 or str(left[0].get("path")) != source_object:
+            present = list(_children(rendered))
+            if len(present) != 1:
                 raise ObjectIsolationError(
-                    f"Isolated render for {source_object} on slide {slide_number} "
-                    f"left {[str(item.get('path')) for item in left]} on the slide "
-                    f"instead of exactly that object."
+                    f"The rebuild for {source_object} produced "
+                    f"{[str(item.get('path')) for item in present]} instead of exactly "
+                    "one object."
                 )
-            _run_officecli("close", str(derived))
-            # The viewport request must be passed explicitly: OfficeCLI's
-            # default renders a deck at 1280px, which is only 1.333 px/pt and
-            # would make every proxy an upscaled blur on the 2 px/pt Author
-            # canvas.  A resident handle left over from the batch can make the
-            # write fail once, so the render is retried before it is a failure.
-            self._screenshot(derived, slide_number, raster)
+
+            self._screenshot(deck, 1, raster)
             self._crop(
                 raster,
                 bounds_pt,
@@ -1435,8 +1426,8 @@ class IsolatedRenderer:
                 destination=target,
             )
         finally:
-            _run_officecli("close", str(derived), check=False)
-            derived.unlink(missing_ok=True)
+            _run_officecli("close", str(deck), check=False, attempts=2)
+            deck.unlink(missing_ok=True)
             raster.unlink(missing_ok=True)
         if not target.is_file():
             raise ObjectIsolationError(
@@ -1445,21 +1436,51 @@ class IsolatedRenderer:
         return target
 
     @staticmethod
-    def _screenshot(derived: Path, slide_number: int, raster: Path) -> None:
-        """Render one slide of the derived deck, retrying a transient failure.
+    def _rebuild_properties(
+        object_kind: str,
+        bounds_pt: tuple[float, float, float, float],
+        properties: Mapping[str, Any],
+        *,
+        media_path: str | Path | None,
+    ) -> dict[str, str]:
+        """Return the OfficeCLI ``add`` props that reproduce the object's paint."""
+        rebuild: dict[str, str] = {
+            "name": "isolated-object",
+            "x": f"{bounds_pt[0]:g}pt",
+            "y": f"{bounds_pt[1]:g}pt",
+            "width": f"{bounds_pt[2]:g}pt",
+            "height": f"{bounds_pt[3]:g}pt",
+        }
+        for key in _REBUILD_PROPERTIES:
+            value = properties.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            # ``none`` is a real value for fill and line, but OfficeCLI rejects
+            # it for a length or a geometry.
+            if text.lower() == "none" and key not in {"fill", "line"}:
+                continue
+            rebuild[key] = text
+        if object_kind == "picture":
+            if not media_path:
+                raise ObjectIsolationError(
+                    "A picture proxy needs the picture's own media to rebuild from."
+                )
+            rebuild["src"] = str(media_path)
+        return rebuild
 
-        OfficeCLI keeps a resident document open, and a screenshot issued while
-        the handle is still settling can fail once without anything being wrong
-        with the deck.  Each attempt starts from a closed document and a removed
-        target, so a retry is a clean retry.
-        """
+    @staticmethod
+    def _screenshot(deck: Path, slide_number: int, raster: Path) -> None:
+        """Render one slide of the rebuilt deck, retrying a transient failure."""
         last_error: Exception | None = None
         for attempt in range(5):
             raster.unlink(missing_ok=True)
             try:
                 _run_officecli(
                     "view",
-                    str(derived),
+                    str(deck),
                     "screenshot",
                     "--page",
                     str(slide_number),
@@ -1473,16 +1494,16 @@ class IsolatedRenderer:
                 )
             except PptxReadError as error:
                 last_error = error
-                _run_officecli("close", str(derived), check=False, attempts=2)
+                _run_officecli("close", str(deck), check=False, attempts=2)
                 time.sleep(0.6 * (attempt + 1))
                 continue
             if raster.is_file():
                 return
-            _run_officecli("close", str(derived), check=False, attempts=2)
+            _run_officecli("close", str(deck), check=False, attempts=2)
             time.sleep(0.6 * (attempt + 1))
         raise ObjectIsolationError(
-            f"OfficeCLI did not render the isolated slide {slide_number} after "
-            f"5 attempts: {last_error or 'no image was produced'}"
+            f"OfficeCLI did not render the isolated object after 5 attempts: "
+            f"{last_error or 'no image was produced'}"
         )
 
     @staticmethod
@@ -1498,7 +1519,7 @@ class IsolatedRenderer:
         """Crop the target's rectangle out of an isolated slide render.
 
         The render's own density is measured from the raster and the slide's
-        point width, and it must reach ``pixels_per_point`` — the density the
+        point width, and it must reach ``pixels_per_point`` -- the density the
         Author canvas draws the proxy at.  A render below that density would be
         upscaled in the DOM, so it is a hard failure rather than a silently
         softened proxy.  The only tolerance is whole-pixel rounding of the
@@ -1648,30 +1669,6 @@ def capture_presentation(
     )
 
 
-def rasterize_slide(pptx_path: str | Path, slide_number: int, destination: str | Path) -> Path:
-    """Render one source slide through OfficeCLI without touching the deck."""
-    target = Path(destination)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    _run_officecli(
-        "view",
-        str(Path(pptx_path).expanduser()),
-        "screenshot",
-        "--page",
-        str(int(slide_number)),
-        "--render",
-        SCREENSHOT_RENDER,
-        "--screenshot-width",
-        str(SCREENSHOT_VIEWPORT_WIDTH),
-        "-o",
-        str(target),
-    )
-    if not target.is_file():
-        raise PptxReadError(
-            f"OfficeCLI did not produce a screenshot for source slide {slide_number}."
-        )
-    return target
-
-
 __all__ = [
     "ALIGNMENT_DEFAULT",
     "BaseOnlyClaim",
@@ -1700,5 +1697,4 @@ __all__ = [
     "officecli_version",
     "parse_color",
     "points_to_emu",
-    "rasterize_slide",
 ]
