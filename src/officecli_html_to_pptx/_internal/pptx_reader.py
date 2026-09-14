@@ -1,15 +1,21 @@
 """OfficeCLI-backed PowerPoint object capture.
 
-This module is the private reader half of the experimental V0.4.1 projection
+This module is the private reader half of the experimental V0.4.2 projection
 seam.  It turns one source ``.pptx`` plus an explicit slide selection into the
 PowerPoint Object Capture: slide bounds, paint-ordered slide-owned objects,
 text structure, geometry, picture sources, native tables, and the exact
 capability boundaries OfficeCLI reports.
 
-The reader never writes to the source deck.  Its only inputs are the deck path
-and the selected slide numbers, so an OfficeHTML export is never a hidden
-runtime prerequisite.  Everything it returns is either read from an OfficeCLI
-command or read out of the source package's own parts.
+The reader never writes to the source deck.  Its only inputs are the deck path,
+the selected slide numbers, and the caller's ``source_key`` -- the stable
+identity the projection uses to keep two decks' identical object paths apart --
+so an OfficeHTML export is never a hidden runtime prerequisite.  Everything it
+returns is either read from an OfficeCLI command or read out of the source
+package's own parts.
+
+One capture covers exactly one source deck.  A multi-source run calls this
+function once per distinct deck and keeps the results keyed by ``source_key``;
+nothing here discovers slides or reads a deck the caller did not name.
 
 Two OfficeCLI readback facts drive the design:
 
@@ -18,8 +24,8 @@ Two OfficeCLI readback facts drive the design:
   being parsed by position.
 * ``effective.<property>.src`` names where a resolved value came from.  A
   source outside the shape's own tree (``/master[...]``, ``/layout[...]``,
-  ``/theme/...``) is the machine-readable base-only signal this probe needs; it
-  is recorded as :class:`BaseOnlyClaim` rather than being silently baked in.
+  ``/theme/...``) is the machine-readable base-only signal this projection needs;
+  it is recorded as :class:`BaseOnlyClaim` rather than being silently baked in.
 """
 
 from __future__ import annotations
@@ -49,9 +55,9 @@ _QUALIFIED_LENGTH_RE = re.compile(
 _HEX_COLOR_RE = re.compile(r"^#?(?P<hex>[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 _OWNED_SOURCE_PREFIX = "/shape"
 
-# Object kinds whose native semantics this probe cannot express as a canonical
-# editable Author object.  They are only ever emitted as object-local locked
-# visual proxies.
+# Object kinds whose native semantics this projection cannot express as a
+# canonical editable Author object.  They are only ever emitted as object-local
+# locked visual proxies.
 NON_CANONICAL_KINDS = frozenset(
     {
         "chart",
@@ -103,17 +109,44 @@ ALIGNMENT_DEFAULT = "left"
 class PptxReadError(RuntimeError):
     """The source deck could not be read into a PowerPoint Object Capture."""
 
+    # A stable, machine-readable failure class for the projection seam: every
+    # read failure that is not a missing slide means the named source could not
+    # be read at all.
+    code = "unreadable_source"
+
 
 class MissingSlideError(PptxReadError):
     """A requested slide number does not exist in the source deck."""
 
-    def __init__(self, slide_number: int, slide_count: int) -> None:
-        super().__init__(
+    code = "missing_page"
+
+    def __init__(
+        self, slide_number: int, slide_count: int, source: str | None = None
+    ) -> None:
+        message = (
             f"Selected slide {slide_number} does not exist; the source deck has "
             f"{slide_count} slide(s)."
         )
+        if source:
+            message = f"{message} Source: {source}"
+        super().__init__(message)
         self.slide_number = slide_number
         self.slide_count = slide_count
+        self.source = source
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the failure as one structured, machine-readable diagnostic."""
+        payload: dict[str, Any] = {
+            "code": self.code,
+            "severity": "error",
+            "message": str(self),
+            "blocking": True,
+            "source_slide": self.slide_number,
+            "slide_count": self.slide_count,
+        }
+        if self.source:
+            payload["source_path"] = self.source
+        return payload
 
 
 @dataclass(frozen=True)
@@ -278,6 +311,16 @@ class CapturedObject:
     picture: CapturedPicture | None = None
     table: CapturedTable | None = None
     children: tuple["CapturedObject", ...] = ()
+    # The stable identity of the deck this object was captured from.  Two decks
+    # routinely report the same ``source_object`` path for different objects, so
+    # ``(source_key, source_slide, source_object)`` -- never the path alone -- is
+    # what identifies a captured object.
+    source_key: str = ""
+    # The container that owns this object, when it is not slide-owned.  An owned
+    # object is represented by its container's own representation and is never
+    # emitted as a top-level sibling.
+    owner: str | None = None
+    owner_kind: str | None = None
 
     @property
     def has_text(self) -> bool:
@@ -325,6 +368,11 @@ class CapturedObject:
             "explicit_properties": sorted(self.explicit_properties),
             "fingerprint": self.fingerprint(),
         }
+        if self.source_key:
+            data["source_key"] = self.source_key
+        if self.owner is not None:
+            data["owner"] = self.owner
+            data["owner_kind"] = self.owner_kind
         if self.fill is not None:
             data["fill"] = self.fill
         if self.line_color is not None or self.line_width_pt:
@@ -360,9 +408,12 @@ class CapturedSlide:
     height_pt: float
     background: str | None
     objects: tuple[CapturedObject, ...]
+    # Which deck this page came from.  ``source_slide`` is always the original
+    # page number in that deck, never a position in the caller's selection.
+    source_key: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "source_slide": self.source_slide,
             "layout": self.layout,
             "layout_type": self.layout_type,
@@ -372,6 +423,9 @@ class CapturedSlide:
             "object_count": len(self.objects),
             "objects": [item.as_dict() for item in self.objects],
         }
+        if self.source_key:
+            payload["source_key"] = self.source_key
+        return payload
 
 
 @dataclass(frozen=True)
@@ -383,16 +437,18 @@ class CapturedPresentation:
     slide_count: int
     officecli_version: str
     slides: tuple[CapturedSlide, ...]
+    source_key: str = ""
 
     def slide(self, number: int) -> CapturedSlide:
         for item in self.slides:
             if item.source_slide == number:
                 return item
-        raise MissingSlideError(number, self.slide_count)
+        raise MissingSlideError(number, self.slide_count, self.source_path)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "source_path": self.source_path,
+            "source_key": self.source_key,
             "slide_size_pt": list(self.slide_size_pt),
             "slide_count": self.slide_count,
             "officecli_version": self.officecli_version,
@@ -1164,6 +1220,9 @@ def _captured_object(
     slide_number: int,
     pptx_path: Path,
     capture_pictures: bool,
+    source_key: str = "",
+    owner: str | None = None,
+    owner_kind: str | None = None,
 ) -> CapturedObject:
     fmt = dict(node.get("format") or {})
     source_object = str(node.get("path") or "")
@@ -1195,12 +1254,18 @@ def _captured_object(
     elif kind == "table":
         table = _table_evidence(node, slide_number, source_object)
     if kind in CONTAINER_KINDS:
+        # An owned child is captured with its container's identity so the
+        # projection can record ownership instead of inventing a second
+        # top-level object for paint the container already carries.
         children = tuple(
             _captured_object(
                 child,
                 slide_number=slide_number,
                 pptx_path=pptx_path,
                 capture_pictures=capture_pictures,
+                source_key=source_key,
+                owner=source_object,
+                owner_kind=kind,
             )
             for child in _children(node)
         )
@@ -1231,6 +1296,9 @@ def _captured_object(
         picture=picture,
         table=table,
         children=children,
+        source_key=source_key,
+        owner=owner,
+        owner_kind=owner_kind,
     )
 
 
@@ -1587,12 +1655,19 @@ def _nested_pictures(obj: CapturedObject) -> tuple[CapturedObject, ...]:
 def capture_presentation(
     pptx_path: str | Path,
     slide_numbers: Sequence[int],
+    *,
+    source_key: str = "",
 ) -> CapturedPresentation:
     """Capture the selected slides of one source PPTX through OfficeCLI.
 
     The source deck is only ever read: no OfficeCLI write command is issued
     against it, and every requested slide must exist before anything is
-    captured.
+    captured.  ``source_key`` is the caller's stable identity for this deck and
+    is stamped onto every captured page and object, because two decks can report
+    the same ``source_object`` path.
+
+    Capture is per deck and never discovers pages: the requested numbers are the
+    only slides read, in the order given.
     """
     path = Path(pptx_path).expanduser()
     if not path.is_file():
@@ -1617,7 +1692,7 @@ def capture_presentation(
         raise PptxReadError(f"OfficeCLI found no slides in {path}.")
     for number in requested:
         if number > slide_count:
-            raise MissingSlideError(number, slide_count)
+            raise MissingSlideError(number, slide_count, str(path.resolve()))
 
     width_pt = length_to_points(root_format.get("slideWidth"))
     height_pt = length_to_points(root_format.get("slideHeight"))
@@ -1643,6 +1718,7 @@ def capture_presentation(
                         slide_number=number,
                         pptx_path=path,
                         capture_pictures=True,
+                        source_key=source_key,
                     )
                     for child in _children(node)
                 ),
@@ -1658,6 +1734,7 @@ def capture_presentation(
                 height_pt=height_pt,
                 background=_slide_background(slide_format),
                 objects=objects,
+                source_key=source_key,
             )
         )
     return CapturedPresentation(
@@ -1666,6 +1743,7 @@ def capture_presentation(
         slide_count=slide_count,
         officecli_version=officecli_version(),
         slides=tuple(slides),
+        source_key=source_key,
     )
 
 
