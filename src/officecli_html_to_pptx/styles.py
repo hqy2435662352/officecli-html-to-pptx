@@ -110,13 +110,20 @@ def resolve_pptx_font(css_font: str) -> str:
     Walks the CSS font-family stack in declared order and returns the first of:
       1. a family already known to be installed everywhere, else
       2. a known web font mapped to a metric-compatible safe equivalent, else
-      3. the CSS generic keyword (serif/sans-serif/monospace) default.
-    Falls back to Calibri. Staying in the same family keeps advance widths close
-    so a substituted heading does not wrap onto an unwanted extra line.
+      3. the stack's own first concrete family, else
+      4. the CSS generic keyword (serif/sans-serif/monospace) default.
+
+    Step 3 exists because a font stack is a *request*.  An Author HTML deck that
+    asks for a named typeface — including a CJK face such as ``Microsoft YaHei``
+    that is installed on the target platform — is declaring that typeface, not
+    asking for a substitution, and rewriting it to a generic Latin default would
+    silently change the deck's typography.  Only a generic keyword is a request
+    for the environment to choose, so only that case takes the default.
     """
     if not css_font:
         return "Calibri"
     generic_seen: str | None = None
+    declared_seen: str | None = None
     for raw in css_font.split(","):
         name = raw.strip().strip("'\"")
         if not name:
@@ -126,9 +133,13 @@ def resolve_pptx_font(css_font: str) -> str:
             return name
         if low in _FONT_EQUIVALENTS:
             return _FONT_EQUIVALENTS[low]
-        if low in _GENERIC_FALLBACK and generic_seen is None:
-            generic_seen = _GENERIC_FALLBACK[low]
-    return generic_seen or "Calibri"
+        if low in _GENERIC_FALLBACK:
+            if generic_seen is None:
+                generic_seen = _GENERIC_FALLBACK[low]
+            continue
+        if declared_seen is None:
+            declared_seen = name
+    return declared_seen or generic_seen or "Calibri"
 
 
 # ---------------------------------------------------------------------------
