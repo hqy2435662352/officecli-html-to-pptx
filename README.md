@@ -116,10 +116,15 @@ the promotion gate, so run it before build:
 </html>
 ```
 
-Use `capabilities --json` as the executable support authority. External
-resources and unsupported visible content are rejected explicitly. Pictures
-must be deterministic `data:image/...` sources; table merges remain outside
-the V0.2 Contract.
+Use `capabilities --json` as the executable support authority for supported
+HTML and object kinds. It also answers the platform question, in two parts:
+`platform` is where the command is running and `supported_platforms` is what
+this build supports, with `validated_platform_scope` recording the environment
+each key was accepted in and whether that was verified (it is not — the gate
+matches an operating-system family only). `doctor --json` decides for the
+machine in front of you. External resources and unsupported visible content are
+rejected explicitly. Pictures must be deterministic `data:image/...` sources;
+table merges remain outside the V0.2 Contract.
 
 ## Evidence Bundle
 

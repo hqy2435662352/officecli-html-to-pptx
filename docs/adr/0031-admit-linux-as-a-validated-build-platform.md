@@ -31,10 +31,25 @@ stack behaviour.
 A track certifies only the environment it exercised. The gate keys are
 `platform.system()` values and are therefore coarse — the single key `"Linux"`
 matches every distribution — so the accepted environment is declared separately
-and published beside the key. `capabilities --json` and the `doctor` snapshot
-both carry `validated_platform_scope.accepted` and
-`validated_platform_scope.not_implied`, so a supported key is never read as a
-broader claim than the evidence supports.
+and published beside the key:
+
+- `capabilities --json` publishes `validated_platform_scope` with `enforced`,
+  `accepted` (keyed by platform) and `not_implied`.
+- The `doctor` snapshot publishes the same boundary per host as
+  `platform.validated_scope` (the accepted environment for the discovered key,
+  `null` when the key is not accepted), `platform.scope_enforced`, and
+  `platform.not_implied`.
+
+`enforced` is **false**, and that is the point rather than an oversight. The
+platform gate matches an operating-system family and nothing else: it does not
+inspect the distribution, the virtualisation, the CPU architecture, the user or
+the fonts. A `PASS` therefore means the Rendering Compatibility Pair is
+discoverable on this host — not that the host was acceptance-tested. Publishing
+the scope without the `enforced` flag would let `PASS` read as a certification
+of an environment the list below explicitly disclaims. Nothing verifies the
+scope yet; ADR-0023's original caution that a track certifies only what it
+exercised still holds, and closing the gap between "supported" and "validated"
+is follow-up work rather than something this decision claims to have done.
 
 ```text
 Accepted:
@@ -57,6 +72,16 @@ accepted list only when it has one.
 from the other: `platform` is where the command is running, and
 `supported_platforms` is what this build supports. The unsupported-platform
 diagnostic names every supported platform rather than the first one.
+
+`capabilities.data.platform` is a **redefinition, not an addition**. It used to
+report the single platform the build supported; it now reports where the command
+is running, and the supported set moved to `supported_platforms`. The field keeps
+its JSON type, so no consumer breaks structurally, but a consumer that read
+`platform` as the support claim now reads the host. Any such consumer should
+switch to `supported_platforms` and consult `validated_platform_scope` for the
+evidence boundary. This is why the scope carries `enforced` rather than relying
+on prose: the split only helps a caller that can tell the two questions apart.
+
 Three host conditions are part of the Linux acceptance and are documented for
 operators rather than enforced by `doctor`. The product launches Chromium
 without `--no-sandbox`, so it must not run as root. OfficeCLI's PPTX screenshot

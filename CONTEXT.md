@@ -57,21 +57,30 @@ documented supported ranges.
 _Avoid_: latest available tools, optimistic renderer range
 
 **Supported Platform**:
-An operating-system environment that has passed the Platform Acceptance Track
-against the Rendering Compatibility Pair and is therefore listed by
+An operating-system family whose Platform Acceptance Track has passed against
+the Rendering Compatibility Pair, and which is therefore listed by
 `runtime.SUPPORTED_PLATFORMS`. Windows and Linux are supported. The listed keys
 are `platform.system()` values and so are coarse — the single key `Linux`
 matches every distribution — which is why the accepted environment is declared
-separately as the Validated Platform Scope and published beside the key.
+separately as the Validated Platform Scope and published beside the key. The
+platform gate matches the key and nothing else, so a Supported Platform is not
+the same claim as a validated host.
 _Avoid_: theoretically portable, cross-platform by dependency, all POSIX systems
 
 **Validated Platform Scope**:
 What a Supported Platform key actually stands for: the specific environment that
 ran the acceptance track, plus an explicit list of what the key does *not*
-imply. Published by `capabilities --json` and by the `doctor` snapshot through
-`runtime.VALIDATED_PLATFORM_SCOPE` and `runtime.UNVALIDATED_PLATFORM_NOTE`, so
-that no caller sees a coarse key without its evidence boundary.
-_Avoid_: reading a supported key as a blanket claim, "Linux works everywhere"
+imply, plus whether the gate verifies any of it. Published by
+`capabilities --json` as `validated_platform_scope` (`enforced`, `accepted`,
+`not_implied`) and by the `doctor` snapshot as `platform.validated_scope`,
+`platform.scope_enforced` and `platform.not_implied`, so that no caller sees a
+coarse key without its evidence boundary.
+`runtime.PLATFORM_SCOPE_ENFORCED` is **false**: nothing inspects the
+distribution, virtualisation, architecture, user or fonts, so `doctor` passing
+means the compatibility pair is discoverable here, not that the host was
+acceptance-tested.
+_Avoid_: reading a supported key as a blanket claim, treating `doctor` PASS as
+validation, "Linux works everywhere"
 
 **Platform Acceptance Track**:
 The evidence required before an operating system joins the Supported Platform

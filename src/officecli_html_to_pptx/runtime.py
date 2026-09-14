@@ -30,11 +30,20 @@ PYTHON_TESTED_RANGE = ">=3.10,<3.15"
 NODE_TESTED_RANGE = ">=20,<23"
 # The platform keys the gate accepts.  These are ``platform.system()`` values, so
 # they are inherently coarse: the single key "Linux" covers every distribution.
-# What was actually accepted is narrower, and is declared in
-# ``VALIDATED_PLATFORM_SCOPE`` so that a caller never sees the coarse key without
-# the environment it stands for.  Linux was accepted by the WSL2 track; see
-# ``docs/adr/0031-admit-linux-as-a-validated-build-platform.md``.
+# The gate matches that key and nothing else -- it does not inspect the
+# distribution, the virtualisation, the CPU architecture, the user or the fonts --
+# so an accepted key means "this operating-system family is supported", never
+# "this host was acceptance-tested".  What was accepted is narrower and is
+# declared in ``VALIDATED_PLATFORM_SCOPE``.
 SUPPORTED_PLATFORMS = ("Windows", "Linux")
+
+# Whether ``diagnose_environment`` verifies that the host matches the scope below.
+# It does not, and the boundary is published rather than implied so that a coarse
+# key cannot be read as a certification.  What the gate does check is the
+# Rendering Compatibility Pair, which is discoverable on environments that were
+# never acceptance-tested; the known silent failure those carry is fonts, which
+# produce a mis-measured deck while ``doctor`` still reports ``PASS``.
+PLATFORM_SCOPE_ENFORCED = False
 
 # What each accepted key actually stands for: the environment that ran the
 # Platform Acceptance Track, not every system the key matches.
@@ -49,13 +58,15 @@ VALIDATED_PLATFORM_SCOPE = {
     ),
 }
 
-# Published next to the scope so a supported key is never read as a broader
-# claim than the evidence supports.
+# Published next to the scope so a supported key is never read as a broader claim
+# than the evidence supports.  Kept in step with the "Not implied" list in
+# ADR-0031.
 UNVALIDATED_PLATFORM_NOTE = (
-    "Not implied by a supported platform key: other Linux distributions, native "
-    "(non-WSL2) Linux installations, container images, and other CPU "
-    "architectures. Each needs its own Platform Acceptance Track before it can "
-    "be relied on."
+    "A supported platform key certifies the operating-system family only. Not "
+    "implied: other Linux distributions, native (non-WSL2) Linux installations, "
+    "container images, other CPU architectures, and macOS. None of these is "
+    "verified by the platform gate, and each needs its own Platform Acceptance "
+    "Track before it can be relied on."
 )
 
 
@@ -68,11 +79,9 @@ def current_platform() -> str:
     return platform.system()
 
 
-def supported_platforms_text(platforms: Sequence[str] = SUPPORTED_PLATFORMS) -> str:
+def supported_platforms_text() -> str:
     """Render the supported set for a human-readable diagnostic."""
-    names = list(platforms)
-    if not names:
-        return "no platform"
+    names = list(SUPPORTED_PLATFORMS)
     if len(names) == 1:
         return names[0]
     return ", ".join(names[:-1]) + f" or {names[-1]}"
@@ -256,8 +265,10 @@ def diagnose_environment(
             "discovered": actual_platform,
             "compatible": platform_ok,
             # A supported key is coarse ("Linux" matches every distribution), so
-            # the accepted environment travels with it.
+            # the accepted environment travels with it, along with the fact that
+            # the gate does not verify it.
             "validated_scope": VALIDATED_PLATFORM_SCOPE.get(actual_platform),
+            "scope_enforced": PLATFORM_SCOPE_ENFORCED,
             "not_implied": UNVALIDATED_PLATFORM_NOTE,
         },
         "formal_pair": {
@@ -280,9 +291,12 @@ def diagnose_environment(
                 f"Formal builds support {supported}; discovered {actual_platform or 'unknown'}.",
                 True,
                 remediation=(
-                    f"Run the formal build on {supported}. A platform is added to "
-                    "the supported set only after it passes the WSL2-style "
-                    "acceptance track against the Rendering Compatibility Pair."
+                    f"Run the formal build on {supported}. "
+                    "`officecli-html-to-pptx capabilities --json` reports every "
+                    "supported platform and the environment each one was "
+                    "accepted in. A platform joins the set only after it passes "
+                    "the Platform Acceptance Track against the Rendering "
+                    "Compatibility Pair."
                 ),
                 recheck="officecli-html-to-pptx doctor --json",
             )
@@ -471,6 +485,7 @@ __all__ = [
     "NODE_TESTED_RANGE",
     "PPTX_SCREENSHOT_DEFAULT_RENDER",
     "PYTHON_TESTED_RANGE",
+    "PLATFORM_SCOPE_ENFORCED",
     "SUPPORTED_PLATFORMS",
     "UNVALIDATED_PLATFORM_NOTE",
     "VALIDATED_PLATFORM_SCOPE",
