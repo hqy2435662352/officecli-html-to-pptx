@@ -34,8 +34,20 @@ existing PPTX belongs to the separate presentation-editing workflow.
 
 Preserve all user-supplied inputs. Write new or reconstructed HTML to a
 separately named `.author.html` workbench. Keep the PPTX and its same-stem
-`.evidence/` directory as one Artifact Pair. The formal V0.2 product target is
-Windows; do not make a broader platform-support claim from an individual run.
+`.evidence/` directory as one Artifact Pair. Windows and Linux are supported
+build platforms; `capabilities --json` reports the running platform and the
+supported set, and `doctor --json` is the per-machine authority. A supported key
+names an operating-system family, not a validated host: read
+`validated_platform_scope` for the environment each key was accepted under, and
+note that it is declared, not enforced. Do not make a platform-support claim from
+an individual run, and do not widen the set: a platform joins it only by passing
+its own acceptance track.
+
+On Linux the build host must meet the three WSL2 Host Requirements, none of which
+`doctor` reports as a failure: run as a non-root user, keep the environment owning
+the pinned Playwright Chromium active so OfficeCLI can discover a headless
+browser, and have the font families and weight faces the Author HTML declares.
+The third one produces a visibly mis-measured deck rather than an error.
 
 Use the installed Core Product as the authority for supported HTML, object
 kinds, runtime compatibility, diagnostics, artifact schemas, and outcomes. Do

@@ -14,6 +14,11 @@ import officecli_html_to_pptx.application as application
 from officecli_html_to_pptx import cli
 from officecli_html_to_pptx._internal.officecli_compiler import OfficeCLICompilationResult
 from officecli_html_to_pptx.protocol import Diagnostic, exit_code_for_status, result
+from officecli_html_to_pptx.runtime import (
+    SUPPORTED_PLATFORMS,
+    UNVALIDATED_PLATFORM_NOTE,
+    VALIDATED_PLATFORM_SCOPE,
+)
 
 
 AUTHOR_HTML = """<!doctype html><html><head><style>
@@ -27,7 +32,14 @@ def _author(tmp_path: Path) -> Path:
     return path
 
 
-def test_capabilities_are_author_only_and_use_product_envelope() -> None:
+def test_capabilities_are_author_only_and_use_product_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Inject the platform reader so this test asserts the published contract
+    # rather than whichever host it happens to run on: on a platform outside the
+    # supported set the membership assertion below would otherwise fail for a
+    # reason that has nothing to do with the capability manifest.
+    monkeypatch.setattr(application, "current_platform", lambda: "Windows")
     payload = application.get_capabilities().as_dict()
 
     assert payload["status"] == "PASS"
@@ -43,6 +55,25 @@ def test_capabilities_are_author_only_and_use_product_envelope() -> None:
         "finalize",
     ]
     assert payload["data"]["contract"]["profile"] == "author"
+    # ``platform`` answers "where am I running"; ``supported_platforms`` answers
+    # "what does this build support".  Both are needed to decide "supported here".
+    assert payload["data"]["platform"] == "Windows"
+    assert payload["data"]["supported_platforms"] == list(SUPPORTED_PLATFORMS)
+    assert payload["data"]["platform"] in payload["data"]["supported_platforms"]
+    # A supported key is coarse ("Linux" matches every distribution), so the
+    # accepted environment and the not-implied list are published beside it and a
+    # key cannot be read as a broader claim than the acceptance evidence.
+    scope = payload["data"]["validated_platform_scope"]
+    assert scope["accepted"] == VALIDATED_PLATFORM_SCOPE
+    assert scope["not_implied"] == UNVALIDATED_PLATFORM_NOTE
+    # The real invariant: every supported key has a declared scope and vice versa.
+    # Asserting membership by re-iterating SUPPORTED_PLATFORMS could only raise
+    # KeyError, so it would never catch a key added without a scope.
+    assert set(payload["data"]["supported_platforms"]) == set(scope["accepted"])
+    # The gate does not verify the scope, and that is published rather than implied.
+    assert scope["enforced"] is False
+    assert "other Linux distributions" in scope["not_implied"]
+    assert "macOS" in scope["not_implied"]
     assert payload["data"]["rendering_compatibility"]["officecli"] == ">=1.0.147"
     assert payload["data"]["scope"]["officehtml_import"] is False
     assert "profile" not in payload["data"]["contract"]["css_properties"]

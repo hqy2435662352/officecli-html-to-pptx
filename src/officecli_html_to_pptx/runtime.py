@@ -28,7 +28,63 @@ FORMAL_PPTX_SCREENSHOT_RENDER = "html"
 PPTX_SCREENSHOT_DEFAULT_RENDER = "default"
 PYTHON_TESTED_RANGE = ">=3.10,<3.15"
 NODE_TESTED_RANGE = ">=20,<23"
-SUPPORTED_PLATFORM = "Windows"
+# The platform keys the gate accepts.  These are ``platform.system()`` values, so
+# they are inherently coarse: the single key "Linux" covers every distribution.
+# The gate matches that key and nothing else -- it does not inspect the
+# distribution, the virtualisation, the CPU architecture, the user or the fonts --
+# so an accepted key means "this operating-system family is supported", never
+# "this host was acceptance-tested".  What was accepted is narrower and is
+# declared in ``VALIDATED_PLATFORM_SCOPE``.
+SUPPORTED_PLATFORMS = ("Windows", "Linux")
+
+# Whether ``diagnose_environment`` verifies that the host matches the scope below.
+# It does not, and the boundary is published rather than implied so that a coarse
+# key cannot be read as a certification.  What the gate does check is the
+# Rendering Compatibility Pair, which is discoverable on environments that were
+# never acceptance-tested; the known silent failure those carry is fonts, which
+# produce a mis-measured deck while ``doctor`` still reports ``PASS``.
+PLATFORM_SCOPE_ENFORCED = False
+
+# What each accepted key actually stands for: the environment that ran the
+# Platform Acceptance Track, not every system the key matches.
+VALIDATED_PLATFORM_SCOPE = {
+    "Windows": (
+        "Windows 10 or 11, x86_64, a normal user account, with the declared "
+        "fonts installed"
+    ),
+    "Linux": (
+        "WSL2 on Ubuntu 24.04, x86_64, a non-root user, the environment owning "
+        "the pinned Playwright Chromium active, and the declared fonts installed"
+    ),
+}
+
+# Published next to the scope so a supported key is never read as a broader claim
+# than the evidence supports.  Kept in step with the "Not implied" list in
+# ADR-0031.
+UNVALIDATED_PLATFORM_NOTE = (
+    "A supported platform key certifies the operating-system family only. Not "
+    "implied: other Linux distributions, native (non-WSL2) Linux installations, "
+    "container images, other CPU architectures, and macOS. None of these is "
+    "verified by the platform gate, and each needs its own Platform Acceptance "
+    "Track before it can be relied on."
+)
+
+
+def current_platform() -> str:
+    """Return the platform this process runs on, as ``platform.system()`` reports it.
+
+    Kept here so that platform knowledge has one owner: callers ask the runtime
+    module instead of importing :mod:`platform` and comparing strings themselves.
+    """
+    return platform.system()
+
+
+def supported_platforms_text() -> str:
+    """Render the supported set for a human-readable diagnostic."""
+    names = list(SUPPORTED_PLATFORMS)
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + f" or {names[-1]}"
 
 
 @dataclass(frozen=True)
@@ -201,13 +257,19 @@ def diagnose_environment(
 ) -> RuntimeDiagnosis:
     """Inspect prerequisites without installing or mutating anything."""
     diagnostics: list[Diagnostic] = []
-    actual_platform = platform.system()
-    platform_ok = actual_platform == SUPPORTED_PLATFORM
+    actual_platform = current_platform()
+    platform_ok = actual_platform in SUPPORTED_PLATFORMS
     snapshot: dict[str, Any] = {
         "platform": {
-            "required": SUPPORTED_PLATFORM,
+            "required": list(SUPPORTED_PLATFORMS),
             "discovered": actual_platform,
             "compatible": platform_ok,
+            # A supported key is coarse ("Linux" matches every distribution), so
+            # the accepted environment travels with it, along with the fact that
+            # the gate does not verify it.
+            "validated_scope": VALIDATED_PLATFORM_SCOPE.get(actual_platform),
+            "scope_enforced": PLATFORM_SCOPE_ENFORCED,
+            "not_implied": UNVALIDATED_PLATFORM_NOTE,
         },
         "formal_pair": {
             "officecli": f">={FORMAL_OFFICECLI_VERSION}",
@@ -221,13 +283,21 @@ def diagnose_environment(
         "chromium": {},
     }
     if not platform_ok:
+        supported = supported_platforms_text()
         diagnostics.append(
             Diagnostic(
                 "unsupported_platform",
                 "error",
-                f"Formal V0.2 builds require {SUPPORTED_PLATFORM}; discovered {actual_platform or 'unknown'}.",
+                f"Formal builds support {supported}; discovered {actual_platform or 'unknown'}.",
                 True,
-                remediation="Run the formal build on Windows; Linux is limited to the later WSL2 validation track.",
+                remediation=(
+                    f"Run the formal build on {supported}. "
+                    "`officecli-html-to-pptx capabilities --json` reports every "
+                    "supported platform and the environment each one was "
+                    "accepted in. A platform joins the set only after it passes "
+                    "the Platform Acceptance Track against the Rendering "
+                    "Compatibility Pair."
+                ),
                 recheck="officecli-html-to-pptx doctor --json",
             )
         )
@@ -415,8 +485,13 @@ __all__ = [
     "NODE_TESTED_RANGE",
     "PPTX_SCREENSHOT_DEFAULT_RENDER",
     "PYTHON_TESTED_RANGE",
-    "SUPPORTED_PLATFORM",
+    "PLATFORM_SCOPE_ENFORCED",
+    "SUPPORTED_PLATFORMS",
+    "UNVALIDATED_PLATFORM_NOTE",
+    "VALIDATED_PLATFORM_SCOPE",
     "RuntimeDiagnosis",
+    "current_platform",
     "diagnose_environment",
     "officecli_pptx_screenshot_render",
+    "supported_platforms_text",
 ]

@@ -65,16 +65,50 @@ documented supported ranges.
 _Avoid_: latest available tools, optimistic renderer range
 
 **Supported Platform**:
-Windows is the only formally supported V0.2 operating-system environment. The
-product avoids unnecessary platform coupling, but it does not claim macOS or
-Linux compatibility without end-to-end acceptance evidence.
-_Avoid_: theoretically portable, cross-platform by dependency
+An operating-system family whose Platform Acceptance Track has passed against
+the Rendering Compatibility Pair, and which is therefore listed by
+`runtime.SUPPORTED_PLATFORMS`. Windows and Linux are supported. The listed keys
+are `platform.system()` values and so are coarse — the single key `Linux`
+matches every distribution — which is why the accepted environment is declared
+separately as the Validated Platform Scope and published beside the key. The
+platform gate matches the key and nothing else, so a Supported Platform is not
+the same claim as a validated host.
+_Avoid_: theoretically portable, cross-platform by dependency, all POSIX systems
 
-**WSL2 Validation Track**:
-The planned first Linux validation environment, using WSL2 on the current
-Windows machine. It is a future acceptance track rather than a V0.2 support
-claim; passing it does not automatically imply support for all Linux systems.
-_Avoid_: current Linux support, generic Linux certification
+**Validated Platform Scope**:
+What a Supported Platform key actually stands for: the specific environment that
+ran the acceptance track, plus an explicit list of what the key does *not*
+imply, plus whether the gate verifies any of it. Published by
+`capabilities --json` as `validated_platform_scope` (`enforced`, `accepted`,
+`not_implied`) and by the `doctor` snapshot as `platform.validated_scope`,
+`platform.scope_enforced` and `platform.not_implied`, so that no caller sees a
+coarse key without its evidence boundary.
+`runtime.PLATFORM_SCOPE_ENFORCED` is **false**: nothing inspects the
+distribution, virtualisation, architecture, user or fonts, so `doctor` passing
+means the compatibility pair is discoverable here, not that the host was
+acceptance-tested.
+_Avoid_: reading a supported key as a blanket claim, treating `doctor` PASS as
+validation, "Linux works everywhere"
+
+**Platform Acceptance Track**:
+The evidence required before an operating system joins the Supported Platform
+set: the declared Rendering Compatibility Pair discoverable on that system, and
+one real `doctor` -> `check` -> `build` -> Visual Review -> `finalize` run
+producing a complete Artifact Pair with a derived outcome. WSL2 on Ubuntu 24.04
+was the first Linux track and admitted Linux. A track certifies only the
+environment it exercised; other distributions and native installations need
+their own run.
+_Avoid_: generic Linux certification, support by analogy
+
+**WSL2 Host Requirements**:
+The three conditions a Linux build host must satisfy, none of which `doctor`
+reports as a failure. The product launches Chromium without `--no-sandbox`, so
+it must not run as root. OfficeCLI's PPTX screenshot stage discovers a headless
+browser through a Playwright-capable `python3` on `PATH`, so the environment
+owning the pinned Chromium must be active. The host must have the font families
+and weight faces the Author HTML declares, because text geometry is measured on
+the build host.
+_Avoid_: Linux works out of the box, font substitution is cosmetic
 
 **Product Namespace**:
 The Python import namespace `officecli_html_to_pptx`, aligned with the Product
@@ -170,7 +204,8 @@ The deliberately small V0.2 release check: relevant tests and the existing
 suite, one representative real Author HTML run through the complete product
 path, an openable editable PPTX with complete evidence, `compileall`, and
 `git diff --check`. It does not repeat a platform matrix, every Skill entry
-mode, the full Algeria regression, or WSL2 validation.
+mode, the full Algeria regression, or a fresh run of every Platform Acceptance
+Track.
 _Avoid_: certification program, multi-layer release framework
 
 **User-Path Acceptance**:

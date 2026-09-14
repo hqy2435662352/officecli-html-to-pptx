@@ -50,8 +50,12 @@ from .runtime import (
     FORMAL_OFFICECLI_VERSION,
     FORMAL_PLAYWRIGHT_VERSION,
     NODE_TESTED_RANGE,
+    PLATFORM_SCOPE_ENFORCED,
     PYTHON_TESTED_RANGE,
-    SUPPORTED_PLATFORM,
+    SUPPORTED_PLATFORMS,
+    UNVALIDATED_PLATFORM_NOTE,
+    VALIDATED_PLATFORM_SCOPE,
+    current_platform,
     diagnose_environment as _diagnose_runtime,
 )
 
@@ -189,7 +193,19 @@ def get_capabilities() -> CommandResult:
     contract_capabilities = author_capability_manifest()
     data = {
         "contract": contract_capabilities,
-        "platform": SUPPORTED_PLATFORM,
+        # ``platform`` is where this command is running; ``supported_platforms``
+        # is what this build supports.  A supported key is coarse -- the single
+        # key "Linux" matches every distribution -- so the validated scope is
+        # published beside it, together with the fact that the gate does not
+        # verify it.  A key must never be read as a broader claim than the
+        # Platform Acceptance Track supports.
+        "platform": current_platform(),
+        "supported_platforms": list(SUPPORTED_PLATFORMS),
+        "validated_platform_scope": {
+            "enforced": PLATFORM_SCOPE_ENFORCED,
+            "accepted": dict(VALIDATED_PLATFORM_SCOPE),
+            "not_implied": UNVALIDATED_PLATFORM_NOTE,
+        },
         "rendering_compatibility": {
             "officecli": f">={FORMAL_OFFICECLI_VERSION}",
             "playwright": FORMAL_PLAYWRIGHT_VERSION,
