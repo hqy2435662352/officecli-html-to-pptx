@@ -218,3 +218,4 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 _baseline_input.pptx
+_smoke/

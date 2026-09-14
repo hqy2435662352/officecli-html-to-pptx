@@ -15,6 +15,14 @@ real 63 MB acceptance deck is never committed and the probes stay narrow.  The
 fixture deliberately contains one supported surface, one unsupported geometry,
 and one container whose native semantics the current Author Contract cannot
 express.
+
+V0.4.2 supersedes exactly one expectation this file used to encode: the locked
+proxy's fixture geometry was an ellipse, and an ellipse is now projected as a
+native canonical shape.  The isolation boundary these tests exist for is
+unchanged, so it is re-pointed at a preset that is still outside the canonical
+surface -- ``chevron`` -- rather than being weakened; the promoted ellipse has
+its own coverage in ``tests/test_v042_native_presets.py``.  Every assertion in
+this file is otherwise exactly as V0.4.1 published it.
 """
 
 from __future__ import annotations
@@ -58,16 +66,20 @@ _PICTURE_URI = "data:image/png;base64," + base64.b64encode(_PICTURE_PNG).decode(
 SUPPORTED_TEXT = "V0.4.1 projection seam 中文 🚀"
 SUPPORTED_SUBTITLE = "Second paragraph"
 BOLD_RUN_TEXT = "Bold run"
-UNSUPPORTED_GEOMETRY = "ellipse"
+# A preset the canonical Author object surface still has no equivalent for.  It
+# was ``ellipse`` until V0.4.2 promoted the ellipse to a native shape; the
+# boundary this file tests is "an unsupported geometry is a locked proxy", so
+# the fixture now uses a preset that is still unsupported.
+UNSUPPORTED_GEOMETRY = "chevron"
 CONTAINER_CHILD_TEXT = "grouped label"
 TABLE_CELLS = (("MODEL", "12K"), ("IDU SIZE", "910x305x195"))
 FIXTURE_SLIDE_COUNT = 1
 
-# The overlay probe: a text-free filled ellipse with three independent
+# The overlay probe: a text-free filled shape with three independent
 # textboxes painted inside its rectangle, which is exactly the arrangement that
 # a composited-raster crop cannot represent without capturing its neighbours.
-OVERLAY_ELLIPSE_BOX = (40.0, 200.0, 120.0, 120.0)
-OVERLAY_ELLIPSE_FILL = "#D96666"
+OVERLAY_SHAPE_BOX = (40.0, 200.0, 120.0, 120.0)
+OVERLAY_SHAPE_FILL = "#D96666"
 OVERLAY_TEXT_LINES = ("In 2026", "9.50", "Million/USD")
 OVERLAY_TEXTBOX_TOP_PT = (215.0, 245.0, 275.0)
 
@@ -172,7 +184,7 @@ def projection_fixture(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "parent": "/slide[1]",
             "type": "shape",
             "props": {
-                "name": "unsupported-ellipse",
+                "name": "unsupported-preset",
                 "geometry": UNSUPPORTED_GEOMETRY,
                 # Deliberately clear of the overlay probe's rectangle, so its own
                 # proxy cannot be judged against another fixture object's paint.
@@ -251,18 +263,18 @@ def projection_fixture(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "parent": "/slide[1]",
             "type": "shape",
             "props": {
-                "name": "overlay-ellipse",
+                "name": "overlay-shape",
                 "geometry": UNSUPPORTED_GEOMETRY,
-                "x": f"{OVERLAY_ELLIPSE_BOX[0]}pt",
-                "y": f"{OVERLAY_ELLIPSE_BOX[1]}pt",
-                "width": f"{OVERLAY_ELLIPSE_BOX[2]}pt",
-                "height": f"{OVERLAY_ELLIPSE_BOX[3]}pt",
-                "fill": OVERLAY_ELLIPSE_FILL,
+                "x": f"{OVERLAY_SHAPE_BOX[0]}pt",
+                "y": f"{OVERLAY_SHAPE_BOX[1]}pt",
+                "width": f"{OVERLAY_SHAPE_BOX[2]}pt",
+                "height": f"{OVERLAY_SHAPE_BOX[3]}pt",
+                "fill": OVERLAY_SHAPE_FILL,
                 "line": "none",
             },
         },
     ]
-    # The three sibling textboxes sit inside the ellipse's rectangle.
+    # The three sibling textboxes sit inside the shape's rectangle.
     for offset, line in zip(OVERLAY_TEXTBOX_TOP_PT, OVERLAY_TEXT_LINES):
         commands.append(
             {
@@ -272,9 +284,9 @@ def projection_fixture(tmp_path_factory: pytest.TempPathFactory) -> Path:
                 "props": {
                     "name": f"overlay-text-{line.replace('/', '-')}",
                     "text": line,
-                    "x": f"{OVERLAY_ELLIPSE_BOX[0] + 10}pt",
+                    "x": f"{OVERLAY_SHAPE_BOX[0] + 10}pt",
                     "y": f"{offset}pt",
-                    "width": f"{OVERLAY_ELLIPSE_BOX[2] - 20}pt",
+                    "width": f"{OVERLAY_SHAPE_BOX[2] - 20}pt",
                     "height": "24pt",
                     "size": "14pt",
                     "font": "Arial",
@@ -478,13 +490,13 @@ def test_a_native_table_is_one_table_with_row_and_cell_identity(
 def test_an_unsupported_geometry_is_a_locked_proxy_with_a_reason(
     projected: Any,
 ) -> None:
-    """An ellipse is not declared editable merely because it is visible."""
-    ellipse = _object_named(projected, "unsupported-ellipse")
-    assert ellipse.disposition == DISPOSITION_LOCKED
-    assert ellipse.proxy_reason
-    assert UNSUPPORTED_GEOMETRY in ellipse.proxy_reason
+    """A preset with no canonical equivalent is never declared editable."""
+    preset = _object_named(projected, "unsupported-preset")
+    assert preset.disposition == DISPOSITION_LOCKED
+    assert preset.proxy_reason
+    assert UNSUPPORTED_GEOMETRY in preset.proxy_reason
     html = projected.html_path.read_text(encoding="utf-8")
-    element = html.split(f'id="{ellipse.html_id}"', 1)[1].split(">", 1)[0]
+    element = html.split(f'id="{preset.html_id}"', 1)[1].split(">", 1)[0]
     assert 'data-projection-locked="true"' in element
 
 
@@ -584,7 +596,7 @@ def test_the_enclosure_discriminator_fires_on_a_contaminated_image() -> None:
 def test_a_locked_proxy_carries_only_its_own_object(projected: Any) -> None:
     """A proxy for a text-free shape must not contain a sibling's glyphs.
 
-    The fixture paints three independent textboxes inside the ellipse's
+    The fixture paints three independent textboxes inside the shape's
     rectangle.  Cropping the composited slide would capture them, and the
     projection would then paint the same words twice — once inside the proxy
     image and once as the canonical text objects.  The proxy is therefore
@@ -592,11 +604,11 @@ def test_a_locked_proxy_carries_only_its_own_object(projected: Any) -> None:
     """
     from PIL import Image
 
-    overlay = _object_named(projected, "overlay-ellipse")
+    overlay = _object_named(projected, "overlay-shape")
     assert overlay.disposition == DISPOSITION_LOCKED
     assert overlay.proxy_asset, "a locked proxy must publish its asset for review"
     fill = tuple(
-        int(OVERLAY_ELLIPSE_FILL.lstrip("#")[index : index + 2], 16)
+        int(OVERLAY_SHAPE_FILL.lstrip("#")[index : index + 2], 16)
         for index in (0, 2, 4)
     )
     with Image.open(overlay.proxy_asset) as image:
@@ -621,7 +633,7 @@ def test_a_locked_proxy_carries_only_its_own_object(projected: Any) -> None:
 
 def test_a_locked_proxy_is_not_a_crop_of_the_composited_slide(projected: Any) -> None:
     """The proxy's own evidence must show it came from an isolated render."""
-    overlay = _object_named(projected, "overlay-ellipse")
+    overlay = _object_named(projected, "overlay-shape")
     assert overlay.proxy_asset
     asset = Path(overlay.proxy_asset)
     assert asset.is_file()

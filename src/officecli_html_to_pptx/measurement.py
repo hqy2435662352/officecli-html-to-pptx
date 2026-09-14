@@ -501,6 +501,12 @@ EXTRACTION_JS = """
             naturalWidth: isImg ? (el.naturalWidth || 0) : 0,
             naturalHeight: isImg ? (el.naturalHeight || 0) : 0,
             borderRadius: style.borderRadius,
+            // A preset geometry the Canonical Author shape surface keeps as a
+            // PowerPoint preset rather than inferring from CSS.  A block box is
+            // a rect and a border-radius is a roundRect, but an ellipse or a
+            // right arrow has no CSS declaration that means it, so the emitted
+            // object names the preset and the lowering reads it here.
+            shapeGeometry: el.getAttribute('data-shape-geometry'),
             borderColor: hasBorder ? style.borderColor : null,
             borderWidth: hasBorder ? parseFloat(style.borderWidth) : 0,
             borderStyle: hasBorder ? style.borderStyle : null,

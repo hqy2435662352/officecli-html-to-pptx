@@ -97,6 +97,13 @@ TABLE_CELLS = (("REGION", "SHARE"), ("North", "42%"))
 GROUP_CHILD_NAME = "inner-box"
 GROUP_CONNECTOR_NAME = "inner-link"
 GROUP_SIBLING_TEXT = "Ungrouped sibling text"
+# The group page's children are authored *outside* the group's own rectangle, so
+# the container cannot be represented: that is this deck's block.  A child the
+# group's rectangle could hold is no longer a refusal, because the projection
+# now tries OfficeCLI's reported rectangles as well as a declared child space.
+GROUP_BOX_PT = (200.0, 200.0, 200.0, 120.0)
+GROUP_CHILD_BOX_PT = (600.0, 300.0, 80.0, 40.0)
+GROUP_CONNECTOR_BOX_PT = (600.0, 380.0, 80.0, 40.0)
 
 PAGE_SIZE_PT = (960.0, 540.0)
 CANVAS_PX = (1920.0, 1080.0)
@@ -289,12 +296,14 @@ def _beta_commands() -> list[dict[str, Any]]:
 
 
 def _group_commands() -> list[dict[str, Any]]:
-    """One page whose container owns a shape and a connector.
+    """One page whose container owns a shape and a connector it cannot represent.
 
     A group's own shape carries no paint, so this page is also the fixture for
     the container-representation boundary: the container is classified, its
     owned children are recorded as owned by it, and the run blocks instead of
-    publishing a representation it could not produce.
+    publishing a representation it could not produce.  The children sit outside
+    the group's own rectangle, and no child space is declared that could bring
+    them inside it, so no reading of the source reconciles them.
     """
     return [
         {"command": "set", "path": "/", "props": {"slideSize": "widescreen"}},
@@ -305,10 +314,10 @@ def _group_commands() -> list[dict[str, Any]]:
             "type": "group",
             "props": {
                 "name": "cluster",
-                "x": "200pt",
-                "y": "200pt",
-                "width": "200pt",
-                "height": "120pt",
+                "x": f"{GROUP_BOX_PT[0]}pt",
+                "y": f"{GROUP_BOX_PT[1]}pt",
+                "width": f"{GROUP_BOX_PT[2]}pt",
+                "height": f"{GROUP_BOX_PT[3]}pt",
             },
         },
         {
@@ -318,10 +327,10 @@ def _group_commands() -> list[dict[str, Any]]:
             "props": {
                 "name": GROUP_CHILD_NAME,
                 "geometry": "rect",
-                "x": "210pt",
-                "y": "210pt",
-                "width": "80pt",
-                "height": "40pt",
+                "x": f"{GROUP_CHILD_BOX_PT[0]}pt",
+                "y": f"{GROUP_CHILD_BOX_PT[1]}pt",
+                "width": f"{GROUP_CHILD_BOX_PT[2]}pt",
+                "height": f"{GROUP_CHILD_BOX_PT[3]}pt",
                 "fill": "#CC3366",
                 "line": "none",
             },
@@ -332,10 +341,10 @@ def _group_commands() -> list[dict[str, Any]]:
             "type": "connector",
             "props": {
                 "name": GROUP_CONNECTOR_NAME,
-                "x": "210pt",
-                "y": "260pt",
-                "width": "80pt",
-                "height": "40pt",
+                "x": f"{GROUP_CONNECTOR_BOX_PT[0]}pt",
+                "y": f"{GROUP_CONNECTOR_BOX_PT[1]}pt",
+                "width": f"{GROUP_CONNECTOR_BOX_PT[2]}pt",
+                "height": f"{GROUP_CONNECTOR_BOX_PT[3]}pt",
                 "line": "#222222",
             },
         },
@@ -457,8 +466,11 @@ def blocked_run(
 ) -> tuple[ProjectionBlockedError, Path]:
     """The group page: a container with no representation of its own is blocking.
 
-    The failure carries the ledger, so the ownership facts of a page the run
-    refused to publish are still auditable through the seam.
+    Its children sit outside its rectangle and nothing declares a child space
+    that could bring them inside, so the measured reconstruction fails and the
+    run publishes nothing.  The failure carries the ledger, so the ownership
+    facts of a page the run refused to publish are still auditable through the
+    seam.
     """
     directory = tmp_path_factory.mktemp("v042-group")
     target = directory / "group.html"
@@ -1304,12 +1316,17 @@ def test_group_owned_children_are_not_emitted_as_top_level_objects(
 def test_a_container_without_a_representation_blocks_the_run(
     blocked_run: tuple[ProjectionBlockedError, Path],
 ) -> None:
-    """The container's own failure is a blocking diagnostic, not a silent skip."""
+    """The container's own failure is a blocking diagnostic, not a silent skip.
+
+    The fixture's children cannot be placed inside its rectangle under any
+    reading of the source, so the container carries the container-specific
+    reason rather than the generic isolation failure.
+    """
     error, target = blocked_run
     assert error.code == "projection_blocked"
     container = next(entry for entry in error.ledger if entry.source_kind == "group")
     assert container.disposition == DISPOSITION_UNSUPPORTED
-    assert container.reason_code == "proxy_isolation_unavailable"
+    assert container.reason_code == "container_child_space_unreconciled"
     # It keeps an identity in the workbench so the failure is reviewable, but it
     # is not part of what the run claims to have emitted.
     assert container.html_id is not None
@@ -1318,7 +1335,7 @@ def test_a_container_without_a_representation_blocks_the_run(
     blocking = [item for item in error.diagnostics if item.blocking]
     assert blocking
     assert {item.code for item in blocking} == {
-        "proxy_isolation_unavailable",
+        "container_child_space_unreconciled",
         "unsupported_source_object",
     }
     assert all(item.source_key == "src1" for item in blocking)

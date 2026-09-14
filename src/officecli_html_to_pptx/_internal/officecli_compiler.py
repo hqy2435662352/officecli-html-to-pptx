@@ -1533,6 +1533,26 @@ def _border_radius(element: dict[str, Any]) -> float:
     return max(0.0, float(match.group(0))) if match else 0.0
 
 
+# The preset geometries the Canonical Author shape surface carries as PowerPoint
+# presets rather than inferring from CSS.  A block box is a rect and a
+# border-radius is a roundRect; an ellipse and a right arrow cannot be inferred
+# that way, so an emitted object declares the preset it must be rebuilt as and
+# the declaration wins over the CSS inference.
+DECLARED_SHAPE_GEOMETRIES = frozenset({"ellipse", "rightArrow"})
+
+
+def _declared_shape_geometry(element: dict[str, Any]) -> str | None:
+    value = str(element.get("shapeGeometry", "") or "").strip()
+    return value if value in DECLARED_SHAPE_GEOMETRIES else None
+
+
+def _shape_geometry(element: dict[str, Any]) -> str:
+    declared = _declared_shape_geometry(element)
+    if declared is not None:
+        return declared
+    return "roundRect" if _border_radius(element) > 0 else "rect"
+
+
 def _line_spacing(
     element: dict[str, Any],
     *,
@@ -1758,7 +1778,7 @@ def _shape_props(
     backdrop: tuple[int, int, int],
 ) -> dict[str, str]:
     props = _text_props(element, bounds, scale_x, scale_y, backdrop)
-    props["geometry"] = "roundRect" if _border_radius(element) > 0 else "rect"
+    props["geometry"] = _shape_geometry(element)
 
     fill = _parse_css_color(element.get("backgroundColor"))
     if fill:
@@ -1784,7 +1804,10 @@ def _shape_props(
 
     radius = _border_radius(element)
     min_size = min(_number(element.get("width")), _number(element.get("height")))
-    if radius > 0 and min_size > 0:
+    # An adjust handle is the rounded rectangle's corner radius; another preset
+    # carries its own geometry and would reject or misread one, so it is only
+    # written when the object really lowers to a roundRect.
+    if radius > 0 and min_size > 0 and _shape_geometry(element) == "roundRect":
         adjustment = min(50000, round(radius / min_size * 100000))
         props["adj"] = f"adj:val {adjustment}"
     return props
@@ -2588,6 +2611,12 @@ def _lower_slide(
             and left_border is not None
         )
         has_shape = fill is not None or (border is not None and border_width > 0)
+        if _declared_shape_geometry(element) is not None:
+            # An object that names its own preset geometry is an explicit
+            # PowerPoint shape even when its fill and outline are both absent,
+            # exactly as an OfficeHTML slide-owned shape is: dropping it would
+            # silently lose a source object from the rebuilt deck.
+            has_shape = True
         if profile == "officehtml" and not text and not has_shape:
             # A slide-owned OfficeHTML shape is an explicit PowerPoint object
             # even when its fill is transparent and its text body is empty.

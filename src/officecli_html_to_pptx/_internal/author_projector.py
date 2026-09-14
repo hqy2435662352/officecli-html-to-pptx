@@ -60,6 +60,7 @@ import tempfile
 from typing import Any, Iterable, Mapping, Sequence
 
 from .pptx_reader import (
+    ADMITTED_PRESET_GEOMETRIES,
     ALIGNMENT_DEFAULT,
     CANONICAL_GEOMETRIES,
     CONTAINER_KINDS,
@@ -70,10 +71,14 @@ from .pptx_reader import (
     CapturedPresentation,
     CapturedSlide,
     CapturedTable,
+    ContainerMember,
+    ContainerPlacement,
+    ContainerReconciliationError,
     IsolatedRenderer,
     MissingSlideError,
     PptxReadError,
     capture_presentation,
+    container_placements,
 )
 from ..contract import check_contract
 
@@ -143,6 +148,12 @@ REASON_PROXY_ASSETS_UNAVAILABLE = "proxy_assets_unavailable"
 REASON_PROXY_ISOLATION_UNAVAILABLE = "proxy_isolation_unavailable"
 REASON_CONTAINER_OWNED = "container_owned_object"
 REASON_CONTAINER_REPRESENTATION_UNAVAILABLE = "container_representation_unavailable"
+# A container whose children cannot be represented inside its own rectangle:
+# neither the declared group transform nor OfficeCLI's own reported rectangles
+# puts visible paint there, or the container owns a nested container or an
+# object with no reconstruction path.  The container is reported with this code
+# rather than represented by a fabricated proxy.
+REASON_CONTAINER_CHILD_SPACE_UNRECONCILED = "container_child_space_unreconciled"
 
 REASON_CODES = frozenset(
     {
@@ -166,6 +177,7 @@ REASON_CODES = frozenset(
         REASON_PROXY_ISOLATION_UNAVAILABLE,
         REASON_CONTAINER_OWNED,
         REASON_CONTAINER_REPRESENTATION_UNAVAILABLE,
+        REASON_CONTAINER_CHILD_SPACE_UNRECONCILED,
     }
 )
 
@@ -819,6 +831,48 @@ def _round_rect_radius_px(obj: CapturedObject, pixels_per_point: float) -> float
     return round(min(width_px, height_px) * 0.16667, 4)
 
 
+def _declared_geometry(obj: CapturedObject) -> str | None:
+    """Return the preset geometry the emitted object must declare, if any.
+
+    A rect is a block box and a roundRect is its ``border-radius``, so the shape
+    lowering path can infer both from CSS.  An ellipse and a rightArrow cannot
+    be inferred that way, so the emitted object names the preset it must be
+    rebuilt as.  ``rect`` and ``roundRect`` declare nothing, which keeps their
+    emitted HTML exactly what V0.4.1 published.
+    """
+    if obj.geometry in ADMITTED_PRESET_GEOMETRIES:
+        return obj.geometry
+    return None
+
+
+def _fill_alpha(obj: CapturedObject) -> float:
+    """Return the opacity a shape's fill really paints at.
+
+    OfficeCLI reports one fill opacity through two spellings at once -- the
+    alpha byte of the fill token (``#D9666680``) and the object's own
+    ``opacity`` -- so the value is the smaller of the two readings, never their
+    product: multiplying them would rebuild a 50% shape at 25%.
+    """
+    return min(obj.fill_alpha, obj.opacity)
+
+
+def _alpha_color(color: str, alpha: float) -> str:
+    """Return ``color`` as a CSS colour carrying ``alpha``.
+
+    The canonical shape surface declares a fill and an outline as CSS colours,
+    and CSS rgba is what makes a PowerPoint alpha value survive the lowering:
+    the compiler reads the alpha back out of the computed colour.  A fully
+    opaque value keeps the plain six-digit form.
+    """
+    if alpha >= 0.999:
+        return color
+    raw = color.lstrip("#")
+    if len(raw) != 6:
+        return color
+    red, green, blue = (int(raw[index : index + 2], 16) for index in (0, 2, 4))
+    return f"rgba({red}, {green}, {blue}, {max(0.0, min(1.0, alpha)):.4f})"
+
+
 def _font_stack(family: str) -> str:
     """Return a deterministic CSS font stack for a PowerPoint typeface."""
     name = family.strip()
@@ -1182,11 +1236,13 @@ def _classify(
                 ("geometry",),
                 REASON_GEOMETRY_NOT_CANONICAL,
             )
-        if abs(obj.rotation_deg) > 0.01:
+        if obj.mirrored or (
+            abs(obj.rotation_deg) > 0.01
+            and obj.geometry not in ADMITTED_PRESET_GEOMETRIES
+        ):
             return (
                 DISPOSITION_LOCKED,
-                "A rotated object's native transform is not part of the "
-                "canonical Author object surface.",
+                _transform_reason(obj),
                 ("rotation",),
                 REASON_ROTATION_UNSUPPORTED,
             )
@@ -1222,6 +1278,26 @@ def _classify(
         "object mapping.",
         (),
         REASON_KIND_UNMAPPED,
+    )
+
+
+def _transform_reason(obj: CapturedObject) -> str:
+    """Return why an object's own transform keeps it off the canonical surface.
+
+    The canonical Author object surface carries exactly one transform: an
+    in-plane rotation, as ``transform: rotate(<deg>)``.  A mirror is not a
+    rotation, so no rotation reproduces it; and a preset whose transform this
+    slice does not admit keeps the V0.4.1 refusal and its wording.
+    """
+    if obj.mirrored:
+        return (
+            "A mirrored object's native transform is not part of the canonical "
+            "Author object surface: the surface carries an in-plane rotation and "
+            "no mirror."
+        )
+    return (
+        "A rotated object's native transform is not part of the "
+        "canonical Author object surface."
     )
 
 
@@ -1453,14 +1529,24 @@ def _emit_shape_html(
     if obj.has_text:
         declarations.append(("white-space", "pre"))
     if obj.fill:
-        declarations.append(("background-color", obj.fill))
+        # A PowerPoint alpha is the fill's own opacity, and the canvas has to
+        # carry it or a semi-transparent shape would be rebuilt opaque.
+        declarations.append(
+            ("background-color", _alpha_color(obj.fill, _fill_alpha(obj)))
+        )
     if obj.line_color and obj.line_width_pt > 0:
         width_px = _px(obj.line_width_pt, pixels_per_point)
-        declarations.append(("border", f"{width_px:g}px solid {obj.line_color}"))
+        line_color = _alpha_color(obj.line_color, obj.line_alpha)
+        declarations.append(("border", f"{width_px:g}px solid {line_color}"))
     if obj.geometry == "roundRect":
         declarations.append(
             ("border-radius", f"{_round_rect_radius_px(obj, pixels_per_point):g}px")
         )
+    elif obj.geometry == "ellipse":
+        # The preset itself is declared on the element; the radius is what makes
+        # the Author canvas *draw* the ellipse the deck will contain, and CSS
+        # resolves a 50% radius per axis, so a non-square ellipse is one too.
+        declarations.append(("border-radius", "50%"))
     if obj.rotation_deg:
         declarations.append(("transform", f"rotate({obj.rotation_deg:g}deg)"))
     # The shape's own vertical anchor is deliberately not re-created with a
@@ -1519,6 +1605,9 @@ def _emit_shape_html(
     attributes = " ".join(
         f'{name}="{_esc(value, quote=True)}"' for name, value in identity
     )
+    geometry = _declared_geometry(obj)
+    if geometry:
+        attributes += f' data-shape-geometry="{_esc(geometry, quote=True)}"'
     if projected.disposition in {DISPOSITION_LOCKED, DISPOSITION_BASE_ONLY}:
         attributes += ' data-projection-locked="true"'
     if projected.reason:
@@ -2142,9 +2231,21 @@ def _build_projection(
                         )
                         proxy_asset = str(asset.resolve())
                     except (PptxReadError, ProjectionError, OSError, ValueError) as exc:
+                        # A container whose children cannot be placed inside its
+                        # own rectangle under any reading of the source is its
+                        # own source condition, so it carries its own reason code
+                        # instead of the generic isolation failure.
+                        unreconciled = isinstance(
+                            exc, ContainerReconciliationError
+                        )
+                        code = (
+                            REASON_CONTAINER_CHILD_SPACE_UNRECONCILED
+                            if unreconciled
+                            else REASON_PROXY_ISOLATION_UNAVAILABLE
+                        )
                         diagnostics.append(
                             ProjectionDiagnostic(
-                                code=REASON_PROXY_ISOLATION_UNAVAILABLE,
+                                code=code,
                                 severity="warning",
                                 message=(
                                     "No object-local visual representation could be "
@@ -2164,7 +2265,7 @@ def _build_projection(
                             f"{exc} A composited crop is not object-local and is "
                             "never used as a substitute."
                         )
-                        reason_code = REASON_PROXY_ISOLATION_UNAVAILABLE
+                        reason_code = code
                         # The proxy reason is what a reviewer reads, so keep the
                         # explanation instead of clearing it with the proxy.
                         proxy_reason = reason
@@ -2387,6 +2488,10 @@ def _projected_kind(obj: CapturedObject, disposition: str) -> str:
         return PROJECTED_KIND_TABLE
     if disposition in {DISPOSITION_LOCKED, DISPOSITION_BASE_ONLY}:
         return PROJECTED_KIND_IMAGE
+    if _declared_geometry(obj) is not None:
+        # The emitted element names the preset it must be rebuilt as, so it is a
+        # shape whether or not it also carries text -- not a bare textbox.
+        return PROJECTED_KIND_SHAPE
     if obj.has_text and obj.fill is None and (
         obj.line_color is None or obj.line_width_pt <= 0
     ):
@@ -2407,22 +2512,21 @@ def _isolated_proxy(
     fresh deck, so neither a sibling nor the slide's layout and master paint can
     appear in it.  Cropping the composited slide, or culling only the slide's
     siblings from a copy, would both let other paint into the rectangle.
+
+    A paint-less container is the same reconstruction one level down: the fresh
+    deck holds the container's own children, placed by each candidate reading of
+    the source, and the container's rectangle is cropped out of the first
+    candidate whose measured paint actually lands inside it.  A container whose
+    children fit under no reading is reported instead of being published as an
+    invented image.
     """
     import base64
-    import tempfile
+
+    placements, media_paths = _container_placements_for_proxy(obj, destination)
 
     media_path: Path | None = None
     if obj.picture is not None:
-        # OfficeCLI takes a picture source as a path or a data URI; a file keeps
-        # the batch body small and is written outside the source deck.
-        header, _, payload = obj.picture.data_uri.partition(",")
-        suffix = "." + header[5:].split(";", 1)[0].split("/")[-1].replace("+xml", "")
-        handle, name = tempfile.mkstemp(
-            prefix="projection-media-", suffix=suffix, dir=str(destination.parent)
-        )
-        media_path = Path(name)
-        with open(handle, "wb") as stream:
-            stream.write(base64.b64decode(payload))
+        media_path = _extract_media(obj.picture.data_uri, destination.parent)
 
     try:
         asset = renderer.render(
@@ -2435,14 +2539,80 @@ def _isolated_proxy(
             destination=destination,
             media_path=media_path,
             guard_px=PROXY_GUARD_PX,
+            placements=placements,
         )
     finally:
         if media_path is not None:
             media_path.unlink(missing_ok=True)
+        for path in media_paths:
+            path.unlink(missing_ok=True)
     return (
         "data:image/png;base64," + base64.b64encode(asset.read_bytes()).decode("ascii"),
         asset,
     )
+
+
+def _container_placements_for_proxy(
+    obj: CapturedObject,
+    destination: Path,
+) -> tuple[tuple[ContainerPlacement, ...], list[Path]]:
+    """Return every candidate placement of a container's children, with media.
+
+    Only a paint-less container has placements.  The candidates are the
+    container's children under each reading of the source -- its declared group
+    transform, and OfficeCLI's own reported rectangles -- in the order the
+    renderer tries them: the renderer publishes the first whose paint actually
+    lands inside the container's own rectangle, and reports the container with
+    its own reason code when none does.
+
+    A container that owns nothing at all, or reports a degenerate rectangle,
+    declares no placement: it keeps the V0.4.1 outcome and fails in the renderer
+    as a proxy-isolation failure.
+    """
+    if obj.source_kind not in CONTAINER_KINDS:
+        return (), []
+    candidates = container_placements(obj)
+    if candidates.reason is not None:
+        if candidates.unreconciled:
+            raise ContainerReconciliationError(candidates.reason)
+        return (), []
+    import dataclasses
+
+    placements: list[ContainerPlacement] = []
+    media_paths: list[Path] = []
+    try:
+        for candidate in candidates.placements:
+            members: list[ContainerMember] = []
+            for member in candidate.members:
+                if member.picture is not None:
+                    path = _extract_media(member.picture.data_uri, destination.parent)
+                    media_paths.append(path)
+                    member = dataclasses.replace(member, media_path=str(path))
+                members.append(member)
+            placements.append(
+                ContainerPlacement(label=candidate.label, members=tuple(members))
+            )
+    except BaseException:
+        for path in media_paths:
+            path.unlink(missing_ok=True)
+        raise
+    return tuple(placements), media_paths
+
+
+def _extract_media(data_uri: str, directory: Path) -> Path:
+    """Write one embedded picture payload to a file the rebuild can read."""
+    import base64
+    import tempfile
+
+    header, _, payload = data_uri.partition(",")
+    suffix = "." + header[5:].split(";", 1)[0].split("/")[-1].replace("+xml", "")
+    handle, name = tempfile.mkstemp(
+        prefix="projection-media-", suffix=suffix, dir=str(directory)
+    )
+    path = Path(name)
+    with open(handle, "wb") as stream:
+        stream.write(base64.b64decode(payload))
+    return path
 
 
 def _looks_like_path(value: Any) -> bool:
