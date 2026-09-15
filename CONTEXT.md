@@ -411,8 +411,6 @@ The detailed V0.2 planning records are preserved in Git history at the V0.2
 Experimental Pilot baseline. Active architecture decisions are maintained in
 the tracked `docs/adr/` directory.
 
-An earlier Codex-managed worktree exists at `C:\Users\Administrator\.codex\worktrees\742d\html-to-pptx`. It is not the canonical MVP workspace and no planning documents were intentionally published there. It has been left in place to avoid deleting copied untracked files without an explicit cleanup request.
-
 ## Goal agreed in the conversation
 
 The MVP has one precise outcome:
