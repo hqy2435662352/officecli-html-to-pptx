@@ -1839,6 +1839,16 @@ _RECONSTRUCTABLE_MEMBER_KINDS = frozenset(
 # overflow half above and half below the rectangle; the source states ``top`` for
 # a body whose lines run down from the top of its box, and the proxy is otherwise
 # the right paint in the wrong place.
+#
+# ``size`` is the one property here the reconstruction resolves from the
+# *readback* rather than from the slide alone, because its absence is a
+# geometry error rather than a colour one: OfficeCLI's ``add`` paints a body of
+# undeclared size at its own 18pt default, and a source body whose size is
+# resolved from the master or declared per run is then painted at the wrong
+# scale -- measured at 9.0-10.5pt against a reconstruction's 18pt on page 8 of
+# the acceptance corpus.  :func:`painted_text_size` takes the object's own
+# reported value for it, so nothing is invented, and a slide-owned size still
+# wins outright.
 _TEXTUAL_KINDS = frozenset({"shape", "textbox"})
 _TEXT_PROPERTIES = (
     "size",
@@ -1929,6 +1939,10 @@ class ContainerMember:
     bounds_pt: tuple[float, float, float, float]
     properties: Mapping[str, Any] = field(default_factory=dict)
     text: str = ""
+    # The size the member's own runs paint at, when they state one.  A member is
+    # reconstructed by the same rule as a single-object proxy, so it carries the
+    # same evidence for it.
+    painted_size_pt: float = 0.0
     picture: CapturedPicture | None = None
     # The extracted media file a picture member is rebuilt from.  It is written
     # by the caller that owns the proxy work directory, not by the reader.
@@ -2061,6 +2075,7 @@ def _container_member(
         bounds_pt=bounds_pt,
         properties=descendant.opaque_properties,
         text=descendant.text,
+        painted_size_pt=painted_run_size_pt(descendant.paragraphs),
         picture=descendant.picture,
     )
 
@@ -2200,8 +2215,80 @@ def rebuild_keys(object_kind: str) -> tuple[str, ...]:
 _NONE_IS_A_VALUE = frozenset({"autoFit"})
 
 
+def painted_text_size(
+    properties: Mapping[str, Any], painted_size_pt: float = 0.0
+) -> str | None:
+    """Return the size a body's own readback says its text is painted at.
+
+    Only ever consulted for a body the *slide* declares no ``size`` for, and
+    only from values OfficeCLI reported for this object -- never from this
+    projection's opinion of what the size ought to be.
+
+    Two reported values can be that size, and the size a run carries comes
+    first because it is the finer statement of the two:
+
+    * the size the body's **runs** are painted at.  OfficeCLI suppresses the
+      object-level ``size`` whenever its runs disagree about it, so a body of
+      mixed run sizes reports no ``size`` at all and the runs are then the only
+      statement of what is painted.  Measured on page 8 of the acceptance
+      corpus: such a body resolves ``effective.size`` to 18pt from its master
+      while its runs paint 9.0-10.5pt, so a reconstruction built from the
+      object-level value alone paints the text at nearly twice its size.
+    * otherwise the object-level ``effective.size`` -- the value OfficeCLI
+      resolved from the master, layout, or theme for a body whose runs declare
+      nothing.  Measured on page 6: ``/slide[19]/shape[@id=2]`` owns no size,
+      and 18pt is what both its runs and the master resolve to.
+
+    A body that reports neither is left to OfficeCLI's own default, exactly as
+    before: nothing is invented for it.
+    """
+    if painted_size_pt > 0:
+        return f"{painted_size_pt:g}pt"
+    resolved = properties.get("effective.size")
+    if resolved is None:
+        return None
+    text = str(resolved).strip()
+    if not text or text.lower() == "none":
+        return None
+    return text
+
+
+def painted_run_size_pt(paragraphs: Sequence[CapturedParagraph]) -> float:
+    """Return the size a body's own runs paint most of its text at, or ``0``.
+
+    OfficeCLI suppresses the object-level ``size`` when a body's runs disagree
+    about it, so such a body states its painted size only run by run, and a
+    reconstruction states exactly one size for the whole body.  The one that
+    reproduces the body's own layout -- its line breaks, and therefore where its
+    lines end up -- is the size most of its characters are drawn at: measured on
+    page 8 of the acceptance corpus, a cell whose two heading lines are 10.5pt
+    and whose remaining five lines are 9.5pt breaks its last line exactly as the
+    source does only at 9.5pt, and at 10.5pt that line grows by a word and runs
+    under the product picture beside it.
+
+    A tie is resolved to the smaller size, because over-painting a line is what
+    makes a body overflow the crop while under-painting it only makes the line
+    narrower than the source's.
+    """
+    weights: dict[float, int] = {}
+    for paragraph in paragraphs:
+        for run in paragraph.runs:
+            if run.font_size_pt <= 0:
+                continue
+            weights[run.font_size_pt] = (
+                weights.get(run.font_size_pt, 0) + len(run.text)
+            )
+    if not weights:
+        return 0.0
+    return max(weights, key=lambda size: (weights[size], -size))
+
+
 def _add_text_paint(
-    rebuild: dict[str, str], text: Any, properties: Mapping[str, Any]
+    rebuild: dict[str, str],
+    text: Any,
+    properties: Mapping[str, Any],
+    *,
+    painted_size_pt: float = 0.0,
 ) -> None:
     """Add the text that *is* a text-bearing object's paint to its reconstruction.
 
@@ -2210,6 +2297,18 @@ def _add_text_paint(
     never drift into disagreeing about what a text object's visible content is.
     The text properties are set only where the object's own readback supplies
     them, so an inherited value is never invented as if the slide owned it.
+
+    A body the slide declares no ``size`` for is the one exception, and it is
+    not an exception to that rule: the size is still taken from the object's own
+    readback -- see :func:`painted_text_size`.  It has to be, because the size is
+    the one text property whose *absence* changes the reconstruction's geometry
+    rather than only its appearance.  OfficeCLI's ``add`` paints a body of
+    undeclared size at its own default, and where the source's size is resolved
+    from the master or declared per run that default is a different size, so the
+    proxy becomes a picture of text the source does not paint -- and the crop,
+    whose expansion past the declared rectangle is bounded, cuts the difference
+    off at the proxy's own edge.  Carrying the painted size is what makes the
+    reconstruction's layout the source's layout.
 
     ``none`` is a real value for ``autoFit`` -- it is the source saying the box
     does *not* fit its text -- so where a reconstruction carries the authored
@@ -2229,6 +2328,10 @@ def _add_text_paint(
         if property_text.lower() == "none" and key not in _NONE_IS_A_VALUE:
             continue
         rebuild.setdefault(key, property_text)
+    if "size" not in rebuild:
+        painted = painted_text_size(properties, painted_size_pt)
+        if painted is not None:
+            rebuild["size"] = painted
     # The body is asked to fit the object's own rectangle: see ``_PROXY_AUTOFIT``.
     rebuild["autoFit"] = _PROXY_AUTOFIT
 
@@ -2337,6 +2440,7 @@ class IsolatedRenderer:
         guard_px: int = 2,
         placements: Sequence[ContainerPlacement] = (),
         text: str = "",
+        painted_size_pt: float = 0.0,
     ) -> tuple[Path, ProxyGeometry]:
         """Rebuild ``source_object`` alone and crop it to what it paints.
 
@@ -2345,7 +2449,9 @@ class IsolatedRenderer:
         payload when the object is a picture.  All three come from the same read
         that produced ``bounds_pt``.  ``text`` is passed separately because
         OfficeCLI reports an object's text as its own field rather than as one of
-        its ``format`` properties.
+        its ``format`` properties.  ``painted_size_pt`` is the size the object's
+        own runs paint at, for a body the slide declares no ``size`` for: see
+        :func:`painted_text_size`.
 
         The published image is cropped at the union of the object's declared
         rectangle and its measured painted extent, so a no-autofit line that
@@ -2423,6 +2529,7 @@ class IsolatedRenderer:
                                     object_kind, bounds_pt, properties,
                                     media_path=media_path,
                                     text=text,
+                                    painted_size_pt=painted_size_pt,
                                 ),
                             )
                         ]
@@ -2629,6 +2736,7 @@ class IsolatedRenderer:
         *,
         media_path: str | Path | None,
         text: str = "",
+        painted_size_pt: float = 0.0,
     ) -> dict[str, str]:
         """Return the OfficeCLI ``add`` props that reproduce the object's paint.
 
@@ -2682,7 +2790,9 @@ class IsolatedRenderer:
             if stroke is not None:
                 rebuild["line"] = stroke
         if object_kind in _TEXTUAL_KINDS:
-            _add_text_paint(rebuild, text, properties)
+            _add_text_paint(
+                rebuild, text, properties, painted_size_pt=painted_size_pt
+            )
         if object_kind == "picture":
             if not media_path:
                 raise ObjectIsolationError(
@@ -2734,7 +2844,12 @@ class IsolatedRenderer:
             if stroke is not None:
                 rebuild["line"] = stroke
         if member.source_kind in _TEXTUAL_KINDS:
-            _add_text_paint(rebuild, member.text, properties)
+            _add_text_paint(
+                rebuild,
+                member.text,
+                properties,
+                painted_size_pt=member.painted_size_pt,
+            )
         if member.source_kind == "picture":
             if not member.media_path:
                 raise ObjectIsolationError(
@@ -3134,6 +3249,8 @@ __all__ = [
     "map_child_bounds",
     "nested_pictures",
     "officecli_version",
+    "painted_run_size_pt",
+    "painted_text_size",
     "parse_color",
     "points_to_emu",
     "rebuild_keys",

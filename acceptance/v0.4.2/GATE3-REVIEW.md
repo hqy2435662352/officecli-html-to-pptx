@@ -1,90 +1,93 @@
 # Gate 3 — independent primary-agent visual review (V0.4.2 acceptance)
 
-Status: **NOT COMPLETE — re-acceptance required.**
-Reviewer: primary agent. Evidence bundle reviewed: `acceptance/v0.4.2/` as published
-at commit `d5fc98d` (rebuilt deck `gate/rebuilt.pptx`, renders under `visual/`).
+Status: **COMPLETE — PASS_WITH_FINDINGS.**
+Reviewer: primary agent (not the implementing subagents).
+Evidence bundle: `acceptance/v0.4.2/`, regenerated from the final code.
 
-The machine gate returned `PASS_WITH_FINDINGS` with 0 material deltas. Gate 3 does
-**not** agree. This file records what the independent visual review found and what
-must happen before the V0.4.2 acceptance can be claimed.
+The machine gate returned `PASS_WITH_FINDINGS` with 0 material deltas and 0
+blocking diagnostics, which on its own is not acceptance. This review is the
+independent gate the spec requires, and it is the reason the bundle published
+earlier could not be accepted.
 
 ## Method
 
-Each of the ten pages was inspected as a before/after pair at the same
-1280x720 render size, produced by the same OfficeCLI screenshot pipeline. A page
-was failed when content present in the source page is absent, duplicated, or
-misplaced in the rebuilt page. Visual review is an independent gate by the spec's
-own decision; it is not a pixel-similarity threshold.
+Every page was read as a before/after pair rendered at the same size by the same
+OfficeCLI screenshot pipeline, with zoomed crops and pixel-level measurements of
+any suspicious region. A page fails when content visible in the source is absent,
+duplicated, clipped or misplaced in the rebuilt page, and also when text is
+corrupted even though every character is still present somewhere.
 
-## Findings
+## Defects found by this review, and their resolution
 
-### Major — page 1 (source page 2): three arrows lost their outline
+The machine gate and an adversarial verification pass both accepted a bundle in
+which all seven of these were live. Each is now fixed except where noted.
 
-`rightArrow` objects `/slide[2]/shape[@id=15]`, `[@id=16]`, `[@id=17]` carry
-`line=#C00000` and no explicit `lineWidth`. The projector required
-`line_width_pt > 0` before emitting a border, so it emitted no stroke at all; the
-rebuilt deck read back `fill=none line=none`. All three arrows were invisible.
+| # | Page | Defect | Resolution |
+|---|---|---|---|
+| F1 | 1 | All three `rightArrow` shapes invisible: a `line` colour declared with no `lineWidth` stroked at zero width | Fixed — `_stroke_width_pt` + `DEFAULT_LINE_WIDTH_PT`; rebuilt arrows read back `line=#C00000 lineWidth=1pt` |
+| F2 | 1, 3 | Text proxies painted a property value instead of the text — the page-1 subtitle painted the literal word `rect`, the page-3 title painted `none` | Fixed — `_rebuild_properties` renamed its shadowing loop variable to `value_text`; same shadowing removed from `_member_properties` |
+| F3 | 3 | A `wrap=False` title was reconstructed with wrapping on and cropped mid-word | Fixed — `wrap` added to `_TEXT_PROPERTIES` |
+| F4 | 4 | Badges appeared to paint over the card headings | **Withdrawn** — the overlap was F2's placeholder text painting inside the badge rectangles. A pixel-level bar-map comparison of the regenerated renders shows badge and heading columns now match the source exactly |
+| F5 | 8, 10 | Text proxies were cropped to the object's declared rectangle, and reconstructed at OfficeCLI's default size rather than the painted size, so overflowing text was sliced | Fixed — proxies cover the measured painted extent, and the reconstruction carries the painted size (`painted_text_size`), `lineSpacing`, `valign` and `autoFit`. Page 8's ten clipped blocks now render complete |
+| F6 | 10 | List markers lost: four list paragraphs rebuilt as four plain lines | Fixed — a list object is emitted as one `<ul>` with one `<li>` per paragraph, `list-style-type` per item and the item's indent |
+| F7 | 10 | A hard break merged into its paragraph: `Hard break probe linesecond visual line` | Fixed — the reader restores `<a:br/>` from the slide part, and paragraphs now join with `<br>` |
 
-**Root cause fixed** in `author_projector._stroke_width_pt` +
-`DEFAULT_LINE_WIDTH_PT`: a declared colour with no declared width now strokes at
-PowerPoint's default 1pt. Re-verified: the rebuilt arrows read back
-`line=#C00000 lineWidth=1pt`, and the re-rendered page shows all three.
+Two acceptance tests had encoded F6 and F7 as expected behaviour
+(`test_the_probe_b_hard_break_is_emitted_and_the_rebuild_merges_it`,
+`test_the_probe_b_list_declaration_is_present_in_the_source_and_absent_from_the_rebuilt_deck`).
+Both were rewritten to assert the correct native structure. That corrects a
+defect in the earlier tests; it does not bless a limit.
 
-### Major — pages 1, 3 and others: text proxies rendered a property value instead of the text
+## Page-by-page result
 
-`IsolatedRenderer._rebuild_properties` reused the name `text` for a loop variable
-holding a property value, so the object's own captured text was overwritten by
-whichever property was read last. The page-1 subtitle proxy
-(`/slide[2]/shape[@id=8]`) rendered the literal word **`rect`**; the page-3 title
-proxy (`/slide[7]/shape[@id=2]`) rendered **`none`**. The caption text the proxy
-exists to preserve was replaced by a placeholder, and the page-3 title was lost.
+| Page | Source page | Gate 3 | Notes |
+|---|---|---|---|
+| 1 | 2 | PASS | Arrows, subtitle and all text restored; three ellipses native; two groups one locked proxy each |
+| 2 | 5 | PASS | Table, cards, flags and pictures faithful |
+| 3 | 7 | PASS | Title restored on one line; 11x6 native table intact |
+| 4 | 12 | PASS | Badges and headings correct; gradient fills carry locked proxies |
+| 5 | 14 | PASS | All three native tables and the reading-guide band faithful |
+| 6 | 19 | PASS | Proxies measured faithful to within 1.5pt against the source's own ink bands |
+| 7 | 25 | PASS | Headline, three year-columns, arrows and product photos faithful |
+| 8 | 30 | PASS | Every product block renders complete after F5 |
+| 9 | probe A | PASS | Overlay wording present exactly once; ellipse and rightArrow native; no raster payload |
+| 10 | probe B | PASS | Bullets, numbering, nesting and the hard break all native; overflow probe covered |
 
-**Root cause fixed** in `pptx_reader._rebuild_properties` (renamed to
-`value_text`, with a comment naming the failure) and the same shadowing removed
-from `_member_properties`. Re-verified on both pages: the proxies now carry the
-real words.
+## Known findings — accepted, not defects
 
-### Major — page 3 (source page 7): wrapped title replaced a no-wrap title
+These are visible in the rebuilt pages and are reported as scope evidence by the
+gate rather than repaired. They are not slide-owned projection loss.
 
-The title is authored with `wrap=False`, so the source paints one line that is
-allowed to overflow its own box. The reconstruction used OfficeCLI's default
-wrapping, re-broke the line, and the cropped proxy showed a clipped fragment.
+- **Inherited master/layout paint is not reconstructed.** The `AIR CONDITIONER`
+  band, the `COMFORT | RELIABILITY | INTELLIGENCE` strip, the TCL mark, the
+  Olympic rings and the page numbers come from the master and layout and are
+  absent from every rebuilt page. The spec places master/layout/theme
+  reconstruction explicitly out of scope; the omission is recorded per page as
+  `slide_field_not_evaluated` scope evidence and as `inherited_paint_omission`.
+- **Source-inherent overflow is retained.** 29 `text_overflow` findings and 2
+  `table_cell_whitespace_placement` findings exist in the source pages and are
+  listed as retained findings. The rebuilt-minus-source material issue set is
+  empty, so none of them is a regression and none is counted as repaired.
+- **Up to ~10% residual on mixed-size heading lines.** A reconstruction carries
+  one body-level size, so a body whose runs declare several sizes can render its
+  heading line slightly smaller than the source. Measured at ≤10% on the affected
+  page-8 headings, with the body's last line landing within 0.75pt of the
+  source's. Exact per-run fidelity would need a per-paragraph reconstruction.
+- **Run-level bold can be lost the same way.** Where runs disagree on bold, the
+  reconstruction cannot carry one body-level value, so some heading lines render
+  lighter than the source. Cosmetic.
+- **Nested list items keep their indent but not their `lvl`.** The declared list
+  surface is top-level only (`LIST_LEVELS = (0,)`), so a nested item is indented
+  but not marked as a deeper level.
 
-**Root cause fixed**: `wrap` is now among `_TEXT_PROPERTIES`, so the
-reconstruction keeps the object's own wrap setting. Re-verified: the proxy paints
-the full title on one line.
+## Verdict
 
-### Major — page 4 (source page 12): number badges overlap the card titles
+`PASS_WITH_FINDINGS`. Ten of ten pages projected, `unsupported=0`,
+`unresolved=0`, zero material deltas, all proxy isolation proofs passed, the
+unchanged `author` Contract passes, and no page carries a major projection
+defect. The known findings above are scope evidence and residuals, all recorded
+in the bundle rather than waived.
 
-The rebuilt page paints the red number badges (`1`, `2`, `4`) on top of the card
-headings, so "Key Meeting Takeaways" renders as "1ey Meeting Takeaways" and the
-badge covers the first character. The source page places each badge clear of its
-heading. This is a layout/z-order corruption of the kind criterion 16 names.
-
-**Not yet fixed.**
-
-### Not yet reviewed
-
-Pages 5–10 were not reached in this pass; the review stopped once the page-1
-defect showed the earlier machine-only evidence could not be trusted for these
-pages. They remain **unreviewed**, not passed.
-
-## Consequence
-
-The published `acceptance-report.md` is **superseded**. Its `PASS_WITH_FINDINGS`
-verdict and its "zero major projection defects" criterion are not supported: the
-bundle it describes was produced by code with the three root causes above, and at
-least one page-level defect (page 4) is still open.
-
-The evidence bundle must be regenerated from the fixed code, the corpus re-gated,
-and this review completed page by page before the acceptance outcome is restated.
-
-## What this says about the machine gate
-
-The delta gate and its adversarial verification both passed this corpus while
-three content-destroying defects were live. The gate checks that objects exist,
-that mapped text matches, that tables keep their shape and that proxies are
-isolated — none of which notices a proxy that paints the wrong words or an
-outline that strokes at zero width. The spec already treats visual review as a
-mandatory independent gate for exactly this reason; this review is the evidence
-that it is load-bearing rather than ceremonial.
+No waiver was widened and no tolerance was relaxed to reach this verdict: the
+seven defects above were repaired, and two tests that had documented two of them
+as expected behaviour were corrected.

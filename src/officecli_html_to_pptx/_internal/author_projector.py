@@ -80,6 +80,7 @@ from .pptx_reader import (
     ProxyGeometry,
     capture_presentation,
     container_placements,
+    painted_run_size_pt,
 )
 from ..contract import check_contract
 
@@ -2790,6 +2791,7 @@ def _isolated_proxy(
             guard_px=PROXY_GUARD_PX,
             placements=placements,
             text=obj.text,
+            painted_size_pt=painted_run_size_pt(obj.paragraphs),
         )
     finally:
         if media_path is not None:

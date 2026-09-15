@@ -4,7 +4,7 @@ Authoritative acceptance of the V0.4.2 representative-projection slice (ticket #
 
 ## 1. Verdict and its evidence basis
 
-**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 478.8s.
+**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 555.0s.
 
 The verdict is the gate's own derived outcome. It is *not* inferred from a process exit code, from the Author Contract status, from OfficeCLI validation, or from the screenshots below. The evidence set that produced it is:
 
@@ -192,7 +192,7 @@ The complete set is `gate/scope-evidence.json`. A representative record of each 
 | `slide-008-picture-029` | `/slide[30]/connector[@id=11]` | locked-visual-proxy | 4x681 | 1.99911 | 2 | 0.000000 | True |
 | `slide-008-picture-030` | `/slide[30]/connector[@id=15]` | locked-visual-proxy | 4x683 | 2.00088 | 2 | 0.000000 | True |
 | `slide-008-picture-032` | `/slide[30]/shape[@id=22]` | base-only-semantic | 276x207 | 1.99926 | 2 | 0.000000 | True |
-| `slide-008-picture-034` | `/slide[30]/shape[@id=24]` | base-only-semantic | 293x222 | 2.00277 | 2 | 0.051072 | True |
+| `slide-008-picture-034` | `/slide[30]/shape[@id=24]` | base-only-semantic | 293x207 | 2.00277 | 2 | 0.000000 | True |
 | `slide-008-picture-037` | `/slide[30]/shape[@id=28]` | base-only-semantic | 211x207 | 2.00097 | 2 | 0.000000 | True |
 | `slide-008-picture-040` | `/slide[30]/shape[@id=38]` | base-only-semantic | 270x207 | 1.99625 | 2 | 0.000000 | True |
 | `slide-008-picture-042` | `/slide[30]/shape[@id=39]` | base-only-semantic | 118x62 | 1.99825 | 2 | 0.000000 | True |
@@ -258,12 +258,12 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 
 | artifact | sha256 | size |
 |---|---|---|
-| `canonical-author.html` | `6b5d78da274100118530d3409348d25b3f5c4218b9e7fdbda3999515ff74de5c` | 82524729 |
-| `disposition-ledger.json` | `548bf03fc6c0065f6306c0b4e02e5e4446507dc3230150b4c50dd018da4fa972` | 229446 |
+| `canonical-author.html` | `e56dde5f9ea5a7d147dff4b9ff2318eecc1f6d9cf0da6db0766e94310c031eaa` | 82466165 |
+| `disposition-ledger.json` | `98689a0679988a9206930614a0fb9af7e21fe5dd172dd9a00e07bd5704a9bbd5` | 229446 |
 | `material-deltas.json` | `d4990d01e9de41f6d7bce97cb1d079aff18ce0c5fc576a2117e92b9b1cfd5d3a` | 31 |
-| `pages.json` | `e1750146c3a9b322b93ae7141952b172610f268746d842672d0aa1756fb7a454` | 353045 |
-| `projection/canonical-author.html` | `6b5d78da274100118530d3409348d25b3f5c4218b9e7fdbda3999515ff74de5c` | 82524729 |
-| `projection/projection-report.json` | `bf445f114813e44b2c4d9f94768ba66b5d777b24072a666312a14383ab7fe640` | 620117 |
+| `pages.json` | `e69cdc60675dc9d43f5fe0230b93c1541e37db0fb0ca56a06e7011a96ecd93ae` | 353033 |
+| `projection/canonical-author.html` | `e56dde5f9ea5a7d147dff4b9ff2318eecc1f6d9cf0da6db0766e94310c031eaa` | 82466165 |
+| `projection/projection-report.json` | `1f1604534466d59d13c699b53c0dcc2bc306069c3c65085434288e98284c1092` | 620117 |
 | `projection/proxy-src1-slide-002-007.png` | `a46d3062d6aac0d510a4b4d9d195bf7a4252a16593a6b7aa6969258df227384d` | 426 |
 | `projection/proxy-src1-slide-002-010.png` | `a46d3062d6aac0d510a4b4d9d195bf7a4252a16593a6b7aa6969258df227384d` | 426 |
 | `projection/proxy-src1-slide-002-028.png` | `1ffcd35808112b4cc26a51e24e5d3680be918843ac2ee2cd6dd1d1e7e7c008d0` | 13212 |
@@ -281,23 +281,23 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `projection/proxy-src1-slide-030-011.png` | `398cc0ba8a4898080f55cc0f11c963270e0714419cda6afd3c97d119594175f2` | 1036 |
 | `projection/proxy-src1-slide-030-012.png` | `1d62bf44a02b13eb02edf3b139383e1ffcbf7db1930a794261b9b555c592405c` | 1238 |
 | `projection/proxy-src1-slide-030-013.png` | `8c23f0cd3cfbea17a387cfcba83c4755179d36e1638a4365c364f91c68e92604` | 1168 |
-| `projection/proxy-src1-slide-030-018.png` | `fdb49e7722d97a21ec92d2d270096aa044572c59d98eef2938b6c5e94a5a0b04` | 8850 |
-| `projection/proxy-src1-slide-030-022.png` | `2270387b528a070080b3cfeb83f24198f508f9fc20d21eb91006412c674bd2b3` | 10129 |
+| `projection/proxy-src1-slide-030-018.png` | `584c9ea1a1f64484a927463eb79ddd08d1f6be0a3e5eeb2d5540895ab52beae2` | 4973 |
+| `projection/proxy-src1-slide-030-022.png` | `38e9cc8c7b760e73a0a2e8d6300a1703c7753c895abce8a7e6708a45035c71cc` | 4592 |
 | `projection/proxy-src1-slide-030-024.png` | `39cc36e7e8b75d1cb9d4bc6d6d3a856c080b1d27e87abe58f0a880db817b041a` | 6006 |
-| `projection/proxy-src1-slide-030-027.png` | `d2e20b07cba6aae3c1eb74756de95c573525701e4bf9351fe7c9bf25fae0fe1b` | 9191 |
+| `projection/proxy-src1-slide-030-027.png` | `41b5fd1e238eec442412b3de58ed86732fac22c97431a277f2d6e33a41429a07` | 4849 |
 | `projection/proxy-src1-slide-030-028.png` | `9444c4806e916d63676318d8ae5af403e594f07e6bae8e49cd9f51368ccc8235` | 200 |
 | `projection/proxy-src1-slide-030-029.png` | `134a8c24f521660915a1f2f0ccfb90871ecdf7b1b8056b78d89a548de94e5b3b` | 213 |
 | `projection/proxy-src1-slide-030-030.png` | `2bb676834cab308c9b3c7d49f92bf875386a8b051564401e87cadac8e007a6d7` | 205 |
-| `projection/proxy-src1-slide-030-032.png` | `7d10baf203c04040e40f4fb62a5a04bb26573b7ca6ca3b84e645092d7c8d6c64` | 6526 |
-| `projection/proxy-src1-slide-030-034.png` | `658b9283ac1431e9dacb49ddc9a113a1f46fd651c67b6ff3915dcf120dc3767c` | 10572 |
-| `projection/proxy-src1-slide-030-037.png` | `d00975c3a1bd1c256d8cd5ca52314c284c02c18127bb869b9e6bfb361ef930a0` | 6048 |
-| `projection/proxy-src1-slide-030-040.png` | `1b9a48f9702227454b293d05ae2830dfaec2814e682a3bd7f298a21d102b4047` | 9219 |
+| `projection/proxy-src1-slide-030-032.png` | `9230ac0d5de0a5289eb4a96bf580768c787b07f276d09c35dd3fffb222d8caa0` | 4835 |
+| `projection/proxy-src1-slide-030-034.png` | `3e1ef9301eb569ab4cc023c1532e6fc0540bf4e932d2bab88312ce2eb5546e06` | 3285 |
+| `projection/proxy-src1-slide-030-037.png` | `8aa5e908e23a1799633a7249e7530157f0d27007f1621547d5786ab9319018d6` | 3506 |
+| `projection/proxy-src1-slide-030-040.png` | `02d6116c4456194244eb0519cf5295c836a91807db65276c0a96e7b552050ac4` | 3540 |
 | `projection/proxy-src1-slide-030-042.png` | `2c2d21d20957a75c2f109de59ad57d3f1ba715ef47a473c61387d3a4258df9a8` | 494 |
 | `projection/proxy-src1-slide-030-043.png` | `6de1dd533a0dab08f00e199f523c88e61d7fa0afad23bdc0d87dfee162399c68` | 497 |
-| `projection/proxy-src1-slide-030-044.png` | `a2ccfee11c242a4cf4ddf6ecaeade56d6a911155570b7049b3c6c524b2b23768` | 8305 |
-| `projection/proxy-src1-slide-030-045.png` | `d35112026babd9ac68f8b0bf8eafc7b8452bcd7068fe069ef31292c735f32cd2` | 6951 |
+| `projection/proxy-src1-slide-030-044.png` | `55624e4086c97ce2774b0ff7c8c2fa7e39e1b156da17e9b55df1f78d2fed6f99` | 3596 |
+| `projection/proxy-src1-slide-030-045.png` | `b9caf06d23dcbcbba17a7e29dc87335df6355021b78b62cc64039582cd069635` | 3548 |
 | `projection/proxy-src1-slide-030-048.png` | `b3c23ec655d91cb1ab1e1769d86f1740073a8ac4bf7c59eb4bee9482a58d94f2` | 205 |
-| `projection/proxy-src1-slide-030-050.png` | `f8e16e3f22a645f560d30122552f43f4a6f72763f9bc39b80c2c0717b105fd90` | 11456 |
+| `projection/proxy-src1-slide-030-050.png` | `be1c7802b035dccd24e6a84a20ce84371c2ab829a94625db02eafafd02f40016` | 6600 |
 | `projection/proxy-src1-slide-030-052.png` | `95db3ef2b5551f4a564c2725b997e96a675df2519569b9a02fe9b7873c395a2e` | 494 |
 | `projection/proxy-src1-slide-030-053.png` | `af0c6035da0bc5eeaea187f30b78daa6f9ec903acd50a1ab76bd08ad14835708` | 261 |
 | `projection/proxy-src1-slide-030-054.png` | `3cc5a273124636cb27ad705bbfcca2a0c9338ebdfda71ba605d6f34db2b9723c` | 297 |
@@ -305,8 +305,8 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `projection/proxy-src1-slide-030-056.png` | `53140e20c9407e985c070276d1d9cf726aeffc1714681d49ac6537511552ca01` | 4624 |
 | `projection/proxy-src3-slide-001-004.png` | `49c4fa98d502e99fc0920a31d5862fabbb5a9c0732e7918f85d0d4be8f53fa90` | 7905 |
 | `projection/proxy-src3-slide-001-009.png` | `992fee4860fa846f6cbeaf7e4df07e13b5953222625577936c3915f1ffb7d29a` | 2278 |
-| `projection/source-map.json` | `e435ed6043ffae46871d636bd6aab6da92e93144eb3b5ca9bbbe861c1213c0ac` | 567348 |
-| `projection-report.json` | `bf445f114813e44b2c4d9f94768ba66b5d777b24072a666312a14383ab7fe640` | 620117 |
+| `projection/source-map.json` | `de5913db2da3672a60c80da056ab3769844028e62e9d83c9b3e9e94c83a1f583` | 567348 |
+| `projection-report.json` | `1f1604534466d59d13c699b53c0dcc2bc306069c3c65085434288e98284c1092` | 620117 |
 | `proxies/proxy-src1-slide-002-007.png` | `a46d3062d6aac0d510a4b4d9d195bf7a4252a16593a6b7aa6969258df227384d` | 426 |
 | `proxies/proxy-src1-slide-002-010.png` | `a46d3062d6aac0d510a4b4d9d195bf7a4252a16593a6b7aa6969258df227384d` | 426 |
 | `proxies/proxy-src1-slide-002-028.png` | `1ffcd35808112b4cc26a51e24e5d3680be918843ac2ee2cd6dd1d1e7e7c008d0` | 13212 |
@@ -324,23 +324,23 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `proxies/proxy-src1-slide-030-011.png` | `398cc0ba8a4898080f55cc0f11c963270e0714419cda6afd3c97d119594175f2` | 1036 |
 | `proxies/proxy-src1-slide-030-012.png` | `1d62bf44a02b13eb02edf3b139383e1ffcbf7db1930a794261b9b555c592405c` | 1238 |
 | `proxies/proxy-src1-slide-030-013.png` | `8c23f0cd3cfbea17a387cfcba83c4755179d36e1638a4365c364f91c68e92604` | 1168 |
-| `proxies/proxy-src1-slide-030-018.png` | `fdb49e7722d97a21ec92d2d270096aa044572c59d98eef2938b6c5e94a5a0b04` | 8850 |
-| `proxies/proxy-src1-slide-030-022.png` | `2270387b528a070080b3cfeb83f24198f508f9fc20d21eb91006412c674bd2b3` | 10129 |
+| `proxies/proxy-src1-slide-030-018.png` | `584c9ea1a1f64484a927463eb79ddd08d1f6be0a3e5eeb2d5540895ab52beae2` | 4973 |
+| `proxies/proxy-src1-slide-030-022.png` | `38e9cc8c7b760e73a0a2e8d6300a1703c7753c895abce8a7e6708a45035c71cc` | 4592 |
 | `proxies/proxy-src1-slide-030-024.png` | `39cc36e7e8b75d1cb9d4bc6d6d3a856c080b1d27e87abe58f0a880db817b041a` | 6006 |
-| `proxies/proxy-src1-slide-030-027.png` | `d2e20b07cba6aae3c1eb74756de95c573525701e4bf9351fe7c9bf25fae0fe1b` | 9191 |
+| `proxies/proxy-src1-slide-030-027.png` | `41b5fd1e238eec442412b3de58ed86732fac22c97431a277f2d6e33a41429a07` | 4849 |
 | `proxies/proxy-src1-slide-030-028.png` | `9444c4806e916d63676318d8ae5af403e594f07e6bae8e49cd9f51368ccc8235` | 200 |
 | `proxies/proxy-src1-slide-030-029.png` | `134a8c24f521660915a1f2f0ccfb90871ecdf7b1b8056b78d89a548de94e5b3b` | 213 |
 | `proxies/proxy-src1-slide-030-030.png` | `2bb676834cab308c9b3c7d49f92bf875386a8b051564401e87cadac8e007a6d7` | 205 |
-| `proxies/proxy-src1-slide-030-032.png` | `7d10baf203c04040e40f4fb62a5a04bb26573b7ca6ca3b84e645092d7c8d6c64` | 6526 |
-| `proxies/proxy-src1-slide-030-034.png` | `658b9283ac1431e9dacb49ddc9a113a1f46fd651c67b6ff3915dcf120dc3767c` | 10572 |
-| `proxies/proxy-src1-slide-030-037.png` | `d00975c3a1bd1c256d8cd5ca52314c284c02c18127bb869b9e6bfb361ef930a0` | 6048 |
-| `proxies/proxy-src1-slide-030-040.png` | `1b9a48f9702227454b293d05ae2830dfaec2814e682a3bd7f298a21d102b4047` | 9219 |
+| `proxies/proxy-src1-slide-030-032.png` | `9230ac0d5de0a5289eb4a96bf580768c787b07f276d09c35dd3fffb222d8caa0` | 4835 |
+| `proxies/proxy-src1-slide-030-034.png` | `3e1ef9301eb569ab4cc023c1532e6fc0540bf4e932d2bab88312ce2eb5546e06` | 3285 |
+| `proxies/proxy-src1-slide-030-037.png` | `8aa5e908e23a1799633a7249e7530157f0d27007f1621547d5786ab9319018d6` | 3506 |
+| `proxies/proxy-src1-slide-030-040.png` | `02d6116c4456194244eb0519cf5295c836a91807db65276c0a96e7b552050ac4` | 3540 |
 | `proxies/proxy-src1-slide-030-042.png` | `2c2d21d20957a75c2f109de59ad57d3f1ba715ef47a473c61387d3a4258df9a8` | 494 |
 | `proxies/proxy-src1-slide-030-043.png` | `6de1dd533a0dab08f00e199f523c88e61d7fa0afad23bdc0d87dfee162399c68` | 497 |
-| `proxies/proxy-src1-slide-030-044.png` | `a2ccfee11c242a4cf4ddf6ecaeade56d6a911155570b7049b3c6c524b2b23768` | 8305 |
-| `proxies/proxy-src1-slide-030-045.png` | `d35112026babd9ac68f8b0bf8eafc7b8452bcd7068fe069ef31292c735f32cd2` | 6951 |
+| `proxies/proxy-src1-slide-030-044.png` | `55624e4086c97ce2774b0ff7c8c2fa7e39e1b156da17e9b55df1f78d2fed6f99` | 3596 |
+| `proxies/proxy-src1-slide-030-045.png` | `b9caf06d23dcbcbba17a7e29dc87335df6355021b78b62cc64039582cd069635` | 3548 |
 | `proxies/proxy-src1-slide-030-048.png` | `b3c23ec655d91cb1ab1e1769d86f1740073a8ac4bf7c59eb4bee9482a58d94f2` | 205 |
-| `proxies/proxy-src1-slide-030-050.png` | `f8e16e3f22a645f560d30122552f43f4a6f72763f9bc39b80c2c0717b105fd90` | 11456 |
+| `proxies/proxy-src1-slide-030-050.png` | `be1c7802b035dccd24e6a84a20ce84371c2ab829a94625db02eafafd02f40016` | 6600 |
 | `proxies/proxy-src1-slide-030-052.png` | `95db3ef2b5551f4a564c2725b997e96a675df2519569b9a02fe9b7873c395a2e` | 494 |
 | `proxies/proxy-src1-slide-030-053.png` | `af0c6035da0bc5eeaea187f30b78daa6f9ec903acd50a1ab76bd08ad14835708` | 261 |
 | `proxies/proxy-src1-slide-030-054.png` | `3cc5a273124636cb27ad705bbfcca2a0c9338ebdfda71ba605d6f34db2b9723c` | 297 |
@@ -348,11 +348,11 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `proxies/proxy-src1-slide-030-056.png` | `53140e20c9407e985c070276d1d9cf726aeffc1714681d49ac6537511552ca01` | 4624 |
 | `proxies/proxy-src3-slide-001-004.png` | `49c4fa98d502e99fc0920a31d5862fabbb5a9c0732e7918f85d0d4be8f53fa90` | 7905 |
 | `proxies/proxy-src3-slide-001-009.png` | `992fee4860fa846f6cbeaf7e4df07e13b5953222625577936c3915f1ffb7d29a` | 2278 |
-| `proxy-isolation.json` | `64200da2c1e2de0e939741ddedc653b88df629461f65b87b82132e77fbf4a14b` | 59824 |
-| `rebuilt.pptx` | `299bc6ff3e987f41e282f8b8f692751601f72cb33f785018ce75f8a109768f72` | 60730712 |
+| `proxy-isolation.json` | `c3c380acee9bf20f9d5a3649f93796634b6a6ea99fa8715c7bb7136a89e84ade` | 59812 |
+| `rebuilt.pptx` | `1b5575fab98ccd361f38ea02015fc0dd1ff39442ce81f84db4af2f1345526ed9` | 60686651 |
 | `retained-findings.json` | `af18e085ba7d99cf254968b21164702b0ebdd3a283972bb909689dc20cd0d1fa` | 52305 |
 | `scope-evidence.json` | `390dd962a8ae8bb87fe10212bae9be74292253c46ad411dca5f4b1b6cb488366` | 36073 |
-| `source-map.json` | `e435ed6043ffae46871d636bd6aab6da92e93144eb3b5ca9bbbe861c1213c0ac` | 567348 |
+| `source-map.json` | `de5913db2da3672a60c80da056ab3769844028e62e9d83c9b3e9e94c83a1f583` | 567348 |
 
 `gate/gate-report.json` and `gate/gate-report.md` are excluded from that list because a document cannot contain its own hash; the bundle's `artifact-manifest.json` covers them instead, except for itself.
 
