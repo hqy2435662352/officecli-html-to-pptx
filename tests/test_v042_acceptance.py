@@ -1446,8 +1446,8 @@ def test_the_seam_selection_order_is_the_corpus_order(
     }
     full = corpus.seam_selection(fake, None, None)
     assert [int(item[1]) for item in full] == [page for _, page in corpus.REAL_SELECTION]
-    assert [Path(item[0]).stem for item in full] == [
-        slot for slot, _ in corpus.REAL_SELECTION
+    assert [Path(item[0]).name for item in full] == [
+        f"{slot}.local.pptx" for slot, _ in corpus.REAL_SELECTION
     ]
     whole = corpus.seam_selection(
         fake, synthetic_probes[corpus.PROBE_A_KEY], synthetic_probes[corpus.PROBE_B_KEY]
@@ -1457,9 +1457,10 @@ def test_the_seam_selection_order_is_the_corpus_order(
         1,
         1,
     ]
-    # Eight real selected pages from three decks plus two synthetic probes.
+    # Eight real selected pages from three decks, plus one page from each of the
+    # two synthetic probes: ten pages drawn from five decks in one run.
     assert len(whole) == 10
-    assert len({item[0] for item in whole}) == 4
+    assert len({item[0] for item in whole}) == 3 + 2
 
 
 # ---------------------------------------------------------------------------
