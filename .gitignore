@@ -219,3 +219,13 @@ __marimo__/
 .streamlit/secrets.toml
 _baseline_input.pptx
 _smoke/
+
+# V0.4.2 representative acceptance bundle (acceptance/v0.4.2/).
+# Only the text evidence is committed: the report, the JSON manifests and the
+# gate's JSON documents.  The generated binaries and the visual records are
+# local review artifacts — the rebuilt deck, the Canonical Author HTML, the
+# proxy rasters and the page renders — and stay out of the repository.
+acceptance/v0.4.2/visual/
+acceptance/v0.4.2/gate/
+acceptance/v0.4.2/canonical-author.html
+acceptance/v0.4.2/*.pptx

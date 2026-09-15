@@ -1342,6 +1342,28 @@ def _line_is_none(obj: CapturedObject) -> bool:
     }
 
 
+# The stroke width PowerPoint gives a shape whose line carries a colour but no
+# explicit width.  OfficeCLI reports such a shape's ``line`` colour and simply
+# omits ``lineWidth``, so reading the readback literally would give every one of
+# them a zero-width -- that is, invisible -- stroke, and the rebuilt deck would
+# silently lose the arrow and outline shapes the source deck paints.
+DEFAULT_LINE_WIDTH_PT = 1.0
+
+
+def _stroke_width_pt(obj: CapturedObject) -> float:
+    """Return the width this object's stroke is actually painted at.
+
+    A declared width is used verbatim.  A shape with no declared width but a
+    declared colour strokes at PowerPoint's default, which is what the source
+    deck draws; treating the missing width as zero would drop the stroke.
+    """
+    if obj.line_width_pt > 0:
+        return obj.line_width_pt
+    if obj.line_color and not _line_is_none(obj):
+        return DEFAULT_LINE_WIDTH_PT
+    return 0.0
+
+
 def _requires_proxy(obj: CapturedObject, disposition: str) -> bool:
     """Whether a visible object needs an object-local visual representation."""
     if disposition in {DISPOSITION_LOCKED, DISPOSITION_BASE_ONLY}:
@@ -1553,8 +1575,8 @@ def _emit_shape_html(
         declarations.append(
             ("background-color", _alpha_color(obj.fill, _fill_alpha(obj)))
         )
-    if obj.line_color and obj.line_width_pt > 0:
-        width_px = _px(obj.line_width_pt, pixels_per_point)
+    if obj.line_color and _stroke_width_pt(obj) > 0:
+        width_px = _px(_stroke_width_pt(obj), pixels_per_point)
         line_color = _alpha_color(obj.line_color, obj.line_alpha)
         declarations.append(("border", f"{width_px:g}px solid {line_color}"))
     if obj.geometry == "roundRect":

@@ -1622,9 +1622,13 @@ _RECONSTRUCTABLE_MEMBER_KINDS = frozenset(
 # bare rectangle.  A base-only text object is exactly that case -- its text
 # colour is inherited, which is why it cannot be declared natively, and the
 # inherited colour is not reproducible here, so the proxy carries the object's
-# own text and its slide-owned text properties.
+# own text and its slide-owned text properties.  ``wrap`` is one of them and is
+# load-bearing: a title authored with wrapping off is painted on one line that
+# is allowed to overflow its own box, so reconstructing it with OfficeCLI's
+# default wrapping on would re-break the line and the proxy would then show a
+# clipped fragment of the object instead of the object.
 _TEXTUAL_KINDS = frozenset({"shape", "textbox"})
-_TEXT_PROPERTIES = ("size", "font", "color", "align", "bold", "italic")
+_TEXT_PROPERTIES = ("size", "font", "color", "align", "bold", "italic", "wrap")
 
 
 @dataclass(frozen=True)
@@ -2327,23 +2331,29 @@ class IsolatedRenderer:
             value = properties.get(key)
             if value is None:
                 continue
-            text = str(value).strip()
-            if not text:
+            # ``value`` is the property's own text.  It is deliberately NOT
+            # called ``text``: the object's captured text is a separate argument
+            # of this method, and reusing the name for a property value silently
+            # replaced the object's text with whatever the last property happened
+            # to be -- which is how a text proxy once came out as the word
+            # "rect" instead of the words it was supposed to represent.
+            value_text = str(value).strip()
+            if not value_text:
                 continue
             # ``none`` is a real value for fill and line, but OfficeCLI rejects
             # it for a length or a geometry.
-            if text.lower() == "none" and key not in {"fill", "line"}:
+            if value_text.lower() == "none" and key not in {"fill", "line"}:
                 continue
             if key in {"fill", "line"}:
                 # A non-solid paint (a gradient, say) is named by kind in the
                 # readback and is not a colour OfficeCLI accepts on write, so the
                 # proxy carries the object's representative stop instead.
-                paint = proxy_paint_value(key, text, properties)
+                paint = proxy_paint_value(key, value_text, properties)
                 if paint is None:
                     continue
                 rebuild[key] = paint
                 continue
-            rebuild[key] = text
+            rebuild[key] = value_text
         if object_kind == "connector":
             # The stroke a connector read back as ``color`` is written back as
             # ``line``; without it the rebuilt connector has no paint at all.
