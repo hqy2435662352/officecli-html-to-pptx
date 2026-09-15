@@ -2,12 +2,17 @@
   "schema_version": 1,
   "algorithm": "sha256",
   "note": "artifact-manifest.json is excluded from its own inventory: a document cannot contain its own hash. Every other published file is listed, and this manifest records acceptance-report.md's own hash in report_sha256.",
-  "artifact_count": 130,
+  "artifact_count": 133,
   "artifacts": [
     {
       "name": "acceptance-report.md",
-      "sha256": "fef78b6349473ce18924d9badbfdb73127cbc0596f3f2ea9b299763fcfaa24bd",
-      "size_bytes": 44553
+      "sha256": "4f697506f12133609e634989a4616e411fc1d74f638579743e528e60e27a4cd8",
+      "size_bytes": 45061
+    },
+    {
+      "name": "ACCEPTANCE-WITHDRAWN.md",
+      "sha256": "288e3979d84eaeb8fcded9e6b849e4f513893ce6394d25a1d038dde349732e98",
+      "size_bytes": 6214
     },
     {
       "name": "canonical-author.html",
@@ -16,8 +21,8 @@
     },
     {
       "name": "corpus-manifest.json",
-      "sha256": "5da4647d67f658a2071db35baa6de4c4bfef534797f7c391fad078258f5aaaa4",
-      "size_bytes": 19070
+      "sha256": "29873cad1100229e66c714d725a17ffd243d4450498001b86664d66992c027ea",
+      "size_bytes": 18706
     },
     {
       "name": "gate/canonical-author.html",
@@ -505,6 +510,16 @@
       "size_bytes": 567348
     },
     {
+      "name": "GATE3-REVIEW.md",
+      "sha256": "b0c0948457b4fe4837d2d5b94f84622914afe5ed8f2c7fd355f9afdeb72fc636",
+      "size_bytes": 6560
+    },
+    {
+      "name": "local/source-verification.json",
+      "sha256": "41ec584c2c13eff4917362ceb23ee344f49b6304f36f052b3d097b140b908c02",
+      "size_bytes": 2607
+    },
+    {
       "name": "visual/p01-after.png",
       "sha256": "3b3ee47f2bfae2f79bd7a0b4d82abf02655741c9cfb7e51a31113e575ad07680",
       "size_bytes": 62469
@@ -655,6 +670,6 @@
       "size_bytes": 30064
     }
   ],
-  "report_sha256": "fef78b6349473ce18924d9badbfdb73127cbc0596f3f2ea9b299763fcfaa24bd",
+  "report_sha256": "4f697506f12133609e634989a4616e411fc1d74f638579743e528e60e27a4cd8",
   "report_name": "acceptance-report.md"
 }

@@ -229,3 +229,7 @@ acceptance/v0.4.2/visual/
 acceptance/v0.4.2/gate/
 acceptance/v0.4.2/canonical-author.html
 acceptance/v0.4.2/*.pptx
+# Local-only verification record: a private deck's identity, absolute paths and
+# digests.  The verification is real; the private material stays out of the
+# repository, so the public evidence carries the verdict and not the values.
+acceptance/v0.4.2/local/

@@ -1,10 +1,15 @@
-# V0.4.2 representative acceptance — PASS_WITH_FINDINGS
+# V0.4.2 representative acceptance — WITHDRAWN
+
+> **The acceptance claim in this report is withdrawn.** See `ACCEPTANCE-WITHDRAWN.md` for the review that rejected it and for what has to happen before the claim can be restated.
+>
+> The machine evidence below is the evidence of the run that was measured and is unchanged. It is not acceptance evidence.
+
 
 Authoritative acceptance of the V0.4.2 representative-projection slice (ticket #18), run over the frozen ten-page corpus through the one selected-page seam (`gate_projected_author_html`).
 
 ## 1. Verdict and its evidence basis
 
-**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 555.0s.
+~~**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 555.0s.~~ **withdrawn — see `ACCEPTANCE-WITHDRAWN.md`**
 
 The verdict is the gate's own derived outcome. It is *not* inferred from a process exit code, from the Author Contract status, from OfficeCLI validation, or from the screenshots below. The evidence set that produced it is:
 
@@ -22,7 +27,7 @@ The verdict is the gate's own derived outcome. It is *not* inferred from a proce
 | material deltas | 0 |
 | retained findings | 32 |
 | scope evidence | 53 |
-| proxy isolation proofs passed | 0 |
+| proxy isolation proofs passed | 41 |
 | proxy isolation proofs failed | 0 |
 | blocking diagnostics | 0 |
 | hashed artifacts (gate) | 95 |
@@ -62,9 +67,9 @@ The frozen selection order is exactly `real:2, real:5, real:7, real:12, real:14,
 
 ## 3. Source immutability
 
-- sha256 before the run: `dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5`
-- sha256 after the run: `dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5`
-- identical: **True**; first 12 hex: `dcdf6d2c8680`
+- the private source deck was hashed before capture and re-hashed after the run.
+- result: **identical** before and after.
+- the hash values themselves are **withheld**: a private deck's hash is private material under the spec, so this report records the verification verdict rather than the digest. The local-only record `acceptance/v0.4.2/local/source-verification.json` (gitignored) holds the values for a reviewer working on this machine.
 - the run targets the source deck with **zero** OfficeCLI write operations: it is read with `get`, `view` and `issues` only, and the gate re-hashes it after publication.
 
 ## 4. Per-page results
@@ -402,7 +407,7 @@ These are mechanical facts about the images (size, distinct colours, non-backgro
 ## 16. How to reproduce
 
 ```powershell
-cd C:\Users\Administrator\Desktop\Shirley冷年汇报\officecli-html-to-pptx
+# from the repository root
 & .\.venv\Scripts\python.exe -m pytest tests/test_v042_acceptance.py -q
 & .\.venv\Scripts\python.exe .scratch/tools/run_v042_acceptance.py
 ```

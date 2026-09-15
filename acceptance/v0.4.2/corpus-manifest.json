@@ -25,7 +25,7 @@
       "coverage_purpose": "groups + bound connectors, native ellipse/rightArrow, pictures, text density, repeated cards, source-inherent overflow",
       "scope_note": "The two groups are locked container boundaries: their children and the four connectors they own are represented inside the container proxy and are never emitted again as siblings. The one text overflow is the source's own condition and stays a retained finding.",
       "synthetic": false,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 2,
@@ -37,7 +37,7 @@
       "coverage_purpose": "native table, roundRect, transparent/cropped pictures",
       "scope_note": "Inherited master/layout branding is not reconstructed, so the rebuilt page is painted on a blank layout; that omission is page-level scope evidence, never slide-owned projection loss.",
       "synthetic": false,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 3,
@@ -49,7 +49,7 @@
       "coverage_purpose": "large native table (11x6) with whitespace-placement cell findings",
       "scope_note": "Two table cells differ from the source in whitespace placement only; the condition is retained and reported, never repaired and never counted as a material delta. One shape's text colour is a theme expression, so it is base-only-semantic.",
       "synthetic": false,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 4,
@@ -61,7 +61,7 @@
       "coverage_purpose": "high object density, gradient fills, many source-inherent overflows",
       "scope_note": "This page carries the corpus's highest source-issue count and its gradient fills. Every issue is the source's own; none is introduced by the projection. Gradient-filled objects are not canonical-editable and keep their locked or base-only disposition.",
       "synthetic": false,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 5,
@@ -73,7 +73,7 @@
       "coverage_purpose": "compound/multi-table page",
       "scope_note": "Three native tables on one page exercise per-table identity and independent row/column and cell-text readback.",
       "synthetic": false,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 6,
@@ -85,7 +85,7 @@
       "coverage_purpose": "the most picture-heavy page; source-inherent overflow",
       "scope_note": "Six picture objects exercise the picture surface and the one table exercises native table readback alongside them. The overflow is the source's own condition.",
       "synthetic": false,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 7,
@@ -97,7 +97,7 @@
       "coverage_purpose": "mixed density with a standalone connector",
       "scope_note": "A standalone connector is locked, not reconstructed natively: the current Contract has no editable connector object. It is one locked proxy or one retained finding, never a silently dropped object.",
       "synthetic": false,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 8,
@@ -109,7 +109,7 @@
       "coverage_purpose": "highest object count (57); connector-heavy",
       "scope_note": "The densest page in the corpus. Connector-heavy composition is what exercises the container/locked boundary at scale: every connector has exactly one disposition in the ledger.",
       "synthetic": false,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 9,
@@ -142,56 +142,56 @@
       "page_id": "real:2",
       "source_id": "private-source-deck",
       "source_page": 2,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 2,
       "page_id": "real:5",
       "source_id": "private-source-deck",
       "source_page": 5,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 3,
       "page_id": "real:7",
       "source_id": "private-source-deck",
       "source_page": 7,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 4,
       "page_id": "real:12",
       "source_id": "private-source-deck",
       "source_page": 12,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 5,
       "page_id": "real:14",
       "source_id": "private-source-deck",
       "source_page": 14,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 6,
       "page_id": "real:19",
       "source_id": "private-source-deck",
       "source_page": 19,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 7,
       "page_id": "real:25",
       "source_id": "private-source-deck",
       "source_page": 25,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 8,
       "page_id": "real:30",
       "source_id": "private-source-deck",
       "source_page": 30,
-      "source_sha256": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5"
+      "source_sha256": "withheld-private"
     },
     {
       "order": 9,
@@ -208,13 +208,13 @@
       "source_sha256": "5aa30b81c44677a728e0bb9c10905e8375aaed224034f8a6d1437fd5e38b247a"
     }
   ],
-  "source_deck_sha256_before": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5",
-  "source_deck_sha256_after": "dcdf6d2c86809fdca6ca7c206ffd02e42d11b0f408b58a619e3015c9ebb64de5",
+  "source_deck_sha256_before": null,
+  "source_deck_sha256_after": null,
   "source_deck_unchanged": true,
   "source_deck_write_operations": 0,
   "synthetic_only": false,
   "elapsed_seconds": 555.0,
-  "privacy": "This manifest is committed text: it names the private source deck's page numbers, its sha256 and its selection order, but not its file name or path. The absolute paths are in the gate's own evidence (acceptance/v0.4.2/gate/), which .gitignore excludes from the repository, and in the report's reproduce section, which names only the repository directory.",
+  "privacy": "This manifest is committed text. It records the private source deck's selection order and page numbers and the fact that the deck was hashed and verified unchanged, but it carries no private filename, no absolute path and no private hash: the source sha256 values are withheld and the verification is recorded as a verdict instead. The gate's own evidence under acceptance/v0.4.2/gate/ does carry the absolute paths; .gitignore excludes it from the repository. If page numbers themselves must not be published, the corpus has to run against decks that may be named, because a page selection cannot be reviewed without them.",
   "visual_records": [
     {
       "order": 1,
@@ -546,5 +546,10 @@
         "non_blank": true
       }
     }
-  ]
+  ],
+  "source_hash_verification": {
+    "performed": true,
+    "verdict": "identical",
+    "detail": "the private source deck was hashed before capture and re-hashed after the run; the values are withheld from the public repository as private material"
+  }
 }
