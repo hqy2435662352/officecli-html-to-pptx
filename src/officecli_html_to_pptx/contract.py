@@ -69,6 +69,12 @@ _RENDERED_CSS_PROPERTIES = frozenset(
         "vertical-align",
     }
 )
+# ``list-style-type`` is a declaration of a list item's *marker*, not a painted
+# style: the measurement reads the item's computed value, the lowering writes the
+# ``list`` preset from it, and OfficeCLI renders it as a native ``a:buChar`` or
+# ``a:buAutoNum`` -- the marker is never literal marker text.  It is what lets one
+# list carry a bullet item and a numbered item, which is exactly what a source
+# deck's own list object can contain.
 # ``text-transform`` is measured but never lowered: no Canonical Run key, run
 # property or readback carries the case transform, so a browser that shows
 # ``uppercase`` text would be silently checked as supported while the PPTX keeps
@@ -101,6 +107,7 @@ _MEASUREMENT_ONLY_CSS_PROPERTIES = frozenset(
         "justify-self",
         "left",
         "letter-spacing",
+        "list-style-type",
         "max-height",
         "max-width",
         "min-height",
