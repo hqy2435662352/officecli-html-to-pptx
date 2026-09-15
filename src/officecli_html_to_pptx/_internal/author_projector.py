@@ -2189,6 +2189,37 @@ def _assert_one_to_one_mapping(build: _ProjectionBuild) -> None:
             )
 
 
+def _published_selection(
+    selection: Sequence[SelectedPage],
+    sources: Sequence[ProjectionSourceRecord],
+) -> list[dict[str, Any]]:
+    """Return the selection as it is published, keyed by source identity.
+
+    ``SelectedPage`` carries the path a caller handed in; that is enough when one
+    deck is selected and ambiguous the moment there are three, because
+    ``source-a`` page 2 and ``source-c`` page 2 are different pages.  A reader of
+    the published record has to be able to tell which deck a page came from
+    without re-deriving it, so every entry carries the ``source_key`` the run
+    assigned to that deck -- the same key the ledger uses.
+
+    An unkeyed entry is a defect rather than an omission: it would mean the
+    selection named a deck the run did not capture.
+    """
+    key_by_path = {record.source_path: record.source_key for record in sources}
+    published: list[dict[str, Any]] = []
+    for item in selection:
+        entry = item.as_dict()
+        key = key_by_path.get(item.source_pptx)
+        if key is None:
+            raise ProjectionError(
+                "The selection names a source that was not captured, so the "
+                f"published selection cannot identify it: {item.source_pptx}"
+            )
+        entry["source_key"] = key
+        published.append(entry)
+    return published
+
+
 def _source_map_payload(
     *,
     sources: Sequence[ProjectionSourceRecord],
@@ -2229,7 +2260,7 @@ def _source_map_payload(
     return {
         "schema_version": SOURCE_MAP_SCHEMA_VERSION,
         "sources": [item.as_dict() for item in sources],
-        "selection": [item.as_dict() for item in selection],
+        "selection": _published_selection(selection, sources),
         # The V0.4.1 single-source reading is preserved: ``source`` is the
         # primary (first) source, and ``sources`` above is authoritative.
         "source": {
@@ -2283,7 +2314,7 @@ def _projection_report_payload(
     return {
         "schema_version": PROJECTION_REPORT_SCHEMA_VERSION,
         "sources": [item.as_dict() for item in sources],
-        "selection": [item.as_dict() for item in selection],
+        "selection": _published_selection(selection, sources),
         "source": {
             "path": primary.source_path,
             "sha256": primary.source_sha256,
