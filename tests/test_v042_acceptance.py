@@ -374,8 +374,8 @@ def test_no_probe_a_raster_payload_carries_the_overlay_text(
     The probe's own pages contain no picture at all, so this is the strongest
     form of the isolation claim available: there is no raster on those pages that
     *could* carry the text.  Every media payload the rebuilt deck does contain is
-    scanned as bytes, and the only payload in the deck belongs to probe B's
-    locked group proxy, which is on another page.
+    scanned as bytes, and the payloads all belong to probe B's proxies -- the
+    locked group and the base-only text object -- which are on another page.
     """
     rebuilt = corpus.document_path(synthetic_result, "rebuilt.pptx")
     payloads: list[tuple[str, bytes]] = []
@@ -387,12 +387,16 @@ def test_no_probe_a_raster_payload_carries_the_overlay_text(
         for line in corpus.PROBE_A_ALL_OVERLAY_TEXT:
             assert line.encode("utf-8") not in blob, (name, line)
             assert line.encode("utf-16-le") not in blob, (name, line)
-    locked_proxies = [
+    proxies = [
         entry
         for entry in synthetic_result.ledger
-        if entry.disposition == DISPOSITION_LOCKED and entry.emitted
+        if entry.disposition in {DISPOSITION_LOCKED, DISPOSITION_BASE_ONLY}
+        and entry.emitted
     ]
-    assert len(payloads) == len(locked_proxies) == 1, (payloads, locked_proxies)
+    # Every raster in the deck is one published proxy, and every published proxy
+    # is one raster: a proxy whose bytes never reached the deck, or a raster no
+    # proxy accounts for, would both be invisible to the scan above.
+    assert len(payloads) == len(proxies) == 2, (payloads, proxies)
 
 
 def test_the_probe_a_canonical_html_contains_each_overlay_string_once(
@@ -487,7 +491,12 @@ def test_the_probe_b_group_and_its_children_appear_exactly_once(
         synthetic_result, corpus.PROBE_B_KEY, corpus.PROBE_B_GROUP
     )
     assert _elements_with_id(synthetic_html, projected.html_id) == 1
-    assert synthetic_html.count('data-projection-locked="true"') == 1
+    # One locked representation of this container, and one per base-only object:
+    # the group is the only *locked* proxy on the page, so no other object claims
+    # a locked projection of its own.
+    assert synthetic_html.count('data-projection-locked="true"') == 2
+    group_element = _element(synthetic_html, projected.html_id)
+    assert 'data-projection-locked="true"' in group_element
     for name in (corpus.PROBE_B_GROUP_CHILD, corpus.PROBE_B_GROUP_LINK):
         entry = corpus.entry_named(synthetic_result, corpus.PROBE_B_KEY, name)
         assert entry.source_object not in synthetic_html, name
@@ -509,17 +518,25 @@ def test_the_probe_b_group_and_its_children_appear_exactly_once(
     assert group.source_object in emitted_sources
 
 
-def test_the_probe_b_rebuilt_deck_has_one_picture_and_keeps_the_native_presets(
+def test_the_probe_b_rebuilt_deck_has_one_picture_per_proxy_and_keeps_the_native_presets(
     synthetic_result: object, rebuilt_slide_xml: dict[int, str]
 ) -> None:
     probe_b_output = corpus.page_record(synthetic_result, corpus.PROBE_B_KEY).output_page
     kinds = _readback_kinds(rebuilt_slide_xml[probe_b_output])
     assert "picture" in kinds
-    # Exactly one picture: the group's own locked representation.  The presets
-    # are native shapes in the same slide part.
-    assert rebuilt_slide_xml[probe_b_output].count("<p:pic>") + rebuilt_slide_xml[probe_b_output].count("<p:pic ") == 1
+    # One picture per published proxy: the group's own locked representation and
+    # the base-only text object's overflow-covering one.  The presets are native
+    # shapes in the same slide part.
+    proxies = [
+        proof
+        for page in synthetic_result.pages
+        for proof in page.proxies
+        if proof.source_page == 1 and proof.emitted_name.startswith("slide-002-")
+    ]
+    xml = rebuilt_slide_xml[probe_b_output]
+    assert xml.count("<p:pic>") + xml.count("<p:pic ") == len(proxies)
     for geometry in ("rect", "roundRect", "ellipse", "rightArrow"):
-        assert f'prst="{geometry}"' in rebuilt_slide_xml[probe_b_page(synthetic_result)], geometry
+        assert f'prst="{geometry}"' in xml, geometry
 
 
 def test_the_probe_b_native_presets_are_all_canonical_editable(
@@ -671,34 +688,65 @@ def test_the_probe_b_run_declarations_are_not_the_source_run_declarations(
     assert 'b="1"' in " ".join(rebuilt_runs), rebuilt_runs
 
 
-def test_the_probe_b_hard_break_is_emitted_and_the_rebuild_merges_it(
-    synthetic_result: object, synthetic_html: str, rebuilt_slide_xml: dict[int, str]
+def test_the_probe_b_hard_break_rebuilds_as_the_two_authored_paragraphs(
+    synthetic_result: object,
+    rebuilt_slide_xml: dict[int, str],
 ) -> None:
-    """The hard break's characters survive; the break itself does not.
+    """A hard break is two native paragraphs, not two words run together.
 
-    OfficeCLI reads the source paragraph back as one paragraph containing a
-    break, and the projection emits that break faithfully as a ``<br>`` inside
-    one Canonical Author block -- so the authored document carries it.  The New
-    Deck path then rebuilds the two sides of the break as one paragraph: ``br``
-    is not part of the declared inline-element surface, so the rebuilt paragraph
-    text is the two halves concatenated with no break between them and with no
-    character lost or duplicated.  This test records all three facts rather than
-    claiming a hard-break round trip that does not happen.
+    OfficeCLI's readback drops ``<a:br/>`` -- it reports the paragraph as its two
+    runs with nothing between them -- so the source's break has to be restored
+    from the slide part, and the projection then publishes the two authored lines
+    as two paragraphs.  The New Deck path rebuilds each of them as its own native
+    paragraph, which is what the rebuilt deck's own paragraph structure shows.
+
+    The failure this pins is the one a text comparison could not see: with no
+    separator, the two lines came out as ``Hard break probe linesecond visual
+    line``.  No character was lost and none was invented, so a whitespace-stripped
+    comparison passed while the deck painted one line where the source paints two.
     """
-    entry_html = _element_containing(synthetic_html, corpus.PROBE_B_HARD_BREAK_MARKER)
-    assert entry_html.count("<br>") >= 2, entry_html
+    entry = corpus.entry_named(
+        synthetic_result, corpus.PROBE_B_KEY, corpus.PROBE_B_RICH_BLOCK
+    )
+    projected = corpus.projected_by_name(
+        synthetic_result, corpus.PROBE_B_KEY, corpus.PROBE_B_RICH_BLOCK
+    )
+    assert projected.source_object == entry.source_object
+    element = _authored_element(
+        synthetic_result, corpus.PROBE_B_KEY, corpus.PROBE_B_RICH_BLOCK
+    )
+    authored = _authored_text(element)
+    assert "Hard break probe line\nsecond visual line" in authored, repr(authored)
+    assert (
+        corpus.PROBE_B_HARD_BREAK_MARKER + "second visual line" not in authored
+    ), repr(authored)
+
     xml = rebuilt_slide_xml[probe_b_page(synthetic_result)]
     assert "<a:br" not in xml
-    merged = corpus.PROBE_B_HARD_BREAK_PARAGRAPH.replace("\u000b", "")
-    assert merged in _text_runs(xml), merged
-    # No character of the source paragraph was lost: the merged text is exactly
-    # the source text with the break taken out.
-    assert _text_runs(xml).count(merged) == 1
-    # The paragraphs around it survive: the empty paragraph before it and the
-    # list text after it are both still paragraphs of the same object.
-    paragraphs = _paragraph_texts(xml, corpus.PROBE_B_HARD_BREAK_MARKER)
-    assert paragraphs[0] == merged, paragraphs
-    assert paragraphs[1] == corpus.PROBE_B_LIST_ITEMS[0], paragraphs
+    # The marked line is located inside the rebuilt paragraph rather than by
+    # matching the paragraph's whole text: the readback splits one authored run's
+    # characters across several runs, so a marker that spans a split is not
+    # contiguous in the deck even when every character of it is there.
+    paragraphs = _paragraph_texts(
+        xml, corpus.PROBE_B_HARD_BREAK_MARKER[len("Ha"):]
+    )
+    # The two authored lines are two paragraphs of the rebuilt object, in order.
+    assert paragraphs == [
+        corpus.PROBE_B_HARD_BREAK_MARKER,
+        "second visual line",
+    ], paragraphs
+    # Both halves are characters of the object's own text, and the deck's
+    # paragraphs are what separates them: nothing concatenates the two lines into
+    # one run of adjacent words.
+    assert corpus.PROBE_B_HARD_BREAK_MARKER in _text_runs(xml)
+    assert "second visual line" in _text_runs(xml)
+    assert "second visual line" not in _paragraph_xml(
+        xml, corpus.PROBE_B_HARD_BREAK_MARKER[len("Ha") :]
+    )
+    # And they are two paragraphs of the same source object's text body.
+    assert corpus.PROBE_B_RICH_PARAGRAPH_1 in projected.text
+    assert corpus.PROBE_B_HARD_BREAK_MARKER in projected.text
+    assert "second visual line" in projected.text
 
 
 def _text_runs(slide_xml: str) -> str:
@@ -718,30 +766,223 @@ def _paragraph_texts(slide_xml: str, marker: str) -> list[str]:
     raise AssertionError(f"no paragraph carries {marker!r}")
 
 
-def test_the_probe_b_list_declaration_is_present_in_the_source_and_absent_from_the_rebuilt_deck(
+def test_the_probe_b_list_markers_and_levels_survive_the_rebuild(
     synthetic_probes: dict[str, Path],
     synthetic_result: object,
+    synthetic_html: str,
     rebuilt_slide_xml: dict[int, str],
 ) -> None:
-    """The probe's list declaration is real, and the rebuilt deck does not keep it.
+    """The rebuilt list carries the marker and the level, not four plain lines.
 
-    OfficeCLI reads the probe's own list block back as ``list=bullet`` with a
-    native ``a:buChar`` marker and one nested level, so the declaration exists in
-    the source.  The rebuilt deck's list object is four plain paragraphs: the
-    Canonical Author HTML surface has no list element, so the character text
-    round-trips and the native marker does not.  This test records both halves
-    rather than claiming a round trip that does not happen.
+    OfficeCLI reads the source list block back as native list paragraphs: two
+    ``a:buChar`` bullet items and two ``a:buAutoNum`` numbered ones, with the
+    nested item one level deeper and indented 36pt to the level-0 item's 18pt.
+    The projection therefore has to *express* the list -- the marker is not
+    characters, so no run of the body carries it -- and the rebuilt deck has to
+    end up with the marker, the level and the indentation as native paragraph
+    properties.
+
+    The failure this pins is a rebuild of four plain lines: the characters all
+    survived, so a text comparison passed while the markers and the indentation
+    were gone.  It asserts the rebuilt deck's own paragraph properties, read out
+    of the slide part, rather than a rendered string.
     """
     source = corpus.source_object_by_name(
         synthetic_probes[corpus.PROBE_B_KEY], 1, corpus.PROBE_B_LIST_BLOCK
     )
-    assert str((source.get("format") or {}).get("list")) == "bullet"
-    assert "buChar" in str((source.get("format") or {}).get("bulletRaw") or "")
-    xml = rebuilt_slide_xml[probe_b_page(synthetic_result)]
-    assert "buChar" not in xml
-    assert "buAutoNum" not in xml
+    source_format = source.get("format") or {}
+    assert str(source_format.get("list")) == "bullet"
+    assert "buChar" in str(source_format.get("bulletRaw") or "")
+
+    # The authored document declares the list: one item per paragraph, each with
+    # its own marker declaration, and no marker written as text.
+    element = _authored_element(
+        synthetic_result, corpus.PROBE_B_KEY, corpus.PROBE_B_LIST_BLOCK
+    )
+    assert element.count("<li") == len(corpus.PROBE_B_LIST_ITEMS)
+    assert "list-style-type: decimal" in element
+    authored = _authored_text(element)
     for item in corpus.PROBE_B_LIST_ITEMS:
-        assert f"<a:t>{item}</a:t>" in xml, item
+        assert item in authored, item
+    for literal in ("•", "\t1.", "1. Numbered"):
+        assert literal not in authored, literal
+
+    # And the rebuilt deck keeps them as native paragraph properties.
+    xml = rebuilt_slide_xml[probe_b_page(synthetic_result)]
+    paragraphs = _list_paragraphs(xml, corpus.PROBE_B_LIST_ITEMS)
+    assert [paragraph["text"] for paragraph in paragraphs] == list(
+        corpus.PROBE_B_LIST_ITEMS
+    )
+    assert [paragraph["marker"] for paragraph in paragraphs] == [
+        "buChar",
+        "buChar",
+        "buAutoNum",
+        "buAutoNum",
+    ]
+    # The nested items keep their own indent: 22pt further left margin than the
+    # level-0 items, which is the source's own 36pt against 18pt read relative to
+    # each item's own text edge.
+    margins = [paragraph["margin_left_pt"] for paragraph in paragraphs]
+    assert margins[1] - margins[0] > 0, margins
+    assert margins[3] - margins[2] > 0, margins
+    assert margins[1] - margins[0] == margins[3] - margins[2], margins
+    # No item text carries a literal marker prefix.
+    for paragraph in paragraphs:
+        assert not paragraph["text"].startswith(("•", "1.", "2.")), paragraph
+
+
+def _list_paragraphs(slide_xml: str, items: tuple[str, ...]) -> list[dict[str, Any]]:
+    """The rebuilt list paragraphs for ``items``, with their native properties.
+
+    One entry per item, in item order, carrying the marker element the paragraph
+    declares and its own indentation.  A paragraph whose marker is missing has no
+    marker element at all, which is what the failure being pinned looks like.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for paragraph in re.findall(r"<a:p[ >].*?</a:p>", slide_xml, re.S):
+        text = "".join(re.findall(r"<a:t>([^<]*)</a:t>", paragraph))
+        if text not in items:
+            continue
+        props = re.search(r"<a:pPr\b[^>]*>", paragraph)
+        marker = re.search(r"<a:(buChar|buAutoNum)\b", paragraph)
+        margin = re.search(r'marL="(-?\d+)"', props.group(0) if props else "")
+        found[text] = {
+            "text": text,
+            "marker": marker.group(1) if marker else None,
+            "margin_left_pt": (
+                int(margin.group(1)) / 12700 if margin is not None else 0.0
+            ),
+            "level": (
+                re.search(r'lvl="(-?\d+)"', props.group(0)).group(1)
+                if props is not None and re.search(r'lvl="(-?\d+)"', props.group(0))
+                else None
+            ),
+        }
+    return [found[item] for item in items if item in found]
+
+
+def test_the_probe_b_overflow_proxy_covers_what_the_object_paints(
+    synthetic_result: object, rebuilt_slide_xml: dict[int, str]
+) -> None:
+    """A text proxy is not cropped to the rectangle its text overflows.
+
+    PowerPoint paints a no-autofit line outside its own box, and the source page
+    shows that overflow.  The probe's base-only text object is a 120x14pt band
+    whose 22pt line is painted largely above and below it, so cropping the
+    isolated render to the declared rectangle slices the line mid-glyph.
+
+    This pins all three halves of the repair: the published image is the object's
+    *painted* rectangle and really does carry ink outside the declared rectangle,
+    the emitted ``<img>`` is the image's own pixel size rather than the declared
+    rectangle plus a guard band, and the rebuilt deck holds it as one picture.
+    """
+    from PIL import Image
+
+    projected = corpus.projected_by_name(
+        synthetic_result, corpus.PROBE_B_KEY, corpus.PROBE_B_OVERFLOW_BLOCK
+    )
+    assert projected.proxy_asset, projected.as_dict()
+    assert projected.proxy_geometry is not None, projected.as_dict()
+    geometry = projected.proxy_geometry
+    assert projected.proxy_clamped is False, projected.as_dict()
+
+    # The raster is the reported rectangle, and that rectangle is strictly larger
+    # than the declared rectangle plus the guard band on the overflowing axis.
+    # The bytes measured are the *published* copy: the projection's own working
+    # directory is removed when the run finishes, so a test that opened the path
+    # the projection reported would be reading a file that exists only by accident.
+    asset = _published_proxy(synthetic_result, projected)
+    with Image.open(asset) as image:
+        width, height = image.size
+    floor_height = int(round(projected.bounds_px[3])) + PROXY_GUARD_PX * 2
+    assert geometry.rect_px[2] == width and geometry.rect_px[3] == height
+    assert height > floor_height, (height, floor_height, projected.bounds_px)
+
+    # The ink is measured from the image's own bytes against its own background,
+    # and it leaves the declared rectangle -- which is the overflow the crop now
+    # covers instead of slicing.  The declared rectangle inside the crop is read
+    # from the geometry the projection published rather than recomputed here, so
+    # the two are compared instead of restated.
+    origin_left, origin_top = geometry.origin_px
+    assert origin_left <= 0 and origin_top <= 0
+    floor_width = int(round(projected.bounds_px[2])) + PROXY_GUARD_PX * 2
+    floor_height = int(round(projected.bounds_px[3])) + PROXY_GUARD_PX * 2
+    assert origin_left < -PROXY_GUARD_PX or origin_top < -PROXY_GUARD_PX, (
+        "the crop expanded on neither axis, so this object does not exercise the "
+        f"overflow: origin={geometry.origin_px}"
+    )
+    declared_left = geometry.rect_px[0] + origin_left
+    declared_top = geometry.rect_px[1] + origin_top
+    left, top, right, bottom = _proxy_ink_box(asset)
+    declared_bottom = declared_top + floor_height
+    assert top < declared_top or bottom > declared_bottom, (
+        "the proxy carries no ink outside the declared rectangle, so the crop "
+        f"expansion is not what is being measured: ink={left, top, right, bottom} "
+        f"declared={(declared_left, declared_top, declared_left + floor_width, declared_bottom)}"
+    )
+    # The crop covers all of it: the ink is inside the published image, and the
+    # image starts and ends exactly where the measured paint does on the axes the
+    # paint left the declared rectangle on -- so neither the declared rectangle
+    # nor the reconstruction's own edge cut a line short.
+    assert 0 <= left < right <= width, (left, right, width)
+    assert 0 <= top < bottom <= height, (top, bottom, height)
+    assert geometry.clamped is False
+    if origin_top < -PROXY_GUARD_PX:
+        assert top == 0, (top, "the expanded crop does not start at the ink")
+    if declared_bottom < height - PROXY_GUARD_PX:
+        assert bottom == height, (bottom, height, "the expanded crop does not end at the ink")
+
+    # The emitted element is placed by that geometry, not by the declared bounds.
+    element = _authored_element(
+        synthetic_result, corpus.PROBE_B_KEY, corpus.PROBE_B_OVERFLOW_BLOCK
+    )
+    assert f"width: {width}px" in element, element
+    assert f"height: {height}px" in element, element
+    assert (
+        f"left: {projected.bounds_px[0] + geometry.origin_px[0]:g}px" in element
+    ), element
+    assert (
+        f"top: {projected.bounds_px[1] + geometry.origin_px[1]:g}px" in element
+    ), element
+
+    # The rebuilt deck carries it as the one picture the emitted name names.
+    xml = rebuilt_slide_xml[probe_b_page(synthetic_result)]
+    assert projected.emitted_name in xml, projected.emitted_name
+
+
+def _published_proxy(result: object, projected: object) -> Path:
+    """The published copy of one projected object's proxy asset.
+
+    The projection writes its proxies into a working directory the run removes
+    when it finishes, so the bytes a reviewer can open are the copies the gate
+    publishes beside the rebuilt deck.  The published file is matched by the
+    projection's own asset name, which carries the object's emission ordinal.
+    """
+    name = Path(str(projected.proxy_asset)).name
+    matches = [
+        Path(asset) for asset in result.proxy_assets if Path(asset).name == name
+    ]
+    assert len(matches) == 1, (name, result.proxy_assets)
+    assert matches[0].is_file(), matches[0]
+    return matches[0]
+
+
+def _proxy_ink_box(path: Path) -> tuple[int, int, int, int]:
+    """The bounding box of a proxy image's non-background ink, in its own pixels."""
+    from PIL import Image, ImageChops
+
+    tolerance = 6
+    table = [255 if value > tolerance else 0 for value in range(256)]
+    with Image.open(path) as image:
+        rgb = image.convert("RGB")
+    background = rgb.getpixel((0, 0))
+    reference = Image.new("RGB", rgb.size, background)
+    mask = Image.new("L", rgb.size, 0)
+    for band in ImageChops.difference(rgb, reference).split():
+        mask = ImageChops.lighter(mask, band.point(table))
+    box = mask.getbbox()
+    assert box is not None, f"{path.name} carries no paint at all"
+    return box
 
 
 def test_the_probe_b_theme_token_is_declared_in_the_source(
@@ -792,17 +1033,24 @@ def test_the_probe_b_sibling_textbox_is_untouched_by_the_container(
 def test_every_canonical_editable_object_with_text_has_a_text_readback(
     synthetic_result: object,
 ) -> None:
-    """Readback covers exactly the objects that declare text.
+    """Readback covers exactly the objects emitted as native text.
 
     A text-free shape declares no characters, so the projection records no text
-    readback for it; every object whose projection carries text must have one,
-    and the set must be exactly that: nothing claimed that was not emitted, and
-    nothing emitted that was not read back.
+    readback for it; every object whose projection carries native text must have
+    one, and the set must be exactly that: nothing claimed that was not emitted,
+    and nothing emitted that was not read back.
+
+    An object represented by an object-local proxy is deliberately *not* in the
+    set: its text is paint inside the proxy's own raster, not characters of the
+    rebuilt deck, so there is no native text to read back.  Whether that raster
+    actually carries the text is the proxy-isolation proof's question, not this
+    criterion's.
     """
     declared = {
         (item.source_key, item.source_object)
         for item in synthetic_result.projected.objects
         if str(item.text or "").strip()
+        and item.disposition not in {DISPOSITION_LOCKED, DISPOSITION_BASE_ONLY}
     }
     assert declared
     observed = {
@@ -811,6 +1059,15 @@ def test_every_canonical_editable_object_with_text_has_a_text_readback(
         for item in record.text_readback
     }
     assert declared <= observed, declared - observed
+    # And a proxied object's text is not claimed as a native readback either.
+    proxied = {
+        (item.source_key, item.source_object)
+        for item in synthetic_result.projected.objects
+        if str(item.text or "").strip()
+        and item.disposition in {DISPOSITION_LOCKED, DISPOSITION_BASE_ONLY}
+    }
+    assert proxied, "no proxied text object to check"
+    assert not (proxied & observed), proxied & observed
     for identity in declared:
         readback = next(
             item
@@ -866,15 +1123,16 @@ def test_every_locked_proxy_passes_all_five_isolation_facts(
     assert synthetic_result.counts["locked_proxies_proved"] == len(proofs)
 
 
-def test_the_group_proxy_carries_its_children_paint(
+def test_the_probe_b_group_proxy_carries_its_children_paint(
     synthetic_result: object,
 ) -> None:
     """A blank raster is never an acceptable representation of a visible object."""
+    entry = corpus.entry_named(synthetic_result, corpus.PROBE_B_KEY, corpus.PROBE_B_GROUP)
     proof = next(
         proof
         for page in synthetic_result.pages
         for proof in page.proxies
-        if proof.source_object.endswith("group[@id=100007]")
+        if proof.source_object == entry.source_object
     )
     assert proof.carries_paint is True, proof.as_dict()
     assert proof.paint_pixels > 0
@@ -1176,11 +1434,18 @@ def _element_containing(html: str, text: str) -> str:
 
 
 def _element_from(html: str, start: int, tag: str) -> str:
-    """The balanced element of ``tag`` that begins at ``start``."""
+    """The balanced element of ``tag`` that begins at ``start``.
+
+    ``start`` is the position of the opening tag's ``<``, so the walk begins
+    *inside* that tag: counting from the tag itself would find it a second time
+    and return the opening tag alone.
+    """
     open_tag = re.compile(rf"<{tag}\b")
     close_tag = re.compile(rf"</{tag}>")
-    depth = 0
-    position = start
+    opening_end = html.find(">", start)
+    assert opening_end >= 0, tag
+    depth = 1
+    position = opening_end + 1
     while position < len(html):
         opening = open_tag.search(html, position)
         closing = close_tag.search(html, position)
@@ -1195,3 +1460,42 @@ def _element_from(html: str, start: int, tag: str) -> str:
         if depth == 0:
             return html[start:position]
     return html[start:]
+
+
+def _authored_element(result: object, page_id: str, name: str) -> str:
+    """The emitted element of the source object named ``name`` on that page.
+
+    The element is located by the projection's own identity attribute rather than
+    by a string the element happens to render: a text body's characters can be
+    split across several runs, so the authored words need not appear contiguously
+    in the document at all.
+    """
+    entry = corpus.entry_named(result, page_id, name)
+    projected = corpus.projected_by_name(result, page_id, name)
+    assert projected.source_object == entry.source_object
+    html = corpus.document_path(result).read_text(encoding="utf-8")
+    match = re.search(
+        rf'<(?P<tag>[a-z]+)\b[^>]*\bid="{re.escape(projected.html_id)}"', html
+    )
+    assert match is not None, projected.html_id
+    return _element_from(html, match.start(), match.group("tag"))
+
+
+def _authored_text(element_html: str) -> str:
+    """The text one emitted element paints, with its paragraph breaks as newlines."""
+    marked = re.sub(r"<br\s*/?>", "\n", element_html)
+    text = _HTML_TAG.sub("", marked)
+    unescaped = (
+        text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&#x27;", "'")
+        .replace("&nbsp;", " ")
+    )
+    # The emitted declarations are attributes, not text, but a wrapped element
+    # still carries newlines from the document's own formatting; the painted text
+    # has none beyond the paragraph boundaries this put back.
+    return "\n".join(
+        line.strip() for line in unescaped.split("\n")
+    )

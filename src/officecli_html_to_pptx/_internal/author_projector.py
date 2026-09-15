@@ -77,6 +77,7 @@ from .pptx_reader import (
     IsolatedRenderer,
     MissingSlideError,
     PptxReadError,
+    ProxyGeometry,
     capture_presentation,
     container_placements,
 )
@@ -595,6 +596,15 @@ class ProjectedObject:
     source_fingerprint: str
     proxy_reason: str | None = None
     proxy_asset: str | None = None
+    # Where the published proxy image actually sits, in the reconstruction
+    # render's own pixels.  It is not always the declared rectangle: the image is
+    # cropped at the union of the declared rectangle and the object's measured
+    # painted extent, so a text object whose line overflows its own box keeps the
+    # overflow instead of being sliced at the box edge.  The emitter places the
+    # image by this geometry, and ``proxy_clamped`` records an expansion that
+    # reached the render's own edge and therefore had to be clamped there.
+    proxy_geometry: ProxyGeometry | None = None
+    proxy_clamped: bool = False
     unsupported_properties: tuple[str, ...] = ()
     # Which deck this object came from, and the stable identity of that deck.
     # ``source_slide`` above is the original page number in that deck.
@@ -658,6 +668,10 @@ class ProjectedObject:
             payload["proxy_reason"] = self.proxy_reason
         if self.proxy_asset:
             payload["proxy_asset"] = self.proxy_asset
+        if self.proxy_geometry is not None:
+            payload["proxy_geometry"] = self.proxy_geometry.as_dict()
+        if self.proxy_clamped:
+            payload["proxy_clamped"] = True
         if self.unsupported_properties:
             payload["unsupported_properties"] = list(self.unsupported_properties)
         return payload
@@ -1097,6 +1111,165 @@ def _object_line_height(
     return f"{_px(points, pixels_per_point):g}px" if points > 0 else None
 
 
+def _paragraph_join() -> str:
+    """Return the separator the emitted text body writes between paragraphs.
+
+    One separator, named once, because it is load-bearing in both directions.
+    The Canonical Author paragraph orthography has a paragraph boundary and
+    nothing else, so the compiled deck gets one native paragraph per authored
+    paragraph; and ``<br>`` is the one place ordinary content declares a break,
+    which is how the measured flow turns the boundary into a paragraph.
+
+    Without it two paragraphs' words are simply adjacent: the projection once
+    published the hard-break paragraph's two authored lines as
+    ``Hard break probe linesecond visual line`` in the rebuilt deck, which is
+    text corruption rather than a spacing difference.
+    """
+    return "<br>"
+
+
+def _is_list_object(obj: CapturedObject) -> bool:
+    """Whether this object's whole text body is one PowerPoint list.
+
+    One object is one list only when every paragraph it holds is a list
+    paragraph.  A mixed body -- a list item next to an ordinary paragraph -- has
+    no single native representation, so it keeps the paragraph path rather than
+    dropping the paragraphs that are not items.
+    """
+    return bool(obj.paragraphs) and all(
+        str(paragraph.bullet or "none").lower() not in {"", "none", "false", "no"}
+        for paragraph in obj.paragraphs
+    )
+
+
+def _list_marker_declaration(paragraph: CapturedParagraph) -> str:
+    """Return the ``list-style-type`` that declares this item's own marker.
+
+    The list element carries the marker preset for the items that share it, so
+    only an item that differs has to declare one: an item marked ``none``
+    declares no marker, a numbered item inside an unnumbered list declares
+    ``decimal``, and a bullet declares the bullet preset of its own level.  The
+    declaration is exactly that -- a declaration.  The marker itself is never
+    written as text, and the lowering turns the value into ``a:buChar`` or
+    ``a:buAutoNum``.
+    """
+    marker = str(paragraph.bullet or "none").strip().lower()
+    if marker in {"", "none", "false", "no", "null"}:
+        return "none"
+    if marker == "numbered":
+        return "decimal"
+    return "circle" if paragraph.level > 0 else "disc"
+
+
+def _list_tag(paragraph: CapturedParagraph) -> str:
+    """Return the list element the first item's marker needs: ``ul`` or ``ol``."""
+    marker = str(paragraph.bullet or "").strip().lower()
+    return "ol" if marker == "numbered" else "ul"
+
+
+def _emit_list_html(
+    obj: CapturedObject,
+    *,
+    pixels_per_point: float,
+    inherited_family: str,
+    inherited_size_pt: float,
+    inherited_color: str | None,
+    inherited_bold: bool,
+    inherited_italic: bool,
+) -> str:
+    """Return one Native List Textbox: one list element, one item per paragraph.
+
+    The New Deck list surface is one ``ul``/``ol`` per list object with one item
+    per direct ``li``, and each item's marker and indentation become native
+    paragraph properties.  The projector therefore has to *express* the list --
+    an object whose paragraphs are list paragraphs cannot be emitted as bare
+    text, because the marker is not characters and no run of the body carries it.
+
+    A number in a numbered item is never written as text either: the item's
+    ``list-style-type`` is a declaration, and OfficeCLI writes ``a:buAutoNum``
+    for it, exactly as it writes ``a:buChar`` for a bullet.
+
+    ``margin-left`` carries the item's own indent, which is how a nested item
+    stays indented even though the declared surface is top-level-only and a
+    literally nested list is outside it.
+    """
+    parts: list[str] = [f"<{_list_tag(obj.paragraphs[0])}>"]
+    first_style = _paragraph_style(obj.paragraphs[0])
+    if first_style:
+        # One list is one paragraph set, so the list's own alignment and
+        # direction are declared on the group rather than repeated per item.
+        parts[0] = f'<{_list_tag(obj.paragraphs[0])} style="{_esc(first_style, quote=True)}">'
+    for paragraph in obj.paragraphs:
+        declarations: list[tuple[str, str]] = [
+            ("list-style-type", _list_marker_declaration(paragraph)),
+            # The object block declares ``white-space: pre`` so a text body never
+            # soft-wraps where the source did not.  An item is not that case: the
+            # declared list surface re-wraps an item inside the measured list
+            # bounds, so the item takes the ordinary flow back.
+            ("white-space", "normal"),
+        ]
+        indent_px = _px(
+            _LIST_INDENT_PT_PER_LEVEL * max(0, paragraph.level), pixels_per_point
+        )
+        declarations.append(("margin-left", f"{indent_px:g}px"))
+        item_style = _style(declarations)
+        parts.append(
+            f'<li style="{_esc(item_style, quote=True)}">'
+            + _paragraph_runs_html(
+                paragraph,
+                pixels_per_point=pixels_per_point,
+                inherited_family=inherited_family,
+                inherited_size_pt=inherited_size_pt,
+                inherited_color=inherited_color,
+                inherited_bold=inherited_bold,
+                inherited_italic=inherited_italic,
+            )
+            + "</li>"
+        )
+    parts.append(f"</{_list_tag(obj.paragraphs[0])}>")
+    return "".join(parts)
+
+
+# How far one list level indents its items, in points.  A nested list item is
+# indented by its own level rather than by a nested list element, because the
+# declared list surface is one top-level list and a nested one is outside it.
+_LIST_INDENT_PT_PER_LEVEL = 22.0
+
+
+def _paragraph_runs_html(
+    paragraph: CapturedParagraph,
+    *,
+    pixels_per_point: float,
+    inherited_family: str,
+    inherited_size_pt: float,
+    inherited_color: str | None,
+    inherited_bold: bool,
+    inherited_italic: bool,
+) -> str:
+    """Return one paragraph's own runs, in source order."""
+    parts: list[str] = []
+    paragraph_style = _paragraph_style(paragraph)
+    for run in paragraph.runs:
+        style, semantic = _run_style(
+            paragraph,
+            run,
+            pixels_per_point=pixels_per_point,
+            inherited_family=inherited_family,
+            inherited_size_pt=inherited_size_pt,
+            inherited_color=inherited_color,
+            inherited_bold=inherited_bold,
+            inherited_italic=inherited_italic,
+        )
+        element = _run_text_element(run.text, style, semantic)
+        if paragraph_style and semantic:
+            parts.append(
+                f'<span style="{_esc(paragraph_style, quote=True)}">{element}</span>'
+            )
+        else:
+            parts.append(element)
+    return "".join(parts)
+
+
 def _emit_paragraph_html(
     obj: CapturedObject,
     *,
@@ -1107,18 +1280,25 @@ def _emit_paragraph_html(
     inherited_bold: bool,
     inherited_italic: bool,
 ) -> str:
+    if _is_list_object(obj):
+        return _emit_list_html(
+            obj,
+            pixels_per_point=pixels_per_point,
+            inherited_family=inherited_family,
+            inherited_size_pt=inherited_size_pt,
+            inherited_color=inherited_color,
+            inherited_bold=inherited_bold,
+            inherited_italic=inherited_italic,
+        )
     parts: list[str] = []
     for index, paragraph in enumerate(obj.paragraphs):
         if index:
-            parts.append("<br>")
-        paragraph_style = _paragraph_style(paragraph)
-        runs = list(paragraph.runs)
-        if not runs:
+            parts.append(_paragraph_join())
+        if not paragraph.runs:
             continue
-        for run in runs:
-            style, semantic = _run_style(
+        parts.append(
+            _paragraph_runs_html(
                 paragraph,
-                run,
                 pixels_per_point=pixels_per_point,
                 inherited_family=inherited_family,
                 inherited_size_pt=inherited_size_pt,
@@ -1126,11 +1306,7 @@ def _emit_paragraph_html(
                 inherited_bold=inherited_bold,
                 inherited_italic=inherited_italic,
             )
-            element = _run_text_element(run.text, style, semantic)
-            if paragraph_style and semantic:
-                parts.append(f'<span style="{_esc(paragraph_style, quote=True)}">{element}</span>')
-            else:
-                parts.append(element)
+        )
     return "".join(parts)
 
 
@@ -1467,6 +1643,46 @@ def _object_identity_attributes(obj: CapturedObject, projected: ProjectedObject)
     ]
 
 
+def _proxy_style(projected: ProjectedObject) -> str:
+    """Return the CSS that places one published proxy image.
+
+    The image is cropped at the union of the object's declared rectangle and the
+    object's measured painted extent, so its real rectangle is what the DOM has
+    to draw: placing it at the declared rectangle instead would rescale the crop
+    and move the paint.  The geometry carried out of the renderer is that real
+    rectangle, expressed as an offset from the declared rectangle's own origin
+    plus the crop's pixel size, which is exactly what an absolutely positioned
+    image drawn at the declared bounds needs.
+
+    An object whose paint stayed inside its own rectangle has an offset of
+    ``(-guard, -guard)`` and a size of ``declared + 2 * guard`` -- the geometry
+    this emitter has always written -- so nothing about a proxy that does not
+    overflow changes.
+    """
+    bounds_px = projected.bounds_px
+    geometry = projected.proxy_geometry
+    if geometry is None:
+        left = bounds_px[0] - PROXY_GUARD_PX
+        top = bounds_px[1] - PROXY_GUARD_PX
+        width = bounds_px[2] + PROXY_GUARD_PX * 2
+        height = bounds_px[3] + PROXY_GUARD_PX * 2
+    else:
+        left = bounds_px[0] + geometry.origin_px[0]
+        top = bounds_px[1] + geometry.origin_px[1]
+        width = float(geometry.rect_px[2])
+        height = float(geometry.rect_px[3])
+    return _style(
+        [
+            ("position", "absolute"),
+            ("left", f"{left:g}px"),
+            ("top", f"{top:g}px"),
+            ("width", f"{width:g}px"),
+            ("height", f"{height:g}px"),
+            ("object-fit", "fill"),
+        ]
+    )
+
+
 def _emit_object_html(
     obj: CapturedObject,
     *,
@@ -1488,22 +1704,7 @@ def _emit_object_html(
         f'{name}="{_esc(value, quote=True)}"' for name, value in identity
     )
     image_style = _esc(_style([*common, ("object-fit", "fill")]), quote=True)
-    proxy_style = _esc(
-        _style(
-            [
-                (
-                    "position",
-                    "absolute",
-                ),
-                ("left", f"{bounds_px[0] - PROXY_GUARD_PX:g}px"),
-                ("top", f"{bounds_px[1] - PROXY_GUARD_PX:g}px"),
-                ("width", f"{bounds_px[2] + PROXY_GUARD_PX * 2:g}px"),
-                ("height", f"{bounds_px[3] + PROXY_GUARD_PX * 2:g}px"),
-                ("object-fit", "fill"),
-            ]
-        ),
-        quote=True,
-    )
+    proxy_style = _esc(_proxy_style(projected), quote=True)
 
     if projected.projected_kind == PROJECTED_KIND_PICTURE and obj.picture is not None:
         source, _ = _cropped_picture_source(obj)
@@ -2227,6 +2428,7 @@ def _build_projection(
             proxy_source: str | None = None
             proxy_reason: str | None = None
             proxy_asset: str | None = None
+            proxy_geometry: ProxyGeometry | None = None
             projected_kind = _projected_kind(obj, disposition)
 
             if _requires_proxy(obj, disposition):
@@ -2260,7 +2462,7 @@ def _build_projection(
                                 proxy_dir / f"{source.source_key}-isolated",
                             )
                             renderers[source.source_key] = renderer
-                        proxy_source, asset = _isolated_proxy(
+                        proxy_source, asset, proxy_geometry = _isolated_proxy(
                             renderer,
                             obj,
                             pixels_per_point=pixels_per_point,
@@ -2340,6 +2542,8 @@ def _build_projection(
                 source_fingerprint=obj.fingerprint(),
                 proxy_reason=proxy_reason if proxy_source else None,
                 proxy_asset=proxy_asset,
+                proxy_geometry=proxy_geometry if proxy_source else None,
+                proxy_clamped=bool(proxy_geometry and proxy_geometry.clamped),
                 unsupported_properties=unsupported,
                 source_key=source.source_key,
                 source_path=source.source_path,
@@ -2546,13 +2750,17 @@ def _isolated_proxy(
     *,
     pixels_per_point: float,
     destination: Path,
-) -> tuple[str, Path]:
+) -> tuple[str, Path, ProxyGeometry]:
     """Return a deterministic data URI for one object-local locked proxy.
 
     The proxy comes from a render of the target object *alone* -- rebuilt into a
     fresh deck, so neither a sibling nor the slide's layout and master paint can
     appear in it.  Cropping the composited slide, or culling only the slide's
     siblings from a copy, would both let other paint into the rectangle.
+
+    The image is cropped at the object's *painted* rectangle rather than at its
+    declared one, because PowerPoint paints a no-autofit line outside its box,
+    and the geometry that came back is what the emitter places the image by.
 
     A paint-less container is the same reconstruction one level down: the fresh
     deck holds the container's own children, placed by each candidate reading of
@@ -2570,7 +2778,7 @@ def _isolated_proxy(
         media_path = _extract_media(obj.picture.data_uri, destination.parent)
 
     try:
-        asset = renderer.render(
+        asset, geometry = renderer.render(
             obj.source_slide,
             obj.source_object,
             obj.bounds_pt,
@@ -2591,6 +2799,7 @@ def _isolated_proxy(
     return (
         "data:image/png;base64," + base64.b64encode(asset.read_bytes()).decode("ascii"),
         asset,
+        geometry,
     )
 
 

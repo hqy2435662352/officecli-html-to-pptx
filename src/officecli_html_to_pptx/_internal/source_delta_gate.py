@@ -2200,12 +2200,42 @@ def _proxy_proof(
     paint_pixels = 0
     raster_pixels = 0
 
-    expected_width = int(
-        round(item.bounds_px[2] + PROXY_GUARD_PX * 2)
+    # The crop is the union of the object's declared rectangle and the rectangle
+    # its paint actually occupies, so the declared rectangle plus the guard band
+    # is a floor rather than the whole image: a no-autofit line painted outside
+    # its own box widens the crop, and the evidence has to measure that crop
+    # rather than refuse it.  ``proxy_geometry`` is re-derived from the published
+    # image further down and the two are compared, so this is the claim being
+    # checked, not the check itself.
+    geometry = item.proxy_geometry
+    declared_left = int(round(item.bounds_px[0])) - PROXY_GUARD_PX
+    declared_top = int(round(item.bounds_px[1])) - PROXY_GUARD_PX
+    floor_width = int(round(item.bounds_px[2])) + PROXY_GUARD_PX * 2
+    floor_height = int(round(item.bounds_px[3])) + PROXY_GUARD_PX * 2
+    expected_width = (
+        geometry.rect_px[2] if geometry is not None else floor_width
     )
-    expected_height = int(
-        round(item.bounds_px[3] + PROXY_GUARD_PX * 2)
+    expected_height = (
+        geometry.rect_px[3] if geometry is not None else floor_height
     )
+    if geometry is not None:
+        # Where the declared rectangle sits inside the published crop, which is
+        # also where the guard band around it sits.
+        band_left = int(round(item.bounds_px[0])) - geometry.rect_px[0] - PROXY_GUARD_PX
+        band_top = int(round(item.bounds_px[1])) - geometry.rect_px[1] - PROXY_GUARD_PX
+        band_width = floor_width
+        band_height = floor_height
+    else:
+        band_left = band_top = 0
+        band_width, band_height = floor_width, floor_height
+    # The guard band can only be judged where it exists.  When the crop expanded
+    # to cover paint the object's own text put outside its rectangle, the paint
+    # reaches the image's edge on that axis and the frame around the declared
+    # rectangle is no longer inside the image at all; what the expanded crop is
+    # judged on instead is that it covers the declared rectangle it stands for.
+    # The frame is present exactly when the crop is the declared rectangle plus
+    # the band, which is what a crop that did not expand is.
+    band_measured = geometry is None
     if not asset_path:
         failures.append("the locked proxy has no asset on disk")
     else:
@@ -2221,9 +2251,16 @@ def _proxy_proof(
                     width, height = rgb.size
                     raster_pixels = width * height
                     background, guard_fraction = _guard_band_paint(
-                        rgb, expected_width, expected_height
+                        rgb, band_width, band_height, left=band_left, top=band_top
                     )
                     paint_pixels = _painted_pixels(rgb, background)
+                if geometry is not None:
+                    band_measured = (
+                        band_left >= 0
+                        and band_top >= 0
+                        and band_left + band_width <= width
+                        and band_top + band_height <= height
+                    )
             except Exception as exc:  # noqa: BLE001 - any decode failure blocks
                 failures.append(f"the locked proxy asset is not a readable PNG: {exc}")
     if recorded_sha256 is not None and asset_sha256 is not None:
@@ -2233,18 +2270,53 @@ def _proxy_proof(
                 "the projection published"
             )
 
-    if width and abs(width - expected_width) > PROXY_RASTER_TOLERANCE_PX:
+    if width and width < expected_width - PROXY_RASTER_TOLERANCE_PX:
+        failures.append(
+            f"target bounds: the proxy raster is {width}px wide but the object's "
+            f"declared rectangle plus a {PROXY_GUARD_PX}px guard band on each side "
+            f"is {floor_width}px, so the crop does not even cover the rectangle it "
+            "represents"
+        )
+    elif (
+        width
+        and geometry is None
+        and abs(width - expected_width) > PROXY_RASTER_TOLERANCE_PX
+    ):
         failures.append(
             f"target bounds: the proxy raster is {width}px wide but the target "
             f"rectangle plus a {PROXY_GUARD_PX}px guard band on each side is "
             f"{expected_width}px"
         )
-    if height and abs(height - expected_height) > PROXY_RASTER_TOLERANCE_PX:
+    if height and height < expected_height - PROXY_RASTER_TOLERANCE_PX:
+        failures.append(
+            f"target bounds: the proxy raster is {height}px high but the object's "
+            f"declared rectangle plus a {PROXY_GUARD_PX}px guard band on each side "
+            f"is {floor_height}px, so the crop does not even cover the rectangle it "
+            "represents"
+        )
+    elif (
+        height
+        and geometry is None
+        and abs(height - expected_height) > PROXY_RASTER_TOLERANCE_PX
+    ):
         failures.append(
             f"target bounds: the proxy raster is {height}px high but the target "
             f"rectangle plus a {PROXY_GUARD_PX}px guard band on each side is "
             f"{expected_height}px"
         )
+    if geometry is not None and width and height:
+        if (
+            geometry.rect_px[2] != width
+            or geometry.rect_px[3] != height
+            or declared_left + geometry.origin_px[0] != geometry.rect_px[0]
+            or declared_top + geometry.origin_px[1] != geometry.rect_px[1]
+        ):
+            failures.append(
+                "target bounds: the projection reports the proxy at "
+                f"{geometry.rect_px} but the published raster is {width}x{height}px "
+                f"at origin {geometry.origin_px} from a declared rectangle at "
+                f"({declared_left}, {declared_top})"
+            )
 
     # The density is the render's own pixels-per-point, recovered from the
     # raster: the crop is the target rectangle plus the guard band, so the band
@@ -2253,10 +2325,13 @@ def _proxy_proof(
     # reports as 0pt and whose raster is therefore nothing but the guard band --
     # carries no information about the scale on that axis, so the other axis is
     # measured instead.  When neither axis has an extent there is no scale to
-    # recover and the proxy is not judged on one.
+    # recover and the proxy is not judged on one.  An expanded crop is measured
+    # on the declared rectangle's own span, which is what the density is the
+    # density *of*; the rest of the image is the object's overflow, at the same
+    # scale because it came out of the same render.
     density = _raster_density(
-        width=width,
-        height=height,
+        width=floor_width if geometry is not None else width,
+        height=floor_height if geometry is not None else height,
         bounds_pt=item.bounds_pt,
         guard_px=PROXY_GUARD_PX,
     )
@@ -2265,7 +2340,7 @@ def _proxy_proof(
             f"raster density: the proxy renders at {density:.4f} px/pt but the "
             f"Author canvas draws it at {pixels_per_point:.4f} px/pt"
         )
-    if width and guard_fraction > GUARD_BAND_CONTAMINATION_FRACTION:
+    if width and band_measured and guard_fraction > GUARD_BAND_CONTAMINATION_FRACTION:
         failures.append(
             f"contamination: {guard_fraction:.4f} of the {PROXY_GUARD_PX}px guard "
             "band carries paint that cannot belong to the target object, which "
@@ -2363,16 +2438,40 @@ def _raster_density(
 
 
 def _guard_band_paint(
-    rgb: Any, expected_width: int, expected_height: int
+    rgb: Any,
+    expected_width: int,
+    expected_height: int,
+    *,
+    left: int = 0,
+    top: int = 0,
 ) -> tuple[tuple[int, int, int] | None, float]:
     """Return ``(background, paint fraction of the guard band)`` for one proxy.
 
-    The background is the modal colour at the raster's four corners -- the guard
-    band's own corners, which are outside the target rectangle by construction --
-    so the test is "does the band carry paint other than the bare background",
-    not "is the band exactly one colour".  A raster too small to hold a band
-    reports no measurable contamination and lets the bounds failure speak.
+    The guard band is the ``PROXY_GUARD_PX``-wide frame around the *declared*
+    rectangle inside the published crop, which for an object whose paint stays
+    inside its own rectangle is the whole raster and for an object that overflows
+    is a frame somewhere inside it.  ``left``/``top`` place that frame, so the
+    band is measured where it really is instead of at the image's edge, where an
+    expanded crop legitimately carries the object's own overflow.
+
+    The background is the modal colour at the raster's four corners -- the bare
+    background the crop was taken out of -- so the test is "does the band carry
+    paint other than that", not "is the band exactly one colour".  A raster too
+    small to hold a band reports no measurable contamination and lets the bounds
+    failure speak.
     """
+    # The guard band is the frame immediately *outside* the declared rectangle,
+    # which is also the frame immediately inside the published crop when the crop
+    # is exactly the declared rectangle plus that band.  ``left``/``top`` place
+    # the frame's own outer corner, so the declared rectangle begins one band in
+    # and the frame reaches one band out again.
+    #
+    # A crop the object's own overflow widened does not necessarily hold that
+    # whole frame -- the paint reaches the image's own edge on the axis it
+    # overflowed -- so the frame is measured where it exists and the caller judges
+    # contamination only on a crop that really contains it.  Nothing is excused:
+    # an expanded crop is judged on coverage instead, which is what says whether
+    # the object's overflow had anywhere to go.
     band = PROXY_GUARD_PX
     if rgb.width <= band * 2 or rgb.height <= band * 2:
         return None, 0.0
@@ -2387,12 +2486,19 @@ def _guard_band_paint(
     ]
     background = max(set(samples), key=samples.count)
 
+    declared_left = left + band
+    declared_top = top + band
+    declared_right = declared_left + expected_width
+    declared_bottom = declared_top + expected_height
     band_pixels: list[tuple[int, int, int]] = []
-    for x in range(rgb.width):
-        for y in (0, band - 1, rgb.height - band, rgb.height - 1):
-            band_pixels.append(tuple(int(c) for c in rgb.getpixel((x, y))[:3]))
-    for y in range(rgb.height):
-        for x in (0, band - 1, rgb.width - band, rgb.width - 1):
+    for y in range(max(0, top), min(rgb.height, top + expected_height + band * 2)):
+        for x in range(max(0, left), min(rgb.width, left + expected_width + band * 2)):
+            if (
+                declared_left <= x < declared_right
+                and declared_top <= y < declared_bottom
+            ):
+                # Inside the declared rectangle: the object's own paint.
+                continue
             band_pixels.append(tuple(int(c) for c in rgb.getpixel((x, y))[:3]))
     if not band_pixels:
         return background, 0.0

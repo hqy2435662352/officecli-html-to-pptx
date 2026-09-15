@@ -419,6 +419,23 @@ PROBE_B_SIBLING = "probe-sibling"
 PROBE_B_SIBLING_TEXT = "Ungrouped sibling text"
 PROBE_B_SIBLING_BOX = (50.0, 420.0, 400.0, 30.0)
 
+#: A text object whose content overflows its own declared rectangle.
+#:
+#: PowerPoint draws a no-autofit line outside its box, and the source page shows
+#: that overflow: the object's declared rectangle is a 120x14pt band while its
+#: 22pt line is painted largely above and below it.  The typeface is left to the
+#: theme (``/theme/minorFont``), which is the base-only condition -- the slide does
+#: not own the object's visible text appearance -- so the object is represented by
+#: an object-local visual proxy, and that proxy has to cover what the object
+#: paints rather than only where it was declared.
+PROBE_B_OVERFLOW_BLOCK = "clipped-text-block"
+PROBE_B_OVERFLOW_BOX = (620.0, 120.0, 120.0, 14.0)
+PROBE_B_OVERFLOW_TEXT = "Clipped overflow probe line"
+PROBE_B_OVERFLOW_SIZE_PT = 22.0
+#: The typeface OfficeCLI resolves for the probe through the theme, which is what
+#: makes the object base-only rather than slide-owned.
+PROBE_B_OVERFLOW_THEME_SOURCE = "/theme/minorFont"
+
 #: Every fixed string Probe B must still carry after a rebuild.
 PROBE_B_FIXED_STRINGS: tuple[str, ...] = (
     PROBE_B_RICH_PARAGRAPH_1,
@@ -426,6 +443,7 @@ PROBE_B_FIXED_STRINGS: tuple[str, ...] = (
     *PROBE_B_LIST_ITEMS,
     PROBE_B_THEME_TEXT,
     PROBE_B_SIBLING_TEXT,
+    PROBE_B_OVERFLOW_TEXT,
 )
 
 
@@ -680,25 +698,38 @@ def _paragraph_offset(object_node: Mapping[str, Any], marker: str) -> tuple[int,
 
 
 def _hard_break_range() -> tuple[int, int]:
-    """The hard-break paragraph's range, derived from the authored text body.
+    """The hard-break paragraph's own character span, derived from the body.
 
-    The body is one ``\\n``-separated list of paragraphs.  OfficeCLI's character
-    scope counts a paragraph as its *read-back* text -- the run text OfficeCLI
-    reports, which drops the line break that produced no characters of its own --
-    plus one for the separator after it, and the run text of the paragraphs
-    before it exclude the paragraph break itself.  The range is therefore
-    ``[offset, offset + len(paragraph) - 1)`` where ``offset`` is the sum of the
-    paragraphs before it, and the builder verifies it against a readback of the
-    built fixture: the declaration must land on the marked paragraph and on no
-    other.
+    The body is one ``\\n``-separated list of paragraphs, so the marked
+    paragraph's characters start after the paragraphs above it and the separator
+    each of them contributes.  How OfficeCLI counts the separator after the
+    *marked* paragraph is its own arithmetic, and the builder calibrates against
+    a readback rather than assuming it: this returns the offset and the length,
+    and the caller tries the neighbouring end offsets OfficeCLI's own scope
+    accepts, verifying each against a readback of the built fixture.
     """
     paragraphs = PROBE_B_RICH_TEXT.split("\n")
     offset = 0
     for paragraph in paragraphs:
         if PROBE_B_HARD_BREAK_MARKER in paragraph:
-            return offset, len(paragraph) - 1
-        offset += len(paragraph.replace("\u000b", ""))
+            return offset, len(paragraph.replace("\u000b", ""))
+        offset += len(paragraph.replace("\u000b", "")) + 1
     raise AssertionError("the rich-text body has no hard-break paragraph")
+
+
+def _hard_break_range_ends(start: int, length: int) -> tuple[int, ...]:
+    """The end offsets to try for the marked paragraph, nearest first.
+
+    The marked paragraph's characters occupy ``[start, start + length)`` and the
+    scope OfficeCLI validates against may or may not count the separator that
+    follows it, so the end offset nearest the paragraph's own last character is
+    tried first and the neighbours after it.  Every candidate is verified by a
+    readback, so trying one that OfficeCLI refuses costs a retry, never a wrong
+    declaration.
+    """
+    return tuple(
+        end for end in (start + length - 1, start + length, start + length - 2) if end > start
+    )
 
 
 def _run_colors(paragraph: Mapping[str, Any]) -> list[str]:
@@ -873,6 +904,7 @@ def probe_b_commands() -> list[dict[str, Any]]:
             color=PROBE_B_THEME_TOKEN,
         )
     )
+    commands.append(_overflow_textbox())
     for name, geometry, box, fill in PROBE_B_SHAPES:
         commands.append(
             _shape(
@@ -932,6 +964,26 @@ def probe_b_commands() -> list[dict[str, Any]]:
         )
     )
     return commands
+
+
+def _overflow_textbox() -> dict[str, Any]:
+    """The probe's overflowing base-only text object, as an OfficeCLI command.
+
+    The typeface is deliberately *not* declared: OfficeCLI then resolves it from
+    the theme, which is the base-only condition the classification is built on,
+    so the object is represented by an object-local visual proxy.  Its declared
+    rectangle is much shorter than its 22pt line, which is what makes the line
+    paint outside it -- exactly the arrangement the proxy crop has to cover.
+    """
+    payload = _textbox(
+        PROBE_B_OVERFLOW_BLOCK,
+        PROBE_B_OVERFLOW_TEXT,
+        PROBE_B_OVERFLOW_BOX,
+        size=f"{PROBE_B_OVERFLOW_SIZE_PT:g}pt",
+        lineSpacing="0.5x",
+    )
+    payload["props"].pop("font", None)
+    return payload
 
 
 def probe_b_format_commands(rich_object: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -1030,10 +1082,11 @@ def build_probe_b(directory: Path) -> Path:
     """Build probe B through OfficeCLI and return its deck path.
 
     Three OfficeCLI passes: the layout, the run and paragraph declarations whose
-    ranges are calibrated against the built deck's own readback, and -- if
-    OfficeCLI's own range arithmetic disagrees with that calibration by one --
-    one retry of the hard-break declaration at the neighbouring offset.  The
-    retry is verified against a readback, not assumed.
+    ranges are calibrated against the built deck's own readback, and the
+    hard-break declaration.  The hard-break range's end offset is calibrated the
+    same way: OfficeCLI's own scope arithmetic decides whether the separator
+    after the marked paragraph counts, so the nearest end offsets are tried in
+    turn and every attempt is verified against a readback of the built deck.
     """
     deck = _build_deck(directory / PROBE_B_DECK_NAME, probe_b_commands())
     rich = _read_object(deck, 1, PROBE_B_RICH_BLOCK)
@@ -1046,35 +1099,37 @@ def build_probe_b(directory: Path) -> Path:
     for candidate in (start, start - 1, start + 1):
         if candidate < 0:
             continue
-        try:
-            officecli(
-                "batch",
-                str(deck),
-                "--commands",
-                json.dumps(
-                    [
-                        *commands,
-                        *_apply_hard_break_declaration(
-                            rich_path, candidate, candidate + length
-                        ),
-                    ],
-                    ensure_ascii=False,
-                ),
+        for end in _hard_break_range_ends(candidate, length):
+            try:
+                officecli(
+                    "batch",
+                    str(deck),
+                    "--commands",
+                    json.dumps(
+                        [
+                            *commands,
+                            *_apply_hard_break_declaration(
+                                rich_path, candidate, end
+                            ),
+                        ],
+                        ensure_ascii=False,
+                    ),
+                )
+            except RuntimeError:
+                # An out-of-bounds range is OfficeCLI refusing the offset, which
+                # is exactly the signal this calibration loop is looking for.
+                continue
+            paragraphs = (
+                _read_object(deck, 1, PROBE_B_RICH_BLOCK).get("children") or []
             )
-        except RuntimeError:
-            # An out-of-bounds range is OfficeCLI refusing the offset, which is
-            # exactly the signal this calibration loop is looking for.
-            continue
-        paragraphs = _read_object(deck, 1, PROBE_B_RICH_BLOCK).get("children") or []
-        if _hard_break_declaration_is_placed(paragraphs):
-            break
-    else:  # pragma: no cover - a fixture that cannot be placed is a fixture bug
-        raise AssertionError(
-            "the hard-break declaration could not be placed on the marked "
-            "paragraph of the probe B fixture"
-        )
+            if _hard_break_declaration_is_placed(paragraphs):
+                officecli("close", str(deck))
+                return deck
     officecli("close", str(deck))
-    return deck
+    raise AssertionError(
+        "the hard-break declaration could not be placed on the marked "
+        "paragraph of the probe B fixture"
+    )
 
 
 def build_synthetic_probes(directory: Path) -> dict[str, Path]:

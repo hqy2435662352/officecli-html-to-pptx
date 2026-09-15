@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import base64
+import dataclasses
 from functools import lru_cache
 import json
 import posixpath
@@ -813,8 +814,98 @@ def _resolved_font_family(sources: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
-def _paragraphs(node: Mapping[str, Any]) -> tuple[CapturedParagraph, ...]:
-    """Read the paragraph/run structure OfficeCLI exposes for a text body."""
+def _slide_line_breaks(
+    pptx_path: Path, slide_number: int
+) -> tuple[tuple[tuple[int, ...], tuple[int, ...]], ...]:
+    """Read every text body's intra-paragraph line breaks out of the slide part.
+
+    OfficeCLI's readback drops ``<a:br/>``: it reports the paragraph as its two
+    runs with nothing between them, so the *characters* survive the read while
+    the break that separates them does not.  The break is source truth the reader
+    must not lose, because without it the projection cannot tell a hard break
+    from two runs that are simply adjacent -- and would publish the two authored
+    lines as one line of run-together text.
+
+    The break is therefore read from the package's own slide part, which is a
+    document this reader already reads for picture media.  Each entry is the
+    run-length layout of a paragraph that declares a break, paired with the
+    zero-based run index each break follows.  The layout is the paragraph's own
+    identity here: it is a partition of the paragraph's characters, so it is the
+    one thing the readback and the source part state identically, and it is
+    checked against the runs before anything is restored.
+    """
+    path = f"ppt/slides/slide{slide_number}.xml"
+    try:
+        with zipfile.ZipFile(pptx_path) as archive:
+            raw = archive.read(path)
+    except (KeyError, OSError, zipfile.BadZipFile):
+        # A part this reader cannot open simply contributes no break evidence;
+        # the capture then reads exactly as it did before this evidence existed.
+        return ()
+    try:
+        root = ElementTree.fromstring(raw)
+    except ElementTree.ParseError:
+        return ()
+    found: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
+    for body in _text_bodies(root):
+        for paragraph in body:
+            positions = _paragraph_break_positions(paragraph)
+            if positions:
+                found.append((_paragraph_run_lengths(paragraph), positions))
+    return tuple(found)
+
+
+def _text_bodies(root: Any) -> Iterator[Any]:
+    """Yield every ``p:txBody`` of one slide part, in document order."""
+    for node in root.iter():
+        if _local_name(node.tag) == "txBody":
+            yield node
+
+
+def _paragraph_run_lengths(paragraph: Any) -> tuple[int, ...]:
+    """Return the length of each run of one paragraph, in document order."""
+    lengths: list[int] = []
+    for child in paragraph:
+        name = _local_name(child.tag)
+        if name not in {"r", "fld"}:
+            continue
+        lengths.append(
+            sum(
+                len(str(node.text or ""))
+                for node in child.iter()
+                if _local_name(node.tag) == "t"
+            )
+        )
+    return tuple(lengths)
+
+
+def _paragraph_break_positions(paragraph: Any) -> tuple[int, ...]:
+    """Return the run index each ``<a:br/>`` of one paragraph follows."""
+    positions: list[int] = []
+    index = 0
+    for child in paragraph:
+        name = _local_name(child.tag)
+        if name == "br":
+            positions.append(index)
+        elif name in {"r", "fld"}:
+            index += 1
+    return tuple(positions)
+
+
+def _paragraphs(
+    node: Mapping[str, Any],
+    *,
+    breaks: Sequence[tuple[tuple[int, ...], tuple[int, ...]]] = (),
+) -> tuple[CapturedParagraph, ...]:
+    """Read the paragraph/run structure OfficeCLI exposes for a text body.
+
+    ``breaks`` pairs a paragraph's run-length layout with the run index each of
+    its own ``<a:br/>`` elements follows, read from the source part because
+    OfficeCLI's readback drops the break itself.  A paragraph whose layout
+    matches one of them is re-partitioned on its breaks, so the two lines a hard
+    break separates are two paragraphs of the projection -- which is the one
+    separator the Canonical Author paragraph orthography has.
+    """
     fmt = dict(node.get("format") or {})
     text_children = [
         child for child in _children(node) if str(child.get("type")) == "paragraph"
@@ -834,10 +925,13 @@ def _paragraphs(node: Mapping[str, Any]) -> tuple[CapturedParagraph, ...]:
     result: list[CapturedParagraph] = []
     for paragraph in text_children:
         paragraph_format = dict(paragraph.get("format") or {})
-        runs = tuple(
-            _run_manifest(run, {**fmt, **paragraph_format}, first_run_format)
-            for run in _children(paragraph)
-            if str(run.get("type")) == "run"
+        runs = _with_line_breaks(
+            tuple(
+                _run_manifest(run, {**fmt, **paragraph_format}, first_run_format)
+                for run in _children(paragraph)
+                if str(run.get("type")) == "run"
+            ),
+            breaks,
         )
         text = _text_of(paragraph)
         if not text:
@@ -870,6 +964,84 @@ def _paragraphs(node: Mapping[str, Any]) -> tuple[CapturedParagraph, ...]:
     return tuple(result)
 
 
+def _with_line_breaks(
+    runs: tuple[CapturedRun, ...],
+    breaks: Sequence[tuple[tuple[int, ...], tuple[int, ...]]] | None,
+) -> tuple[CapturedRun, ...]:
+    """Return ``runs`` with PowerPoint's hard break restored between them.
+
+    The break is put back where the source declares it -- after the run the
+    source's own run index names -- so the paragraph's own characters are
+    unchanged and the one thing the readback lost is the one thing this puts
+    back.
+
+    The two sides count runs differently: the source part's paragraph is split
+    into runs by OfficeCLI's own readback, which can divide one authored run's
+    characters across several runs.  The paragraph's *text* is what both sides
+    state identically, so a recorded break is matched by its paragraph's whole
+    text and the break's character offset inside it, and the run that owns that
+    offset is the run the break follows.  The recorded position is used directly
+    when the layouts do agree, and a paragraph that matches no recorded break is
+    left exactly as it was read -- which is what keeps a body of ordinary
+    adjacent runs adjacent.
+    """
+    if not breaks:
+        return runs
+    text = "".join(run.text for run in runs)
+    if not text:
+        return runs
+    layout = tuple(len(run.text) for run in runs)
+    for recorded, positions in breaks:
+        if recorded == layout:
+            return _break_after_indices(runs, positions)
+        if sum(recorded) != len(text):
+            continue
+        offsets: set[int] = set()
+        for index in positions:
+            if index < len(recorded):
+                # A break at run index N follows the first N runs, so its
+                # character offset is the sum of their lengths.
+                offsets.add(sum(recorded[:index]))
+        if not offsets:
+            continue
+        return _break_after_offsets(runs, offsets)
+    return runs
+
+
+def _break_after_indices(
+    runs: tuple[CapturedRun, ...], positions: Sequence[int]
+) -> tuple[CapturedRun, ...]:
+    """Append the hard break to the run at each recorded index."""
+    wanted = set(positions)
+    return tuple(
+        dataclasses.replace(run, text=run.text + _HARD_BREAK)
+        if index in wanted
+        else run
+        for index, run in enumerate(runs, start=1)
+    )
+
+
+def _break_after_offsets(
+    runs: tuple[CapturedRun, ...], offsets: set[int]
+) -> tuple[CapturedRun, ...]:
+    """Append the hard break to the run that owns each character offset."""
+    restored: list[CapturedRun] = []
+    consumed = 0
+    for run in runs:
+        consumed += len(run.text)
+        restored.append(
+            dataclasses.replace(run, text=run.text + _HARD_BREAK)
+            if consumed in offsets
+            else run
+        )
+    return tuple(restored)
+
+
+# PowerPoint's intra-paragraph line break.  It is a character in a text body and
+# never a character of the document's text: the projection re-partitions on it.
+_HARD_BREAK = "\x0b"
+
+
 def _number(value: Any) -> float:
     try:
         return float(value)
@@ -888,12 +1060,16 @@ def _split_intra_paragraph_breaks(
     that break: every run's text is split in source order, so each side keeps
     exactly the characters it owned, and the run formatting is preserved.  Only
     the paragraph count changes, and the projection report records that.
+
+    The break is looked for in the paragraph's *runs*, not in its aggregate text:
+    the aggregate text OfficeCLI reports is the runs concatenated, so a paragraph
+    whose break this reader restored onto a run would otherwise look unbroken.
     """
-    if not any("\x0b" in paragraph.text for paragraph in paragraphs):
+    if not _carries_hard_break(paragraphs):
         return tuple(paragraphs)
     reordered: list[CapturedParagraph] = []
     for paragraph in paragraphs:
-        if "\x0b" not in paragraph.text:
+        if not any("\x0b" in run.text for run in paragraph.runs):
             reordered.append(paragraph)
             continue
         pieces: list[list[CapturedRun]] = [[]]
@@ -1337,6 +1513,13 @@ def _table_evidence(
     )
 
 
+def _carries_hard_break(paragraphs: Sequence[CapturedParagraph]) -> bool:
+    """Whether any paragraph's runs still carry a restored hard break."""
+    return any(
+        "\x0b" in run.text for paragraph in paragraphs for run in paragraph.runs
+    )
+
+
 def _captured_object(
     node: Mapping[str, Any],
     *,
@@ -1346,6 +1529,7 @@ def _captured_object(
     source_key: str = "",
     owner: str | None = None,
     owner_kind: str | None = None,
+    line_breaks: Sequence[tuple[tuple[int, ...], tuple[int, ...]]] | None = None,
 ) -> CapturedObject:
     fmt = dict(node.get("format") or {})
     source_object = str(node.get("path") or "")
@@ -1353,14 +1537,14 @@ def _captured_object(
     bounds = tuple(
         length_to_points(fmt.get(key)) for key in ("x", "y", "width", "height")
     )
-    paragraphs = _split_intra_paragraph_breaks(_paragraphs(node))
+    paragraphs = _split_intra_paragraph_breaks(
+        _paragraphs(node, breaks=line_breaks)
+    )
     text = _text_of(node)
-    if not text and paragraphs:
-        text = "\n".join(paragraph.text for paragraph in paragraphs)
-    elif "\x0b" in text:
-        # The reader may keep the intra-paragraph break in the aggregate text
-        # while the paragraph list has already been re-partitioned on it; the
-        # paragraph list is the authority for the projected text.
+    if not text or "\x0b" in text or _carries_hard_break(paragraphs):
+        # The paragraph list is the authority for the projected text: the
+        # aggregate text OfficeCLI reports is the runs concatenated, so it
+        # carries no hard break even where the source declares one.
         text = "\n".join(paragraph.text for paragraph in paragraphs)
     has_text = bool(text.strip() or any(paragraph.runs for paragraph in paragraphs))
 
@@ -1389,6 +1573,7 @@ def _captured_object(
                 source_key=source_key,
                 owner=source_object,
                 owner_kind=kind,
+                line_breaks=line_breaks,
             )
             for child in _children(node)
         )
@@ -1590,6 +1775,19 @@ def _rgb_triple(pixel: Any) -> tuple[int, int, int]:
     return (int(pixel[0]), int(pixel[1]), int(pixel[2]))
 
 
+def _raster_rgb(raster: Path) -> Any:
+    """Open one render as RGB.
+
+    The raster is a screenshot the caller has already written and validated; the
+    returned image owns its pixels independently of the file handle, so callers
+    may hold it while the file is closed.
+    """
+    from PIL import Image
+
+    with Image.open(raster) as image:
+        return image.convert("RGB")
+
+
 # Properties an object's own paint is reproduced from when it is rebuilt into a
 # fresh deck for its proxy.  ``crop`` is picture-specific; ``src`` is supplied
 # separately because it is a file path, not a read-back property.
@@ -1627,8 +1825,94 @@ _RECONSTRUCTABLE_MEMBER_KINDS = frozenset(
 # is allowed to overflow its own box, so reconstructing it with OfficeCLI's
 # default wrapping on would re-break the line and the proxy would then show a
 # clipped fragment of the object instead of the object.
+#
+# ``lineSpacing`` is load-bearing in the same way and for the same reason.  A
+# text body's *empty* paragraphs are lines too: reconstructing a body whose
+# leading blank lines are spaced at 0.57x with OfficeCLI's default spacing makes
+# those two lines several times taller, which pushes the text the object really
+# paints far outside its own rectangle -- and the proxy is then a crop of where
+# the text is not.  Composing the object with its own line spacing is what keeps
+# the reconstruction's layout the source's layout.
+#
+# ``valign`` places the body vertically the way the source does.  OfficeCLI's
+# default centres a body that is taller than its box, which splits the same
+# overflow half above and half below the rectangle; the source states ``top`` for
+# a body whose lines run down from the top of its box, and the proxy is otherwise
+# the right paint in the wrong place.
 _TEXTUAL_KINDS = frozenset({"shape", "textbox"})
-_TEXT_PROPERTIES = ("size", "font", "color", "align", "bold", "italic", "wrap")
+_TEXT_PROPERTIES = (
+    "size",
+    "font",
+    "color",
+    "align",
+    "bold",
+    "italic",
+    "underline",
+    "wrap",
+    "lineSpacing",
+    "valign",
+)
+
+# How a text-bearing proxy's reconstruction is authored to fit the object's own
+# rectangle.
+#
+# The reconstruction is always composed with ``autoFit: none``.  Left to itself
+# OfficeCLI fits a body to its box -- shrinking and re-wrapping the text -- and a
+# proxy of a body the source draws at full size must not be a picture of text the
+# source does not paint.  With the fit off, the body is drawn at its authored
+# size and the crop decides what of it is shown, exactly as the source page does.
+_PROXY_AUTOFIT = "none"
+
+
+# How far past its declared rectangle a proxy's crop may reach before the
+# expansion is refused.
+#
+# An expansion is only worth having while it is the *object's* own overflow: a
+# line that hangs a little below the box the source drew it in.  A reconstruction
+# whose substituted font metrics lay the body out several times taller than the
+# box turns the same mechanism into a proxy that stands over the objects below it
+# and buries a page the source shows clean, which is a worse representation than
+# the clipped one it replaced.  The limit is one line's worth of slack beyond the
+# declared rectangle -- enough for a single overflowing line at any size this
+# projection handles -- and a body that needs more than that is reporting a
+# layout mismatch rather than an object that overflows.
+_PROXY_EXPANSION_SLACK_PX = 64.0
+
+
+def _expansion_limit(declared_px: float) -> float:
+    """Return how far a proxy's crop may reach past its declared rectangle."""
+    return declared_px + _PROXY_EXPANSION_SLACK_PX
+
+
+@dataclass(frozen=True)
+class ProxyGeometry:
+    """Where one published proxy image actually sits on the reconstruction render.
+
+    A proxy is cropped out of the isolated render at the union of the object's
+    *declared* rectangle and the rectangle its paint actually occupies, because
+    PowerPoint paints a no-autofit line outside its own box and the source page
+    shows that overflow.  The crop rectangle is therefore not always the declared
+    one, and the emitted element has to be placed by what the image really is
+    rather than by where the object was declared.
+
+    ``rect_px`` is ``(left, top, width, height)`` in the reconstruction render's
+    own pixels, ``origin_px`` is the same rectangle's top-left corner expressed in
+    the declared rectangle's pixel origin -- which is exactly the offset the DOM
+    has to apply to an image drawn at the declared bounds -- and ``clamped`` is
+    true when the measured paint reached the render's own edge, so the crop could
+    not have covered all of it even in principle.
+    """
+
+    rect_px: tuple[int, int, int, int]
+    origin_px: tuple[int, int]
+    clamped: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "rect_px": list(self.rect_px),
+            "origin_px": list(self.origin_px),
+            "clamped": self.clamped,
+        }
 
 
 @dataclass(frozen=True)
@@ -1910,6 +2194,12 @@ def rebuild_keys(object_kind: str) -> tuple[str, ...]:
     return _REBUILD_PROPERTIES
 
 
+# Text properties whose ``none`` is a declared value rather than the absence of
+# one.  Everywhere else ``none`` in a readback means the property is not
+# authored, which is why it is not written back.
+_NONE_IS_A_VALUE = frozenset({"autoFit"})
+
+
 def _add_text_paint(
     rebuild: dict[str, str], text: Any, properties: Mapping[str, Any]
 ) -> None:
@@ -1920,6 +2210,11 @@ def _add_text_paint(
     never drift into disagreeing about what a text object's visible content is.
     The text properties are set only where the object's own readback supplies
     them, so an inherited value is never invented as if the slide owned it.
+
+    ``none`` is a real value for ``autoFit`` -- it is the source saying the box
+    does *not* fit its text -- so where a reconstruction carries the authored
+    setting it is written back like any other value instead of being read as "not
+    declared".
     """
     body = str(text or "")
     if body:
@@ -1929,8 +2224,13 @@ def _add_text_paint(
         if value is None:
             continue
         property_text = str(value).strip()
-        if property_text and property_text.lower() != "none":
-            rebuild.setdefault(key, property_text)
+        if not property_text:
+            continue
+        if property_text.lower() == "none" and key not in _NONE_IS_A_VALUE:
+            continue
+        rebuild.setdefault(key, property_text)
+    # The body is asked to fit the object's own rectangle: see ``_PROXY_AUTOFIT``.
+    rebuild["autoFit"] = _PROXY_AUTOFIT
 
 
 _GRADIENT_STOP_RE = re.compile(r"#[0-9a-fA-F]{6,8}")
@@ -2037,8 +2337,8 @@ class IsolatedRenderer:
         guard_px: int = 2,
         placements: Sequence[ContainerPlacement] = (),
         text: str = "",
-    ) -> Path:
-        """Rebuild ``source_object`` alone and crop it to ``bounds_pt``.
+    ) -> tuple[Path, ProxyGeometry]:
+        """Rebuild ``source_object`` alone and crop it to what it paints.
 
         ``properties`` is the object's OfficeCLI ``format`` mapping, ``text`` is
         its own captured text, and ``media_path`` is the extracted picture
@@ -2046,6 +2346,13 @@ class IsolatedRenderer:
         that produced ``bounds_pt``.  ``text`` is passed separately because
         OfficeCLI reports an object's text as its own field rather than as one of
         its ``format`` properties.
+
+        The published image is cropped at the union of the object's declared
+        rectangle and its measured painted extent, so a no-autofit line that
+        overflows its own box is kept whole, and the returned
+        :class:`ProxyGeometry` carries where that crop really is so the emitter
+        can place the image by its real geometry rather than by the declared
+        rectangle.
 
         A paint-less container has no paint of its own, so ``placements`` carries
         the candidate readings of its visible content: its own children, each
@@ -2087,6 +2394,7 @@ class IsolatedRenderer:
 
         stem = f"isolated-{slide_number:03d}-{abs(hash(source_object)) % 10**8:08d}"
         isolated = False
+        geometry: ProxyGeometry | None = None
         refusals: list[str] = []
         try:
             # A container has one candidate per reading of its children; every
@@ -2130,13 +2438,24 @@ class IsolatedRenderer:
                         if refusal is not None:
                             refusals.append(f"its {label} placement {refusal}")
                             continue
-                    self._crop(
+                    # The render's bare background is sampled once for both gates
+                    # that need it: the crop measures the object's painted extent
+                    # against it, and the blank-proxy gate asks whether the crop
+                    # carries any paint at all.
+                    background = _render_background(
+                        _raster_rgb(raster),
+                        bounds_pt,
+                        pixels_per_point,
+                        guard_px,
+                    )
+                    crop = self._crop(
                         raster,
                         bounds_pt,
                         slide_width_pt=self.slide_width_pt,
                         pixels_per_point=pixels_per_point,
                         guard_px=guard_px,
                         destination=target,
+                        background=background,
                     )
                     if object_kind in _RECONSTRUCTED_PAINT_KINDS:
                         self._assert_visible_paint(
@@ -2144,7 +2463,9 @@ class IsolatedRenderer:
                             source_object=source_object,
                             pixels_per_point=pixels_per_point,
                             guard_px=guard_px,
+                            background=background,
                         )
+                    geometry = crop
                     isolated = True
                     # The first candidate whose measured paint lands inside the
                     # container is the representation; a later reading never gets
@@ -2171,11 +2492,11 @@ class IsolatedRenderer:
                 # behind: a rejected proxy must not stay on disk looking like a
                 # published one.
                 target.unlink(missing_ok=True)
-        if not target.is_file():
+        if not target.is_file() or geometry is None:
             raise ObjectIsolationError(
                 f"Isolated render produced no image for {source_object}."
             )
-        return target
+        return target, geometry
 
     def _rebuild_isolated(
         self,
@@ -2433,6 +2754,7 @@ class IsolatedRenderer:
         source_object: str,
         pixels_per_point: float,
         guard_px: int,
+        background: tuple[int, int, int] | None = None,
     ) -> None:
         """Refuse a reconstructed proxy that carries no paint at all.
 
@@ -2446,17 +2768,14 @@ class IsolatedRenderer:
         """
         from PIL import Image
 
-        with Image.open(raster) as image:
-            rgb = image.convert("RGB")
+        if background is None:
             background = _render_background(
-                rgb, bounds_pt, pixels_per_point, guard_px
+                _raster_rgb(raster), bounds_pt, pixels_per_point, guard_px
             )
-            if background is None:
-                return
-            with Image.open(cropped) as crop_image:
-                painted = _carries_other_than(
-                    crop_image.convert("RGB"), background
-                )
+        if background is None:
+            return
+        with Image.open(cropped) as crop_image:
+            painted = _carries_other_than(crop_image.convert("RGB"), background)
         if painted:
             return
         raise ContainerReconciliationError(
@@ -2509,8 +2828,9 @@ class IsolatedRenderer:
         pixels_per_point: float,
         guard_px: int,
         destination: Path,
-    ) -> None:
-        """Crop the target's rectangle out of an isolated slide render.
+        background: tuple[int, int, int] | None = None,
+    ) -> ProxyGeometry:
+        """Crop the target's painted rectangle out of an isolated slide render.
 
         The render's own density is measured from the raster and the slide's
         point width, and it must reach ``pixels_per_point`` -- the density the
@@ -2518,6 +2838,20 @@ class IsolatedRenderer:
         upscaled in the DOM, so it is a hard failure rather than a silently
         softened proxy.  The only tolerance is whole-pixel rounding of the
         render; a raster that merely clears some lower floor is not accepted.
+
+        The crop is the union of the object's declared rectangle and the
+        rectangle its paint actually occupies, because PowerPoint paints a
+        no-autofit line outside its own box: a text object whose content
+        overflows its declared rectangle is *supposed* to show that overflow, and
+        cropping to the declared rectangle would slice those lines mid-glyph.
+        The deck holds nothing but this object, so a wider crop can only ever add
+        more of the object's own paint.
+
+        The union never shrinks below the declared rectangle plus the guard band,
+        so an object whose paint is entirely inside its own rectangle keeps
+        exactly the geometry it had before.  When the measured paint reaches the
+        render's own edge the crop is clamped and says so: an expansion that
+        would leave the slide is recorded rather than silently swallowed.
         """
         from PIL import Image
 
@@ -2547,10 +2881,48 @@ class IsolatedRenderer:
                     "A proxy rectangle must be positive; got "
                     f"{width}x{height} for bounds {bounds_pt}."
                 )
-            crop_left = max(0, left)
-            crop_top = max(0, top)
-            crop_right = max(crop_left + 1, min(left + width, raster_width))
-            crop_bottom = max(crop_top + 1, min(top + height, raster_height))
+            declared_right = left + width
+            declared_bottom = top + height
+            crop_left, crop_top = left, top
+            crop_right, crop_bottom = declared_right, declared_bottom
+            escaped = False
+            extent = IsolatedRenderer._painted_extent(
+                rgb, bounds_pt, factor, guard_px, background
+            )
+            if extent is not None:
+                # The declared rectangle is already the floor, so paint inside it
+                # -- including the object's own antialiased edge -- changes
+                # nothing.  Only paint that reaches past it widens the crop, and
+                # only while the reach is the object's own overflow rather than a
+                # reconstruction whose layout has drifted: see
+                # :data:`_PROXY_EXPANSION_SLACK_PX`.
+                if (
+                    extent[2] - extent[0] <= _expansion_limit(width)
+                    and extent[3] - extent[1] <= _expansion_limit(height)
+                ):
+                    escaped = (
+                        extent[0] < crop_left
+                        or extent[1] < crop_top
+                        or extent[2] > crop_right
+                        or extent[3] > crop_bottom
+                    )
+                    crop_left = min(crop_left, extent[0])
+                    crop_top = min(crop_top, extent[1])
+                    crop_right = max(crop_right, extent[2])
+                    crop_bottom = max(crop_bottom, extent[3])
+            clamped = (
+                escaped
+                and (
+                    crop_left < 0
+                    or crop_top < 0
+                    or crop_right > raster_width
+                    or crop_bottom > raster_height
+                )
+            )
+            crop_left = max(0, crop_left)
+            crop_top = max(0, crop_top)
+            crop_right = max(crop_left + 1, min(crop_right, raster_width))
+            crop_bottom = max(crop_top + 1, min(crop_bottom, raster_height))
             cropped = rgb.crop((crop_left, crop_top, crop_right, crop_bottom))
             if cropped.width < 2 or cropped.height < 2:
                 raise ObjectIsolationError(
@@ -2559,6 +2931,50 @@ class IsolatedRenderer:
                     "is not fully inside the rendered slide."
                 )
             cropped.save(destination, format="PNG")
+        return ProxyGeometry(
+            rect_px=(
+                crop_left,
+                crop_top,
+                crop_right - crop_left,
+                crop_bottom - crop_top,
+            ),
+            origin_px=(crop_left - left, crop_top - top),
+            clamped=clamped,
+        )
+
+    @staticmethod
+    def _painted_extent(
+        rgb: Any,
+        bounds_pt: tuple[float, float, float, float],
+        factor: float,
+        guard_px: int,
+        background: tuple[int, int, int] | None,
+    ) -> tuple[int, int, int, int] | None:
+        """Return where this render's paint actually is, in raster pixels.
+
+        The render holds the target object and nothing else, so its paint *is*
+        the object -- wherever the object's own overflow put it.  The background
+        to measure against is the same bare-render background the container
+        placement gate samples, and when the declared rectangle leaves no honest
+        sample point the measurement is simply not made.
+        """
+        if background is None:
+            background = _render_background(rgb, bounds_pt, factor, guard_px)
+        if background is None:
+            return None
+        # The raster's own edge is viewer chrome rather than slide paint, so the
+        # extent is measured one inset in and mapped back out afterwards.
+        inset = _RASTER_INSET_PX
+        field = rgb.crop((inset, inset, rgb.width - inset, rgb.height - inset))
+        extent = _painted_extent(field, background)
+        if extent is None:
+            return None
+        return (
+            extent[0] + inset,
+            extent[1] + inset,
+            extent[2] + inset,
+            extent[3] + inset,
+        )
 
 
 def _nested_pictures(obj: CapturedObject) -> tuple[CapturedObject, ...]:
@@ -2636,6 +3052,7 @@ def capture_presentation(
             "get", str(path), f"/slide[{number}]", "--depth", "5"
         )
         slide_format = dict(node.get("format") or {})
+        line_breaks = _slide_line_breaks(path, number)
         objects = tuple(
             sorted(
                 (
@@ -2645,6 +3062,7 @@ def capture_presentation(
                         pptx_path=path,
                         capture_pictures=True,
                         source_key=source_key,
+                        line_breaks=line_breaks,
                     )
                     for child in _children(node)
                 ),
@@ -2703,6 +3121,7 @@ __all__ = [
     "PROXY_BACKGROUND_TOLERANCE",
     "PROXY_DENSITY_TOLERANCE",
     "PptxReadError",
+    "ProxyGeometry",
     "SCREENSHOT_RENDER",
     "SCREENSHOT_VIEWPORT_WIDTH",
     "VISIBLE_BASE_ONLY_PROPERTIES",

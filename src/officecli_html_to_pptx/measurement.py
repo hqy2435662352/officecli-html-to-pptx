@@ -55,6 +55,22 @@ EXTRACTION_JS = """
         }
         return Math.max(0, count - 1);
     }
+    // A numbered marker is written ``a:buAutoNum`` and a bullet ``a:buChar``, and
+    // which one an item gets is decided here rather than by literal marker text
+    // or by one list object per marker.  An item of an <ol> is numbered, and so
+    // is an item of a <ul> that declares its own numbering with an explicit
+    // ``list-style-type`` -- ``list-style-type`` is how any item states its own
+    // marker, so one list can carry both a bullet item and a numbered item
+    // exactly as a source deck's own list object can.  Everything else that is
+    // not ``none`` stays a bullet.
+    function listMarker(node, parentTag) {
+        const styleType = String(getComputedStyle(node).listStyleType || '').trim().toLowerCase();
+        if (styleType === 'none') return 'none';
+        if (parentTag === 'ol') return 'numbered';
+        return /decimal|roman|alpha|cjk|numeric|armenian|georgian|hebrew/.test(styleType)
+            ? 'numbered'
+            : 'bullet';
+    }
 
     // Whitespace collapsing is a property of the whole inline flow, not of one
     // DOM node: a boundary space that one sibling owns must still survive next
@@ -433,11 +449,7 @@ EXTRACTION_JS = """
                 kind: isListTag(parent) ? parentTag : '',
                 level: listLevel(el),
                 index: parent ? Array.from(parent.children).indexOf(el) + 1 : 1,
-                // ``list-style-type: none`` stays unmarked, exactly as the
-                // released literal-prefix measurement left it unmarked.
-                marker: parentTag === 'ol'
-                    ? 'numbered'
-                    : (getComputedStyle(el).listStyleType === 'none' ? 'none' : 'bullet'),
+                marker: listMarker(el, parentTag),
             };
             try {
                 const ms = getComputedStyle(el, '::marker');
