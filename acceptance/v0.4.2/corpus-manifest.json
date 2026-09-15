@@ -1,0 +1,555 @@
+{
+  "schema_version": 1,
+  "selection_order": [
+    "real:2",
+    "real:5",
+    "real:7",
+    "real:12",
+    "real:14",
+    "real:19",
+    "real:25",
+    "real:30",
+    "probe-a",
+    "probe-b"
+  ],
+  "real_page_count": 8,
+  "synthetic_probe_count": 2,
+  "pages": [
+    {
+      "order": 1,
+      "page_id": "real:2",
+      "label": "source page 2",
+      "source_kind": "private business deck (local, not published)",
+      "source_page": 2,
+      "composition": "25 textbox, 6 shape (3 ellipse, 3 rightArrow), 2 group, 4 connector, 4 picture; 1 source overflow",
+      "coverage_purpose": "groups + bound connectors, native ellipse/rightArrow, pictures, text density, repeated cards, source-inherent overflow",
+      "scope_note": "The two groups are locked container boundaries: their children and the four connectors they own are represented inside the container proxy and are never emitted again as siblings. The one text overflow is the source's own condition and stays a retained finding.",
+      "synthetic": false,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 2,
+      "page_id": "real:5",
+      "label": "source page 5",
+      "source_kind": "private business deck (local, not published)",
+      "source_page": 5,
+      "composition": "2 picture, 8 shape, 1 table",
+      "coverage_purpose": "native table, roundRect, transparent/cropped pictures",
+      "scope_note": "Inherited master/layout branding is not reconstructed, so the rebuilt page is painted on a blank layout; that omission is page-level scope evidence, never slide-owned projection loss.",
+      "synthetic": false,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 3,
+      "page_id": "real:7",
+      "label": "source page 7",
+      "source_kind": "private business deck (local, not published)",
+      "source_page": 7,
+      "composition": "1 shape, 1 table, 1 textbox",
+      "coverage_purpose": "large native table (11x6) with whitespace-placement cell findings",
+      "scope_note": "Two table cells differ from the source in whitespace placement only; the condition is retained and reported, never repaired and never counted as a material delta. One shape's text colour is a theme expression, so it is base-only-semantic.",
+      "synthetic": false,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 4,
+      "page_id": "real:12",
+      "label": "source page 12",
+      "source_kind": "private business deck (local, not published)",
+      "source_page": 12,
+      "composition": "44 shape, 1 table; 13 source issues",
+      "coverage_purpose": "high object density, gradient fills, many source-inherent overflows",
+      "scope_note": "This page carries the corpus's highest source-issue count and its gradient fills. Every issue is the source's own; none is introduced by the projection. Gradient-filled objects are not canonical-editable and keep their locked or base-only disposition.",
+      "synthetic": false,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 5,
+      "page_id": "real:14",
+      "label": "source page 14",
+      "source_kind": "private business deck (local, not published)",
+      "source_page": 14,
+      "composition": "5 shape, 3 table",
+      "coverage_purpose": "compound/multi-table page",
+      "scope_note": "Three native tables on one page exercise per-table identity and independent row/column and cell-text readback.",
+      "synthetic": false,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 6,
+      "page_id": "real:19",
+      "label": "source page 19",
+      "source_kind": "private business deck (local, not published)",
+      "source_page": 19,
+      "composition": "7 shape, 1 table, 6 picture, 1 textbox",
+      "coverage_purpose": "the most picture-heavy page; source-inherent overflow",
+      "scope_note": "Six picture objects exercise the picture surface and the one table exercises native table readback alongside them. The overflow is the source's own condition.",
+      "synthetic": false,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 7,
+      "page_id": "real:25",
+      "label": "source page 25",
+      "source_kind": "private business deck (local, not published)",
+      "source_page": 25,
+      "composition": "7 shape, 19 textbox, 13 picture, 2 connector",
+      "coverage_purpose": "mixed density with a standalone connector",
+      "scope_note": "A standalone connector is locked, not reconstructed natively: the current Contract has no editable connector object. It is one locked proxy or one retained finding, never a silently dropped object.",
+      "synthetic": false,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 8,
+      "page_id": "real:30",
+      "label": "source page 30",
+      "source_kind": "private business deck (local, not published)",
+      "source_page": 30,
+      "composition": "30 shape, 16 picture, 7 connector, 4 textbox",
+      "coverage_purpose": "highest object count (57); connector-heavy",
+      "scope_note": "The densest page in the corpus. Connector-heavy composition is what exercises the container/locked boundary at scale: every connector has exactly one disposition in the ledger.",
+      "synthetic": false,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 9,
+      "page_id": "probe-a",
+      "label": "synthetic probe A",
+      "source_kind": "committed synthetic probe built through OfficeCLI",
+      "source_page": 1,
+      "composition": "1 slide: a text-free filled rect with three independent sibling textboxes painted inside its rectangle, one text-free ellipse, and one text-free rightArrow with one independent sibling textbox painted inside it",
+      "coverage_purpose": "proxy/overlay isolation: no sibling text may be embedded in any raster payload, and no wording may appear twice in the rebuilt deck",
+      "scope_note": "Every object on this probe is canonical-editable and no proxy is emitted, so the rebuilt deck must contain no raster payload for this page at all. The overlay wording is asserted to appear exactly once in the rebuilt deck; if the rect, the ellipse or the arrow were ever replaced by a picture, this probe's unaccounted picture count would show it.",
+      "synthetic": true,
+      "fixture_sha256": "79a25ed631722099fa2a13d643d2b33bd6a929faaccb8e40c0a6f04bc5d65f0e"
+    },
+    {
+      "order": 10,
+      "page_id": "probe-b",
+      "label": "synthetic probe B",
+      "source_kind": "committed synthetic probe built through OfficeCLI",
+      "source_page": 1,
+      "composition": "2 slides: mixed runs, a hard break, an empty paragraph, nested bullet and numbering paragraphs, explicit Latin/CJK fonts, theme-token text, rect/roundRect/ellipse/rightArrow; one group owning a shape and a connector",
+      "coverage_purpose": "rich text semantics and the locked container boundary: mixed runs, hard break, empty paragraph, bullet nesting, numbering, Latin/CJK fonts, theme-token evidence, fixed numeric strings, and one group with a bound connector represented exactly once",
+      "scope_note": "OfficeCLI reports no inheritance source for the theme run's colour, so the gate classifies it canonical-editable and the projection emits it without a colour declaration; the theme token is preserved in the source and in the projection's evidence, and no semantic token round trip is claimed. The group is one locked container boundary whose child shape and connector are represented once inside it and never emitted again as siblings.",
+      "synthetic": true,
+      "fixture_sha256": "5aa30b81c44677a728e0bb9c10905e8375aaed224034f8a6d1437fd5e38b247a"
+    }
+  ],
+  "seam_selection": [
+    {
+      "order": 1,
+      "page_id": "real:2",
+      "source_id": "private-source-deck",
+      "source_page": 2,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 2,
+      "page_id": "real:5",
+      "source_id": "private-source-deck",
+      "source_page": 5,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 3,
+      "page_id": "real:7",
+      "source_id": "private-source-deck",
+      "source_page": 7,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 4,
+      "page_id": "real:12",
+      "source_id": "private-source-deck",
+      "source_page": 12,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 5,
+      "page_id": "real:14",
+      "source_id": "private-source-deck",
+      "source_page": 14,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 6,
+      "page_id": "real:19",
+      "source_id": "private-source-deck",
+      "source_page": 19,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 7,
+      "page_id": "real:25",
+      "source_id": "private-source-deck",
+      "source_page": 25,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 8,
+      "page_id": "real:30",
+      "source_id": "private-source-deck",
+      "source_page": 30,
+      "source_sha256": "withheld-private"
+    },
+    {
+      "order": 9,
+      "page_id": "probe-a",
+      "source_id": "probe-a",
+      "source_page": 1,
+      "source_sha256": "79a25ed631722099fa2a13d643d2b33bd6a929faaccb8e40c0a6f04bc5d65f0e"
+    },
+    {
+      "order": 10,
+      "page_id": "probe-b",
+      "source_id": "probe-b",
+      "source_page": 1,
+      "source_sha256": "5aa30b81c44677a728e0bb9c10905e8375aaed224034f8a6d1437fd5e38b247a"
+    }
+  ],
+  "source_deck_sha256_before": null,
+  "source_deck_sha256_after": null,
+  "source_deck_unchanged": true,
+  "source_deck_write_operations": 0,
+  "synthetic_only": false,
+  "elapsed_seconds": 555.0,
+  "privacy": "This manifest is committed text. It records the private source deck's selection order and page numbers and the fact that the deck was hashed and verified unchanged, but it carries no private filename, no absolute path and no private hash: the source sha256 values are withheld and the verification is recorded as a verdict instead. The gate's own evidence under acceptance/v0.4.2/gate/ does carry the absolute paths; .gitignore excludes it from the repository. If page numbers themselves must not be published, the corpus has to run against decks that may be named, because a page selection cannot be reviewed without them.",
+  "visual_records": [
+    {
+      "order": 1,
+      "page_id": "real:2",
+      "source_page": 2,
+      "rebuilt_page": 1,
+      "before_png": "visual/p01-before.png",
+      "after_png": "visual/p01-after.png",
+      "author_html": "visual/p01-author.html",
+      "before": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 8791,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      },
+      "after": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 5169,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      }
+    },
+    {
+      "order": 2,
+      "page_id": "real:5",
+      "source_page": 5,
+      "rebuilt_page": 2,
+      "before_png": "visual/p02-before.png",
+      "after_png": "visual/p02-after.png",
+      "author_html": "visual/p02-author.html",
+      "before": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 16492,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      },
+      "after": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 15726,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      }
+    },
+    {
+      "order": 3,
+      "page_id": "real:7",
+      "source_page": 7,
+      "rebuilt_page": 3,
+      "before_png": "visual/p03-before.png",
+      "after_png": "visual/p03-after.png",
+      "author_html": "visual/p03-author.html",
+      "before": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 2359,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      },
+      "after": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 2677,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      }
+    },
+    {
+      "order": 4,
+      "page_id": "real:12",
+      "source_page": 12,
+      "rebuilt_page": 4,
+      "before_png": "visual/p04-before.png",
+      "after_png": "visual/p04-after.png",
+      "author_html": "visual/p04-author.html",
+      "before": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 5418,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      },
+      "after": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 3056,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      }
+    },
+    {
+      "order": 5,
+      "page_id": "real:14",
+      "source_page": 14,
+      "rebuilt_page": 5,
+      "before_png": "visual/p05-before.png",
+      "after_png": "visual/p05-after.png",
+      "author_html": "visual/p05-author.html",
+      "before": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 1948,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      },
+      "after": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 918,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      }
+    },
+    {
+      "order": 6,
+      "page_id": "real:19",
+      "source_page": 19,
+      "rebuilt_page": 6,
+      "before_png": "visual/p06-before.png",
+      "after_png": "visual/p06-after.png",
+      "author_html": "visual/p06-author.html",
+      "before": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 9241,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      },
+      "after": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 15307,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      }
+    },
+    {
+      "order": 7,
+      "page_id": "real:25",
+      "source_page": 25,
+      "rebuilt_page": 7,
+      "before_png": "visual/p07-before.png",
+      "after_png": "visual/p07-after.png",
+      "author_html": "visual/p07-author.html",
+      "before": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 9907,
+        "background_rgb": [
+          133,
+          68,
+          77
+        ],
+        "non_background_fraction": 0.999999,
+        "non_blank": true
+      },
+      "after": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 9122,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      }
+    },
+    {
+      "order": 8,
+      "page_id": "real:30",
+      "source_page": 30,
+      "rebuilt_page": 8,
+      "before_png": "visual/p08-before.png",
+      "after_png": "visual/p08-after.png",
+      "author_html": "visual/p08-author.html",
+      "before": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 5613,
+        "background_rgb": [
+          133,
+          68,
+          77
+        ],
+        "non_background_fraction": 0.999998,
+        "non_blank": true
+      },
+      "after": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 16804,
+        "background_rgb": [
+          133,
+          68,
+          77
+        ],
+        "non_background_fraction": 0.999998,
+        "non_blank": true
+      }
+    },
+    {
+      "order": 9,
+      "page_id": "probe-a",
+      "source_page": 1,
+      "rebuilt_page": 9,
+      "before_png": "visual/p09-before.png",
+      "after_png": "visual/p09-after.png",
+      "author_html": "visual/p09-author.html",
+      "before": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 263,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      },
+      "after": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 257,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      }
+    },
+    {
+      "order": 10,
+      "page_id": "probe-b",
+      "source_page": 1,
+      "rebuilt_page": 10,
+      "before_png": "visual/p10-before.png",
+      "after_png": "visual/p10-after.png",
+      "author_html": "visual/p10-author.html",
+      "before": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 1009,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      },
+      "after": {
+        "width": 1280,
+        "height": 720,
+        "distinct_colors": 2218,
+        "background_rgb": [
+          103,
+          103,
+          116
+        ],
+        "non_background_fraction": 0.999996,
+        "non_blank": true
+      }
+    }
+  ],
+  "source_hash_verification": {
+    "performed": true,
+    "verdict": "identical",
+    "detail": "the private source deck was hashed before capture and re-hashed after the run; the values are withheld from the public repository as private material"
+  }
+}
