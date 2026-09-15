@@ -217,3 +217,26 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local-only inputs and outputs.
+# A private corpus deck is named by the local configuration, never here: an
+# ignore rule that spells a private deck's filename still publishes that name.
+# The patterns below are deliberately generic.
+/corpus/
+/local-corpus.json
+*.local.pptx
+_smoke/
+
+# V0.4.2 representative acceptance bundle (acceptance/v0.4.2/).
+# Only the text evidence is committed: the report, the JSON manifests and the
+# gate's JSON documents.  The generated binaries and the visual records are
+# local review artifacts — the rebuilt deck, the Canonical Author HTML, the
+# proxy rasters and the page renders — and stay out of the repository.
+acceptance/v0.4.2/visual/
+acceptance/v0.4.2/gate/
+acceptance/v0.4.2/canonical-author.html
+acceptance/v0.4.2/*.pptx
+# Local-only verification record: a private deck's identity, absolute paths and
+# digests.  The verification is real; the private material stays out of the
+# repository, so the public evidence carries the verdict and not the values.
+acceptance/v0.4.2/local/
