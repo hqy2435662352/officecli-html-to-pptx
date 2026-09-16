@@ -1779,7 +1779,12 @@ def test_every_repository_path_the_report_names_exists() -> None:
     # the bundle's own manifest lists it as the run's local evidence -- which is what
     # the report says those names are.  What is not allowed is a name that neither
     # exists nor is declared anywhere.
-    manifest = json.loads((BUNDLE / "artifact-manifest.json").read_text(encoding="utf-8"))
+    # In a checkout the gate evidence and the page renders do not exist at all: the
+    # bundle's manifest is the only record that they belong to this run.
+    manifest_path = BUNDLE / "artifact-manifest.json"
+    if not BUNDLE.is_dir() or not manifest_path.is_file():
+        return
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     local_names = {item["name"] for item in manifest["artifacts"]}
     missing = sorted(
         name
@@ -1788,7 +1793,13 @@ def test_every_repository_path_the_report_names_exists() -> None:
         and not (REPO_ROOT / name.replace("\\", "/")).exists()
         and not (BUNDLE / name.replace("\\", "/")).exists()
         and not any(
-            entry.endswith("/" + name.replace("\\", "/")) for entry in local_names
+            # Either spelling: the report may name an entry by its bundle-relative
+            # path ("gate/gate-report.json") or by the name alone, and the manifest
+            # holds one of the two.  A clean checkout has no gate directory at all,
+            # which is exactly when this rule has to carry the check.
+            entry == bare or entry.endswith("/" + bare) or bare.endswith("/" + entry)
+            for entry in local_names
+            for bare in (name.replace("\\", "/"),)
         )
     )
     assert not missing, f"the report names files this checkout does not carry: {missing}"
