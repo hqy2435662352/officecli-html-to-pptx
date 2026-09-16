@@ -1,5 +1,9 @@
 # Gate 3 — third independent visual acceptance review (v0.4.2 projection, 10 selected pages)
 
+> **SUPERSEDED.** This document reviews the revision before the line-spacing fix. The current verdict is in
+> `GATE3-REVIEW-4.md` (same directory), which re-verifies the p10 hard-break finding and rescans all ten
+> pages. Note that review-4 withdraws finding 4 below (the p03 shift) as a measurement error.
+
 **Verdict: PASS_WITH_FINDINGS — MAJOR 1 / MINOR 9 / pages reviewed 10/10.**
 
 Both findings that the second review raised as MAJOR are **fixed** and I confirmed it by measurement, not by
@@ -241,7 +245,7 @@ text cells are painted as pictures that get resampled on the page). That residue
 
 The gate report says `accepted: true`, `material_deltas: 0`, `rebuilt_issues: 3`,
 `proxy_proofs_failed: 0`, `blocking_diagnostics: 0`; every page record carries
-`rebuilt_issue_count = 0`, an empty `material_deltas`, and **all 152 text records across the ten pages
+`rebuilt_issue_count = 0`, an empty `material_deltas`, and **all 172 text records across the ten pages
 report `matched: true`, `style_matched: true`, `structure_lost: false`,
 `whitespace_only_difference: false`**. Its three `rebuilt_issues` are text-overflow conditions on p03 that
 the source already carries.

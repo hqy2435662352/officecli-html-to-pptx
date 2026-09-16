@@ -202,8 +202,8 @@ empty in the source, so no grid paints either way.
 The gate report is unchanged from review-3: `accepted: true`, `material_deltas: 0`, `rebuilt_issues: 3`
 (all three text-overflow conditions p03 already carries), `proxy_proofs_failed: 0`,
 `blocking_diagnostics: 0`; all ten page records identical to review-3 in `rebuilt_issue_count`,
-`material_deltas`, `retained_findings`, `proxies`, `text_readback` and `failures`; all 152 text records
-still `matched: true`, `style_matched: true`, `structure_lost: false`,
+`material_deltas`, `retained_findings`, `proxies`, `text_readback` and `failures`; all **172** text records
+across the ten pages still `matched: true`, `style_matched: true`, `structure_lost: false`,
 `whitespace_only_difference: false`.
 
 The p10 object therefore still reports a clean structure readback while the produced deck declares two

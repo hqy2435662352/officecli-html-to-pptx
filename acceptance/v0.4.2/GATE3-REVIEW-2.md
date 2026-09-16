@@ -1,5 +1,13 @@
 # Gate 3 — second independent visual acceptance review (v0.4.2 projection, 10 selected pages)
 
+> **Publisher's note, added when the bundle was republished.** This document
+> judged an **earlier revision** of the branch and is **historical**: its
+> verdict and every count in it describe that revision's own run, whose page
+> composition differed from the current one. It is kept because the history is
+> part of the record -- this is the review that blocked, and later reviews exist
+> because of it -- but it is not a statement about the current revision. The
+> bundle's verdict is the latest review, `GATE3-REVIEW-4.md`.
+
 **Verdict: PASS_WITH_FINDINGS — MAJOR 2 / MINOR 8 / pages reviewed 10/10.**
 Eight of the ten rebuilt pages are visually faithful to their source pages. Every claimed fix holds
 except one; three findings from the previous revision do not survive this revision's evidence at
