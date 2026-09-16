@@ -1760,3 +1760,47 @@ def _authored_text(element_html: str) -> str:
     return "\n".join(
         line.strip() for line in unescaped.split("\n")
     )
+
+
+def test_every_repository_path_the_report_names_exists() -> None:
+    """A published instruction has to be followable from a clean checkout.
+
+    The report's reproduction section told a reader to run a script under the
+    local scratch tree -- which `.gitignore` excludes, so the one instruction the
+    bundle gives for reproducing itself pointed at a file no clone carries.  Every
+    repository-relative path the published report names is now checked here.
+    """
+    import re as _re
+
+    report = (BUNDLE / "acceptance-report.md").read_text(encoding="utf-8")
+    named = set(_re.findall(r"`([A-Za-z0-9_./\\-]+\.(?:py|json|md))`", report))
+    assert named, "the report names no repository file at all"
+    # A name is accounted for if the checkout carries it, the bundle carries it, or
+    # the bundle's own manifest lists it as the run's local evidence -- which is what
+    # the report says those names are.  What is not allowed is a name that neither
+    # exists nor is declared anywhere.
+    manifest = json.loads((BUNDLE / "artifact-manifest.json").read_text(encoding="utf-8"))
+    local_names = {item["name"] for item in manifest["artifacts"]}
+    missing = sorted(
+        name
+        for name in named
+        if not name.startswith(("ACCEPTANCE", "GATE3", "artifact-", "corpus-"))
+        and not (REPO_ROOT / name.replace("\\", "/")).exists()
+        and not (BUNDLE / name.replace("\\", "/")).exists()
+        and not any(
+            entry.endswith("/" + name.replace("\\", "/")) for entry in local_names
+        )
+    )
+    assert not missing, f"the report names files this checkout does not carry: {missing}"
+
+
+def test_the_driver_that_produced_the_bundle_is_in_the_repository() -> None:
+    """The tool that writes the bundle is tracked, so the run is reproducible."""
+    driver = REPO_ROOT / "scripts" / "run_v042_acceptance.py"
+    assert driver.is_file(), driver
+    source = driver.read_text(encoding="utf-8")
+    # It must not depend on the ignored scratch tree, which a clone does not carry.
+    assert ".scratch" not in source
+    # The private decks reach it only through the corpus module's local injection.
+    assert "v042_acceptance_corpus" in source, "the corpus is resolved by the module"
+    assert "BASELINE_DECK" not in source, "no single-deck assumption survives"

@@ -10,8 +10,8 @@
   "artifacts": [
     {
       "name": "acceptance-report.md",
-      "sha256": "23bcd480b0447b8a2f164c91a3c0a07196c005cb8ecc5e5e22d59961bc620a76",
-      "size_bytes": 44971,
+      "sha256": "e6ae72ef31b2fea400aad030a0ce457ce72f3c43127fa50ba1a0a625bf8d9076",
+      "size_bytes": 44965,
       "in_repository": true
     },
     {
@@ -771,6 +771,6 @@
       "in_repository": false
     }
   ],
-  "report_sha256": "23bcd480b0447b8a2f164c91a3c0a07196c005cb8ecc5e5e22d59961bc620a76",
+  "report_sha256": "e6ae72ef31b2fea400aad030a0ce457ce72f3c43127fa50ba1a0a625bf8d9076",
   "report_name": "acceptance-report.md"
 }

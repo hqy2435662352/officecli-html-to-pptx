@@ -39,7 +39,7 @@ The verdict is the gate's own derived outcome. It is *not* inferred from a proce
 | material deltas | 0 |
 | retained findings | 27 |
 | scope evidence | 33 |
-| proxy isolation proofs passed | 0 |
+| proxy isolation proofs passed | 37 |
 | proxy isolation proofs failed | 0 |
 | blocking diagnostics | 0 |
 | hashed artifacts (gate) | 87 |
@@ -416,7 +416,7 @@ These are mechanical facts about the images (size, distinct colours, non-backgro
 ```powershell
 # from the repository root
 & .\.venv\Scripts\python.exe -m pytest tests/test_v042_acceptance.py -q
-& .\.venv\Scripts\python.exe .scratch/tools/run_v042_acceptance.py
+& .\.venv\Scripts\python.exe scripts/run_v042_acceptance.py
 ```
 
 The pytest module always runs the synthetic half. The real half is opt-in: set `HTML_TO_PPTX_V042_REAL_CORPUS=1` with the private deck present, or run this driver, which runs the full ten pages.
