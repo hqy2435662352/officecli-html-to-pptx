@@ -1815,3 +1815,67 @@ def test_the_driver_that_produced_the_bundle_is_in_the_repository() -> None:
     # The private decks reach it only through the corpus module's local injection.
     assert "v042_acceptance_corpus" in source, "the corpus is resolved by the module"
     assert "BASELINE_DECK" not in source, "no single-deck assumption survives"
+
+
+def test_the_published_summary_agrees_with_the_page_records() -> None:
+    """The report's summary table cannot contradict the evidence it summarises.
+
+    It did: the table said "proxy isolation proofs passed 0" while section 8 of the
+    same report said 37 of 37 and the gate report's own counts said 37.  The summary
+    is now derived from the page records, and this test derives it independently from
+    `gate-report.json` and compares -- so a summary that drifts from the evidence
+    fails here rather than reaching a reader.
+    """
+    report = (BUNDLE / "acceptance-report.md").read_text(encoding="utf-8")
+    gate = json.loads((BUNDLE / "gate" / "gate-report.json").read_text(encoding="utf-8"))
+    pages = gate["pages"]
+
+    def summary(name: str) -> str:
+        match = re.search(rf"^\| {re.escape(name)} \| ([^|]+) \|", report, re.MULTILINE)
+        assert match is not None, f"the report has no `{name}` summary row"
+        return match.group(1).strip()
+
+    proofs = [proof for page in pages for proof in page.get("proxies") or []]
+    passed = sum(1 for proof in proofs if proof["passed"])
+    assert summary("proxy isolation proofs passed") == str(passed), summary(
+        "proxy isolation proofs passed"
+    )
+    assert summary("proxy isolation proofs failed") == str(len(proofs) - passed)
+    assert passed == len(proofs), "a failed proof is a blocking finding, not a summary"
+    assert gate["counts"]["proxy_proofs"] == len(proofs), "summary count vs object count"
+
+    readbacks = [item for page in pages for item in page.get("text_readback") or []]
+    assert summary("text readbacks matched") == (
+        f"{sum(1 for item in readbacks if item['matched'])} / {len(readbacks)}"
+    )
+    assert summary("style readbacks matched") == (
+        f"{sum(1 for item in readbacks if item['style_matched'])} / {len(readbacks)}"
+    )
+    tables = [item for page in pages for item in page.get("tables") or []]
+    assert summary("native tables passed") == (
+        f"{sum(1 for item in tables if not item['failures'])} / {len(tables)}"
+    )
+
+
+def test_the_published_provenance_names_the_measured_revision() -> None:
+    """The bundle says which revision it measured, and what "dirty" means.
+
+    A report cannot name its own publication commit -- the documents that publish a
+    measurement are written after it -- so "the tree was dirty" has to say *what* was
+    dirty.  A bundle whose only modified paths are its own documents names the
+    revision it measured and says so; a run that edited code it was measuring says
+    that instead, and this test refuses the second case being dressed as the first.
+    """
+    corpus = json.loads((BUNDLE / "corpus-manifest.json").read_text(encoding="utf-8"))
+    commit = str(corpus["commit"])
+    assert re.match(r"^[0-9a-f]{40}\b", commit), commit
+    if "(working tree dirty:" in commit:
+        outside = commit.split("(working tree dirty:", 1)[1].rstrip(")")
+        for path in (item.strip() for item in outside.split(",")):
+            assert path and not path.startswith("acceptance/"), (
+                "a bundle run may only have its own documents dirty; "
+                f"this one names {path!r}"
+            )
+    elif "measured revision" in commit:
+        # The claim the wording makes: the run changed nothing outside the bundle.
+        assert "acceptance/v0.4.2" in commit

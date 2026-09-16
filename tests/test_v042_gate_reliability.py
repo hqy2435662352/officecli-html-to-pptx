@@ -175,13 +175,26 @@ def test_windows_access_denied_onto_an_occupied_directory_is_a_collision(
     assert (destination / "gate-report.json").read_text(encoding="utf-8") == "first"
 
 
-def test_access_denied_with_no_destination_is_retried_then_reported(
+def _windows_access_denied(source: Any, target: Any) -> None:
+    """Raise what Windows raises: ``ERROR_ACCESS_DENIED``, with ``winerror``.
+
+    The distinction is the whole point of the rule.  ``winerror`` is a Windows-only
+    attribute, and the production code retries on it -- so a test that raises a bare
+    ``PermissionError`` is testing *POSIX*, where the documented behaviour is to fail
+    immediately.  The suite ran on Linux in CI and failed on exactly that mismatch.
+    """
+    error = PermissionError(13, "Access is denied")
+    error.winerror = 5  # type: ignore[attr-defined]
+    raise error
+
+
+def test_a_windows_sharing_violation_with_no_destination_is_retried_then_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With nothing published, an access refusal is retried within the bound.
+    """With nothing published, a Windows sharing violation is retried within the bound.
 
     Windows reports *both* "a handle is still open in this directory" and "the
-    destination exists" as ``ERROR_ACCESS_DENIED``, so an access refusal with no
+    destination exists" as ``ERROR_ACCESS_DENIED``, so a sharing violation with no
     destination is the in-use case and is worth waiting out.  The bound still
     applies: a refusal that never clears is raised rather than retried forever, and
     the caller sees the error the filesystem actually produced.
@@ -190,13 +203,39 @@ def test_access_denied_with_no_destination_is_retried_then_reported(
 
     def access_denied(source: Any, target: Any) -> None:
         attempts.append(1)
-        raise PermissionError(5, "Access is denied", None, 5)
+        _windows_access_denied(source, target)
 
     monkeypatch.setattr(gate.os, "rename", access_denied)
     staging = _staging(tmp_path, "staging", "payload")
     with pytest.raises(PermissionError):
         gate._claim_destination(staging, tmp_path / "evidence")
     assert len(attempts) == gate.PUBLICATION_ATTEMPTS
+
+
+def test_a_posix_permission_error_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A POSIX permission error is an answer, not a delay, and must not be waited on.
+
+    There is no sharing-violation case on POSIX at all: renaming onto a destination
+    that does not exist is atomic, so a refusal is about state -- ownership, a
+    read-only mount, a missing parent -- and retrying it twenty times would only
+    delay the report by five seconds and then raise the same error.  This test exists
+    so the *documented* asymmetry is pinned: it would fail if somebody widened the
+    production retry to ``errno`` values in order to make a Linux test pass.
+    """
+    attempts: list[int] = []
+
+    def access_denied(source: Any, target: Any) -> None:
+        attempts.append(1)
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(gate.os, "rename", access_denied)
+    staging = _staging(tmp_path, "staging", "payload")
+    with pytest.raises(PermissionError):
+        gate._claim_destination(staging, tmp_path / "evidence")
+    assert len(attempts) == 1
+    assert gate.PUBLICATION_ATTEMPTS > 1, "the retry bound exists; it just does not apply"
 
 
 def test_publishing_moves_the_whole_set_in_one_step(tmp_path: Path) -> None:

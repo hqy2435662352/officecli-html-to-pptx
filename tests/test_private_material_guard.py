@@ -13,6 +13,7 @@ test that spelled them would publish them.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -207,6 +208,106 @@ def test_a_scanner_error_refuses_rather_than_passing(tmp_path: Path) -> None:
     assert "refused" in result.stderr
 
 
+def test_the_installer_wires_a_clone_that_has_never_been_wired(tmp_path: Path) -> None:
+    """The installer is proved on a clone with no configuration, not on this one.
+
+    ``core.hooksPath`` lives in ``.git/config``, which is not cloned, so the state of
+    *this* checkout is not something a test may assume: CI ran this suite in a fresh
+    clone and every job failed on the assertion below until the workflow wired the
+    gate in its own setup step.  The repository's own property -- that the installer
+    exists, is tracked, and does the wiring -- is what has to hold anywhere, so it is
+    proved here on a temporary clone created for the purpose.
+    """
+    installer = REPO_ROOT / "scripts" / "install_hooks.py"
+    assert installer.is_file(), "scripts/install_hooks.py is missing"
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    subprocess.run(["git", "init", "--quiet"], cwd=clone, check=True)
+    hooks = clone / ".githooks"
+    hooks.mkdir()
+    names = ("pre-commit", "pre-push", "private_material_guard.py")
+    for name in names:
+        shutil.copy2(REPO_ROOT / ".githooks" / name, hooks / name)
+    scripts = clone / "scripts"
+    scripts.mkdir()
+    shutil.copy2(installer, scripts / "install_hooks.py")
+
+    # The installer refuses to report health for hooks git does not track, or that
+    # are tracked without the executable bit a clone needs -- so the clone has to be
+    # a real one: the hooks committed, at the mode the repository stores.
+    subprocess.run(
+        ["git", "add", "--", "scripts/install_hooks.py", "scripts/install_hooks.py"],
+        cwd=clone,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "update-index",
+            "--add",
+            "--chmod=+x",
+            *(f".githooks/{name}" for name in names),
+        ],
+        cwd=clone,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=guard@example.invalid",
+            "-c",
+            "user.name=guard",
+            "commit",
+            "--quiet",
+            "-m",
+            "hooks",
+        ],
+        cwd=clone,
+        check=True,
+    )
+
+    # Nothing is wired in the new clone, and the installer says so instead of
+    # reporting health it does not have.
+    before = subprocess.run(
+        [sys.executable, str(scripts / "install_hooks.py"), "--check"],
+        cwd=clone,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert before.returncode == 1, before.stdout + before.stderr
+    assert "not installed" in before.stdout
+
+    installed = subprocess.run(
+        [sys.executable, str(scripts / "install_hooks.py")],
+        cwd=clone,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert installed.returncode == 0, installed.stdout + installed.stderr
+
+    configured = subprocess.run(
+        ["git", "config", "--get", "core.hooksPath"],
+        cwd=clone,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    assert configured == ".githooks", configured
+
+    after = subprocess.run(
+        [sys.executable, str(scripts / "install_hooks.py"), "--check"],
+        cwd=clone,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert after.returncode == 0, after.stdout + after.stderr
+
+
 def test_the_hooks_are_installed_and_executable() -> None:
     """A hook that is not wired into git is a document, not a gate.
 
@@ -221,9 +322,11 @@ def test_the_hooks_are_installed_and_executable() -> None:
 
     ``core.hooksPath`` lives in ``.git/config``, which is not cloned, so this
     assertion is about the clone it runs in: a fresh checkout fails it until
-    ``python scripts/install-hooks.py`` has been run once.  That is deliberate --
-    the failure is loud and it names the command -- and it is the same check that
-    caught a clean checkout with no guard wired in at all.
+    ``python scripts/install_hooks.py`` has been run once.  That is deliberate --
+    the failure is loud and it names the command -- and CI runs that command in its
+    own setup step rather than letting the suite tolerate an unwired clone.  The
+    installer's own behaviour is proved separately, on a clone built for it, by
+    ``test_the_installer_wires_a_clone_that_has_never_been_wired``.
     """
     configured = subprocess.run(
         ["git", "config", "--get", "core.hooksPath"],
@@ -235,7 +338,7 @@ def test_the_hooks_are_installed_and_executable() -> None:
     hooks_path = configured.stdout.strip()
     assert hooks_path, (
         "core.hooksPath is not set, so no hook runs in this clone; run "
-        "`python scripts/install-hooks.py`"
+        "`python scripts/install_hooks.py`"
     )
 
     staged = subprocess.run(

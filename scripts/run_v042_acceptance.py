@@ -56,6 +56,9 @@ import v042_acceptance_corpus as corpus  # noqa: E402
 from officecli_html_to_pptx.contract import check_contract  # noqa: E402
 
 BUNDLE = REPO / "acceptance" / "v0.4.2"
+#: The bundle's path relative to the repository, so a run can tell its own output
+#: apart from an edit to the code it is measuring.
+BUNDLE_RELATIVE = "acceptance/v0.4.2"
 RENDER_WIDTH = 1600
 SCREENSHOT_RENDER = "native"
 #: The corpus's opaque source slots, in selection order.  A slot is a corpus
@@ -886,12 +889,19 @@ def _page_of(
 
 
 def commit_sha() -> str:
-    """Return the commit this run was produced from.
+    """Return the revision this run measured, and what else was dirty beside it.
 
     A report that cannot say which revision it describes is not evidence about any
-    revision.  A dirty working tree is recorded as such rather than hidden: the
-    verdict is about the tree that ran, and a reviewer reproducing it has to know
-    whether that tree was the commit.
+    revision.  It also cannot be perfectly self-referential: the run measures a
+    commit, and the documents that publish the measurement are then written *into*
+    the repository, so the bundle is always committed one step after the revision it
+    describes.  Saying "working tree dirty" for that step is technically true and
+    useless -- it reads the same as an unreviewed local edit.
+
+    So the two are separated.  The revision is named.  The only dirty paths a bundle
+    run may have are its own documents, and that is checked here rather than
+    asserted: a run whose working tree is dirty *anywhere else* says so, because then
+    the revision named is not the code that ran.
     """
     completed = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -906,12 +916,21 @@ def commit_sha() -> str:
             "`git rev-parse HEAD` did not report one"
         )
     dirty = subprocess.run(
-        ["git", "status", "--porcelain"],
+        ["git", "status", "--porcelain", "--untracked-files=no"],
         cwd=str(REPO),
         capture_output=True,
         check=False,
     ).stdout.decode("utf-8", errors="replace").strip()
-    return f"{sha}{' (working tree dirty)' if dirty else ''}"
+    if not dirty:
+        return sha
+    paths = [line[3:].strip().strip('"') for line in dirty.splitlines() if line.strip()]
+    outside = [path for path in paths if not path.replace("\\", "/").startswith(BUNDLE_RELATIVE)]
+    if outside:
+        return f"{sha} (working tree dirty: {', '.join(sorted(outside)[:3])})"
+    return (
+        f"{sha} (measured revision; the documents below are its output, and the "
+        "only paths this run changed are under acceptance/v0.4.2/)"
+    )
 
 
 def run_id(bundle: Path) -> str:
@@ -1221,11 +1240,47 @@ def build_report(
     lines.append(f"| material deltas | {counts['material_deltas']} |")
     lines.append(f"| retained findings | {counts['retained_findings']} |")
     lines.append(f"| scope evidence | {counts['scope_evidence']} |")
+    # Counted from the records, not from the run's counter dict.  The two disagreed
+    # once -- the summary table said "proxy isolation proofs passed 0" while section 8
+    # of the same report said 37 of 37 and the gate report's own counts said 37 -- and
+    # a summary that contradicts the body it summarises is exactly the kind of
+    # published inconsistency a reviewer cannot be asked to guess about.  The records
+    # are the evidence; the summary is derived from them, and a disagreement between
+    # the two is raised rather than published.
+    proof_records = [
+        proof for page in result.pages for proof in field(page, "proxies", ()) or ()
+    ]
+    proofs_passed = sum(1 for proof in proof_records if field(proof, "passed", False))
+    proofs_failed = len(proof_records) - proofs_passed
+    declared = counts.get("proxy_proofs", None)
+    if declared is not None and int(declared) != len(proof_records):
+        raise SystemExit(
+            f"the gate counts {declared} proxy proof(s) and its page records hold "
+            f"{len(proof_records)}; the report cannot state both"
+        )
+    lines.append(f"| proxy isolation proofs passed | {proofs_passed} |")
+    lines.append(f"| proxy isolation proofs failed | {proofs_failed} |")
+    readback_records = [
+        item for page in result.pages for item in field(page, "text_readback", ()) or ()
+    ]
     lines.append(
-        f"| proxy isolation proofs passed | "
-        f"{counts.get('proxy_proofs', 0) - counts.get('proxy_proofs_failed', 0)} |"
+        f"| text readbacks matched | "
+        f"{sum(1 for item in readback_records if field(item, 'matched', False))}"
+        f" / {len(readback_records)} |"
     )
-    lines.append(f"| proxy isolation proofs failed | {counts.get('proxy_proofs_failed', 0)} |")
+    lines.append(
+        f"| style readbacks matched | "
+        f"{sum(1 for item in readback_records if field(item, 'style_matched', False))}"
+        f" / {len(readback_records)} |"
+    )
+    table_records = [
+        item for page in result.pages for item in field(page, "tables", ()) or ()
+    ]
+    lines.append(
+        f"| native tables passed | "
+        f"{sum(1 for item in table_records if not field(item, 'failures', ()))}"
+        f" / {len(table_records)} |"
+    )
     lines.append(f"| blocking diagnostics | {counts['blocking_diagnostics']} |")
     lines.append(f"| hashed artifacts (gate) | {len(result.artifacts)} |")
     lines.append(
@@ -1628,26 +1683,39 @@ def build_report(
     lines.append("")
     lines.append("## 14. Gate 3 — independent review")
     lines.append("")
-    lines.append(
-        "> **This section is intentionally empty. It is filled in by the "
-        "independent reviewer (the primary agent).**"
-    )
-    lines.append(">")
-    lines.append(
-        "> Ticket #18 requires the page-by-page visual verdict to be independent, "
-        "so the agent that produced this bundle does **not** record one and does "
-        "not claim zero major projection defects. Per page, the reviewer opens "
-        "`visual/pNN-before.png`, `visual/pNN-after.png` and "
-        "`visual/pNN-author.html` and records a verdict against: missing content, "
-        "duplicate paint, proxy contamination, image distortion, lost arrowheads, "
-        "severe clipping, table displacement, and z-order corruption."
-    )
-    lines.append(">")
-    lines.append("> ```")
-    lines.append("> page 1 (source page 2):   [ ] no major defect  [ ] defect: ...")
-    lines.append("> page 2 (source page 5):   [ ] no major defect  [ ] defect: ...")
-    lines.append("> ...")
-    lines.append("> ```")
+    reviewed = gate3_verdict(bundle)
+    majors = review_majors(bundle)
+    if reviewed is None:
+        lines.append(
+            "> **No independent review is recorded in this bundle.** The machine "
+            "evidence below is evidence about the checks this run performed; it is "
+            "not a claim that a reader would see no defect, and it is not acceptance."
+        )
+    else:
+        verdict, source = reviewed
+        lines.append(
+            f"> **The latest independent review is `{source}`: `{verdict}`"
+            + (f", MAJOR {majors}" if majors is not None else ", major count unreadable")
+            + ".** It is the bundle's verdict and the reviews beside it are the "
+            "record: each finding is located by `(source slot, source page, source "
+            "object)`."
+        )
+        others = sorted(
+            path.name
+            for path in bundle.glob("GATE3-REVIEW*.md")
+            if path.is_file() and path.name != source
+        )
+        if others:
+            lines.append(">")
+            lines.append(
+                "> The other review document(s) in this bundle -- "
+                + ", ".join(f"`{name}`" for name in others)
+                + " -- are **historical**: they judged earlier revisions and their "
+                "verdicts are superseded. A verdict of `PASS_WITH_FINDINGS` in one of "
+                "them is a reading of *that* revision's page renders, not a statement "
+                "that the revision met the delivery bar; the earlier revisions did "
+                "not, which is why the reviews continue."
+            )
     lines.append("")
     lines.append("## 15. Known findings, scope differences and limitations")
     lines.append("")

@@ -34,7 +34,7 @@ The verdict is the gate's own derived outcome. It is *not* inferred from a proce
 | material deltas | 0 |
 | retained findings | 27 |
 | scope evidence | 33 |
-| proxy isolation proofs passed | 0 |
+| proxy isolation proofs passed | 37 |
 | proxy isolation proofs failed | 0 |
 | blocking diagnostics | 0 |
 | hashed artifacts (gate) | 87 |
