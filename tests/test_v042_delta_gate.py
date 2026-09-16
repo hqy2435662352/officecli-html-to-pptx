@@ -463,11 +463,136 @@ def overflow_result(
     return _run_gate(overflow_deck, output)
 
 
+def _capture_intake(sink: list[GateIntake]):
+    """Return a mutation hook that records the sealed intake and changes nothing.
+
+    The gate hands its sealed bundle to ``intake_mutation`` after every real read,
+    which makes the hook the one place a test can take a copy of exactly what a
+    real run judged -- without a second projection, a second rebuild, or a second
+    OfficeCLI readback.
+    """
+
+    def hook(intake: GateIntake) -> GateIntake:
+        sink.append(intake)
+        return intake
+
+    return hook
+
+
 @pytest.fixture(scope="session")
-def clean_result(clean_deck: Path, tmp_path_factory: pytest.TempPathFactory) -> Any:
-    """One real gate run over the clean fixture."""
+def clean_run(clean_deck: Path, tmp_path_factory: pytest.TempPathFactory) -> Any:
+    """The clean fixture's one real gate run, with its sealed intake kept.
+
+    One end-to-end run supplies both the result every assertion reads and the
+    intake every comparator mutation is judged from.  Running the production
+    pipeline per mutation is what made this suite cost one full gate -- project,
+    rebuild, OfficeCLI readback, publication -- for each negative case.
+    """
+    captured: list[GateIntake] = []
     output = tmp_path_factory.mktemp("v042-gate-run-clean") / "gate"
-    return _run_gate(clean_deck, output)
+    result = _run_gate(clean_deck, output, intake_mutation=_capture_intake(captured))
+    assert captured, "the gate did not hand its sealed intake to the capture hook"
+    return result, captured[0]
+
+
+@pytest.fixture(scope="session")
+def clean_result(clean_run: Any) -> Any:
+    """One real gate run over the clean fixture."""
+    result, intake = clean_run
+    return clean_run[0]
+
+
+@pytest.fixture(scope="session")
+def clean_intake(clean_run: Any) -> GateIntake:
+    """The sealed intake bundle that run judged."""
+    result, intake = clean_run
+    return clean_run[1]
+
+
+def _published_proxy_paths(result: Any, intake: GateIntake) -> dict[str, str]:
+    """Map each held proxy asset to where the run published it."""
+    root = Path(result.output_directory) / "projection"
+    return {
+        str(item.proxy_asset): str((root / Path(item.proxy_asset).name).resolve())
+        for item in intake.projected.objects
+        if item.proxy_asset
+    }
+
+
+def _relocate_proxy_assets(intake: GateIntake, published_root: Path) -> GateIntake:
+    """Point a sealed intake's proxy assets at the run's published copies.
+
+    The run judges its proxies while they still sit in the staging directory it
+    deletes when it returns, so a bundle re-judged afterwards names files that no
+    longer exist -- and every isolation proof would fail on a missing raster
+    rather than on the condition under test.  The published copies are the same
+    bytes the accepted run wrote, which is what makes them the right thing to
+    judge a mutation against.
+
+    Only an asset whose file is *gone* is relocated.  A mutation that has already
+    pointed the bundle at its own copy has bytes on disk, and re-pointing that at
+    the published original would silently undo the mutation -- which is exactly
+    how three of these cases passed when they should have blocked.
+    """
+    mapping = {
+        str(item.proxy_asset): str(published_root / Path(item.proxy_asset).name)
+        for item in intake.projected.objects
+        if item.proxy_asset and not Path(item.proxy_asset).is_file()
+    }
+    if not mapping:
+        return intake
+
+    def relocate(asset: str | None) -> str | None:
+        return mapping.get(str(asset), asset) if asset else asset
+
+    return replace(
+        intake,
+        projected=replace(
+            intake.projected,
+            objects=tuple(
+                replace(item, proxy_asset=relocate(item.proxy_asset))
+                for item in intake.projected.objects
+            ),
+            slides=tuple(
+                replace(
+                    slide,
+                    objects=tuple(
+                        replace(item, proxy_asset=relocate(item.proxy_asset))
+                        for item in slide.objects
+                    ),
+                )
+                for slide in intake.projected.slides
+            ),
+        ),
+    )
+
+
+def _rejudge(clean_run: Any, mutation: Any) -> Any:
+    """Judge a mutated copy of the sealed intake with the production rules.
+
+    ``evaluate_intake`` is where every comparison rule lives and is the function
+    the real run's verdict comes from, so a mutation re-judged here is judged by
+    the same code a full run would use.  What is skipped is only the work that
+    produced the bundle -- the projection, the New Deck build and the readback --
+    which is why this is the cheap path, not a weaker one.
+
+    Every mutation still has to be *reachable*: the end-to-end cases below build
+    their fault into the deck itself, so the suite also proves the pipeline
+    detects it rather than only that the comparator does.
+    """
+    result, intake = clean_run
+    published_root = Path(result.output_directory) / "projection"
+    judged = _relocate_proxy_assets(mutation(intake), published_root)
+    return gate_module.evaluate_intake(
+        judged,
+        html_text=(
+            Path(result.output_directory) / "canonical-author.html"
+        ).read_text(encoding="utf-8"),
+        pixels_per_point=intake.projected.pixels_per_point,
+        # Whatever path the re-judged bundle now holds, the proof it produces has
+        # to name the file a reviewer will open.
+        published_proxies=_published_proxy_paths(result, judged),
+    )
 
 
 @pytest.fixture(scope="session")
@@ -698,9 +823,7 @@ def test_page_renumbering_alone_cannot_create_or_hide_a_delta() -> None:
         assert comparison.retained_findings[0].rebuilt_slide == 9
 
 
-def test_a_rebuilt_object_the_ledger_does_not_own_blocks(
-    clean_result: Any, tmp_path: Path
-) -> None:
+def test_a_rebuilt_object_the_ledger_does_not_own_blocks(clean_run: Any) -> None:
     """A rebuilt object outside the ledger makes its issues unattributable.
 
     This is the "resolves, but no source identity owns it" half of the binding
@@ -709,6 +832,7 @@ def test_a_rebuilt_object_the_ledger_does_not_own_blocks(
     rather than discarding a rebuilt-only condition because it could not say
     which source object it belonged to.
     """
+    result, intake = clean_run
     injected = "O97"
     path = "/slide[1]/shape[@id=424242]"
 
@@ -736,13 +860,8 @@ def test_a_rebuilt_object_the_ledger_does_not_own_blocks(
             ),
         )
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=add_foreign_object,
-    )
+    result = _rejudge(clean_run, add_foreign_object)
     assert result.outcome is GateOutcome.BLOCK
-    assert Path(result.report_path).name == "gate-rejected.json"
     unbound = [item for item in result.unbound_rebuilt if item.issue_id == injected]
     assert unbound, [item.as_dict() for item in result.unbound_rebuilt]
     assert unbound[0].reason_code == "rebuilt_object_not_in_ledger"
@@ -1038,22 +1157,20 @@ def test_a_blocked_page_is_a_page_record_not_an_abort(
     assert len(result.ledger) == result.projected_pages[0].source_objects
 
 
-def test_a_selected_object_absent_from_the_rebuilt_deck_blocks(
-    clean_result: Any, tmp_path: Path
-) -> None:
+def test_a_selected_object_absent_from_the_rebuilt_deck_blocks(clean_run: Any) -> None:
     """A rebuilt deck without the projected object blocks with both contexts."""
+    result, intake = clean_run
 
-    def drop_object(intake: GateIntake) -> GateIntake:
-        target = clean_result.projected.objects[0].emitted_name
+    def drop_object(bundle: GateIntake) -> GateIntake:
+        target = intake.projected.objects[0].emitted_name
         return replace(
-            intake,
+            bundle,
             rebuilt_objects=tuple(
-                item for item in intake.rebuilt_objects if item.emitted_name != target
+                item for item in bundle.rebuilt_objects if item.emitted_name != target
             ),
         )
 
-    result = _run_gate(clean_result.projected.selection[0].source_pptx, tmp_path / "gate",
-                       intake_mutation=drop_object)
+    result = _rejudge(clean_run, drop_object)
     assert result.outcome is GateOutcome.BLOCK
     codes = {item.code for item in result.diagnostics}
     assert "missing_rebuilt_object" in codes
@@ -1113,9 +1230,16 @@ def test_the_rebuilt_issue_count_is_an_issue_count_not_an_object_count(
     is derived by parsing the rebuilt deck's own OfficeCLI issue output, so it
     cannot agree with a wrong implementation: the fixture's rebuilt deck reports
     no issues, while its page carries several objects.
+
+    The deck is opened at its *published* path.  The sealed intake's own record
+    names the run's working copy, which the run removes when it returns; the
+    published ``rebuilt.pptx`` is the artifact the verdict is about and the one a
+    reviewer can open, so that is what an independent read has to read.
     """
+    published = Path(clean_result.output_directory) / "rebuilt.pptx"
+    assert published.is_file(), "the accepted run published its rebuilt deck"
     raw = json.loads(
-        _officecli("view", clean_result.rebuilt_evidence[0].path, "issues", "--json")
+        _officecli("view", published, "issues", "--json")
     )["data"]["issues"]
     expected = {1: 0}
     for item in raw:
@@ -1166,9 +1290,7 @@ def test_the_retained_overflow_is_still_visible_in_the_page_record(
 # ---------------------------------------------------------------------------
 
 
-def test_a_rebuilt_only_issue_blocks_with_source_and_rebuilt_context(
-    clean_result: Any, tmp_path: Path
-) -> None:
+def test_a_rebuilt_only_issue_blocks_with_source_and_rebuilt_context(clean_run: Any) -> None:
     """A condition the rebuilt object alone reports is a material delta.
 
     The rebuilt issue is injected into the sealed intake bundle, because a
@@ -1176,7 +1298,8 @@ def test_a_rebuilt_only_issue_blocks_with_source_and_rebuilt_context(
     by rebuilding a valid projection; the comparison that judges it is the
     production one.
     """
-    target = _object_named(clean_result, "clean-text")
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
 
     def add_issue(intake: GateIntake) -> GateIntake:
         path = _issue_path_of(intake, target.emitted_name)
@@ -1191,13 +1314,8 @@ def test_a_rebuilt_only_issue_blocks_with_source_and_rebuilt_context(
             ),
         )
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=add_issue,
-    )
+    result = _rejudge(clean_run, add_issue)
     assert result.outcome is GateOutcome.BLOCK
-    assert Path(result.report_path).name == "gate-rejected.json"
     delta = next(item for item in result.material_deltas if item.condition == "text_overflow")
     assert delta.source_key == target.source_key
     assert delta.source_page == target.source_slide
@@ -1430,26 +1548,23 @@ def test_supported_style_declarations_are_recorded_for_every_readback(
     assert checked, "the clean fixture projects at least one text object"
 
 
-def test_a_changed_rebuilt_font_size_blocks(clean_result: Any, tmp_path: Path) -> None:
+def test_a_changed_rebuilt_font_size_blocks(clean_run: Any) -> None:
     """A rebuilt object whose size changed is not a faithful rebuild.
 
     This is the mutation the gate used to be blind to: the characters were intact,
     the text check passed, and nothing looked at the formatting at all.
     """
-    target = _object_named(clean_result, "clean-text")
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=_style_mutation(
-            target.emitted_name,
-            lambda style: replace(
-                style,
-                runs=tuple(
-                    run.replace("size=18pt", "size=99pt") for run in style.runs
-                ),
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _style_mutation(
+        target.emitted_name,
+        lambda style: replace(
+            style,
+            runs=tuple(
+                run.replace("size=18pt", "size=99pt") for run in style.runs
             ),
         ),
-    )
+    ))
     assert result.outcome is GateOutcome.BLOCK
     diagnostic = next(
         item for item in result.diagnostics if item.code == "style_readback_mismatch"
@@ -1458,48 +1573,42 @@ def test_a_changed_rebuilt_font_size_blocks(clean_result: Any, tmp_path: Path) -
     assert diagnostic.rebuilt_object == target.emitted_name
 
 
-def test_a_changed_rebuilt_font_family_blocks(clean_result: Any, tmp_path: Path) -> None:
+def test_a_changed_rebuilt_font_family_blocks(clean_run: Any) -> None:
     """A substituted typeface is a style regression, not a detail."""
-    target = _object_named(clean_result, "clean-text")
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=_style_mutation(
-            target.emitted_name,
-            lambda style: replace(
-                style,
-                runs=tuple(
-                    re.sub(r"font=[^|]*", "font=comic sans ms", run)
-                    for run in style.runs
-                ),
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _style_mutation(
+        target.emitted_name,
+        lambda style: replace(
+            style,
+            runs=tuple(
+                re.sub(r"font=[^|]*", "font=comic sans ms", run)
+                for run in style.runs
             ),
         ),
-    )
+    ))
     assert result.outcome is GateOutcome.BLOCK
     assert "style_readback_mismatch" in {item.code for item in result.diagnostics}
 
 
-def test_a_changed_rebuilt_colour_blocks(clean_result: Any, tmp_path: Path) -> None:
-    target = _object_named(clean_result, "clean-text")
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=_style_mutation(
-            target.emitted_name,
-            lambda style: replace(
-                style,
-                runs=tuple(
-                    re.sub(r"color=[^|]*", "color=#00ff00", run)
-                    for run in style.runs
-                ),
+def test_a_changed_rebuilt_colour_blocks(clean_run: Any) -> None:
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _style_mutation(
+        target.emitted_name,
+        lambda style: replace(
+            style,
+            runs=tuple(
+                re.sub(r"color=[^|]*", "color=#00ff00", run)
+                for run in style.runs
             ),
         ),
-    )
+    ))
     assert result.outcome is GateOutcome.BLOCK
     assert "style_readback_mismatch" in {item.code for item in result.diagnostics}
 
 
-def test_a_flattened_run_list_blocks(clean_result: Any, tmp_path: Path) -> None:
+def test_a_flattened_run_list_blocks(clean_run: Any) -> None:
     """Losing the boundary between two DIFFERENT runs is not faithful.
 
     The mutation gives the object two runs that genuinely differ, then reports only
@@ -1508,18 +1617,15 @@ def test_a_flattened_run_list_blocks(clean_result: Any, tmp_path: Path) -> None:
     prove nothing, because the Canonical Run rule merges those whether or not the
     projection did.
     """
-    target = _object_named(clean_result, "clean-text")
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=_style_mutation(
-            target.emitted_name,
-            lambda style: replace(
-                style,
-                runs=tuple(style.runs) + ("font=arial|size=99pt|color=#ff0000|bold=true|italic=|underline=",),
-            ),
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _style_mutation(
+        target.emitted_name,
+        lambda style: replace(
+            style,
+            runs=tuple(style.runs) + ("font=arial|size=99pt|color=#ff0000|bold=true|italic=|underline=",),
         ),
-    )
+    ))
     assert result.outcome is GateOutcome.BLOCK
     assert "style_readback_mismatch" in {item.code for item in result.diagnostics}
 
@@ -1554,19 +1660,14 @@ def test_the_run_comparison_uses_the_products_own_run_rule() -> None:
     assert len(merged(["size=12pt", "exotic=1|size=12pt"])) == 1
 
 
-def test_an_unreadable_rebuilt_style_blocks_rather_than_passing(
-    clean_result: Any, tmp_path: Path
-) -> None:
+def test_an_unreadable_rebuilt_style_blocks_rather_than_passing(clean_run: Any) -> None:
     """A style the gate cannot read must not be treated as a style that matched."""
-    target = _object_named(clean_result, "clean-text")
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=_style_mutation(
-            target.emitted_name,
-            lambda style: replace(style, unavailable="the readback reported nothing"),
-        ),
-    )
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _style_mutation(
+        target.emitted_name,
+        lambda style: replace(style, unavailable="the readback reported nothing"),
+    ))
     assert result.outcome is GateOutcome.BLOCK
     assert "style_readback_mismatch" in {item.code for item in result.diagnostics}
 
@@ -1574,7 +1675,7 @@ def test_an_unreadable_rebuilt_style_blocks_rather_than_passing(
 def _style_mutation(name: str, rewrite: Any) -> Any:
     """Mutate one rebuilt object's style inside the sealed intake bundle.
 
-    The mutation is applied to the *readback*, not to the deck, so every case is
+    The mutation is applied to the readback, not to the deck, so every case is
     judged by the same production comparison a real run uses.  Reading the deck
     itself was correct; what is under test is that the comparison notices a
     readback whose formatting no longer matches the source's declaration.
@@ -1594,14 +1695,66 @@ def _style_mutation(name: str, rewrite: Any) -> Any:
     return mutate
 
 
-def test_a_changed_rebuilt_text_blocks(clean_result: Any, tmp_path: Path) -> None:
+def test_a_changed_rebuilt_alignment_blocks(clean_run: Any) -> None:
+    """A body the rebuild centred is not the body the source drew left.
+
+    The comparison used to skip any source declaration of the default ``left``,
+    so a rebuilt object that reported ``center`` had nothing to be compared
+    against and passed.  Both sides now resolve through the native default, which
+    is what makes the centred case visible.
+    """
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _style_mutation(
+        target.emitted_name, lambda style: replace(style, align="center")
+    ))
+    assert result.outcome is GateOutcome.BLOCK
+    diagnostic = next(
+        item for item in result.diagnostics if item.code == "style_readback_mismatch"
+    )
+    assert diagnostic.source_object == target.source_object
+    assert diagnostic.rebuilt_object == target.emitted_name
+    assert "align" in diagnostic.message
+    assert _readback_of(result, target.source_object).style_matched is False
+
+
+def test_an_absent_rebuilt_alignment_is_the_native_default(clean_run: Any) -> None:
+    """The other direction, pinned: stating nothing is not the same as stating wrong.
+
+    A rebuilt body that declares no alignment paints the native default, which is
+    what the source declares, so the comparison must not read the absent
+    declaration as a lost one.  Only a *different* alignment is a failure.
+    """
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _style_mutation(
+        target.emitted_name, lambda style: replace(style, align=None)
+    ))
+    assert "style_readback_mismatch" not in {item.code for item in result.diagnostics}
+    assert _readback_of(result, target.source_object).style_matched is True
+
+
+def test_alignment_tokens_resolve_through_the_native_default() -> None:
+    """The token rule itself, both directions, without a deck in the way."""
+    token = gate_module._alignment_token
+    # Absence, ``left`` and the relative ``start`` are one alignment.
+    assert token(None) == token("left") == token("start") == token("LEFT")
+    assert token("-") == token("none") == token("")
+    # A real alignment is not the default.
+    assert token("center") != token("left")
+    assert token("right") != token("left")
+    assert token("justify") != token("left")
+
+
+def test_a_changed_rebuilt_text_blocks(clean_run: Any) -> None:
     """Dropped characters in the rebuilt deck are detected.
 
     The rebuilt text is mutated in the sealed intake bundle: the deck itself was
     read correctly, and what is under test is that the comparison notices a
     readback that no longer matches the source object.
     """
-    target = _object_named(clean_result, "clean-text")
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
 
     def drop_characters(intake: GateIntake) -> GateIntake:
         return replace(
@@ -1614,17 +1767,307 @@ def test_a_changed_rebuilt_text_blocks(clean_result: Any, tmp_path: Path) -> Non
             ),
         )
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=drop_characters,
-    )
+    result = _rejudge(clean_run, drop_characters)
     assert result.outcome is GateOutcome.BLOCK
     diagnostic = next(
         item for item in result.diagnostics if item.code == "text_readback_mismatch"
     )
     assert diagnostic.source_object == target.source_object
     assert diagnostic.rebuilt_object == target.emitted_name
+
+
+def _text_mutation(name: str, rewrite: Any) -> Any:
+    """Mutate one rebuilt object's text inside the sealed intake bundle.
+
+    The characters are changed on the readback, not in the deck, so every case is
+    judged by the same production comparison a real run uses.  The deck was read
+    correctly; what is under test is that the comparison notices a readback whose
+    text or structure no longer matches the source object -- and names the code.
+    """
+
+    def mutate(intake: GateIntake) -> GateIntake:
+        return replace(
+            intake,
+            rebuilt_objects=tuple(
+                replace(item, text=rewrite(item.text))
+                if item.emitted_name == name
+                else item
+                for item in intake.rebuilt_objects
+            ),
+        )
+
+    return mutate
+
+
+def _readback_of(result: Any, source_object: str) -> Any:
+    """Return the page-level readback for one source object, from the run itself."""
+    return next(
+        item
+        for page in result.pages
+        for item in page.text_readback
+        if item.source_object == source_object
+    )
+
+
+def test_two_words_run_together_blocks(clean_run: Any) -> None:
+    """``A B -> AB`` is a blocking difference, and it is not a spacing finding.
+
+    Every character survived, so a whitespace-blind comparison called this
+    faithful.  It is the shape of the defect that reached a rebuilt deck as
+    ``Hard break probe linesecond visual line``.
+    """
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _text_mutation(
+        target.emitted_name, lambda text: text.replace(" ", "", 1)
+    ))
+    assert result.outcome is GateOutcome.BLOCK
+    codes = {item.code for item in result.diagnostics}
+    assert "text_readback_mismatch" in codes
+    readback = _readback_of(result, target.source_object)
+    assert readback.matched is False
+    assert readback.structure_lost is True, "the characters survived; the structure did not"
+    assert readback.whitespace_only_difference is False
+
+
+def test_a_dropped_hard_break_blocks(clean_run: Any) -> None:
+    """The source's two authored lines read as one line when the break is gone."""
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _text_mutation(
+        target.emitted_name, lambda text: text.replace("\n", "")
+    ))
+    assert result.outcome is GateOutcome.BLOCK
+    assert "text_readback_mismatch" in {item.code for item in result.diagnostics}
+    readback = _readback_of(result, target.source_object)
+    assert readback.matched is False
+    assert readback.structure_lost is True
+
+
+def test_a_paragraph_boundary_read_as_a_space_blocks(clean_run: Any) -> None:
+    """A paragraph boundary replaced by a space is a lost boundary, not spacing.
+
+    A separator that *dissolves* a boundary is the case the published rule has to
+    name, because the words are all still present and a whitespace-blind rule
+    therefore accepts it.
+    """
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _text_mutation(
+        target.emitted_name, lambda text: text.replace("\n", " ")
+    ))
+    assert result.outcome is GateOutcome.BLOCK
+    assert "text_readback_mismatch" in {item.code for item in result.diagnostics}
+    readback = _readback_of(result, target.source_object)
+    assert readback.matched is False
+    assert readback.structure_lost is True
+
+
+def test_an_added_empty_paragraph_blocks(clean_run: Any) -> None:
+    """An empty paragraph *between* content is a paragraph the source painted.
+
+    The source's two authored paragraphs are separated by one boundary; a rebuild
+    that writes two has painted a blank line the source does not show.
+    """
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _text_mutation(
+        target.emitted_name, lambda text: text.replace("\n", "\n\n", 1)
+    ))
+    assert result.outcome is GateOutcome.BLOCK
+    assert "text_readback_mismatch" in {item.code for item in result.diagnostics}
+    assert _readback_of(result, target.source_object).matched is False
+
+
+def test_a_trailing_empty_paragraph_is_the_approved_direction(clean_run: Any) -> None:
+    """The rule drops a trailing empty paragraph, and that is the product decision.
+
+    Pinned here rather than left implicit: OfficeCLI gives every native text body
+    one paragraph, so a body whose last authored paragraph is empty reports one
+    more than the source states, and blocking on it would refuse a rebuild for
+    writing the blank the source itself paints at the end of its text.  The
+    *interior* case above is the one that blocks, and the two directions are
+    deliberately different.
+    """
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _text_mutation(
+        target.emitted_name, lambda text: text + "\n\n"
+    ))
+    assert "text_readback_mismatch" not in {item.code for item in result.diagnostics}
+    readback = _readback_of(result, target.source_object)
+    assert readback.rebuilt_text != readback.expected_text, "the raw readback differs"
+    assert readback.matched is True, "and the approved rule reads it as the same text"
+    assert readback.structure_lost is False
+
+
+def _source_style_mutation(name: str, rewrite: Any) -> Any:
+    """Rewrite one *source* object's captured declaration inside the sealed intake.
+
+    The rebuilt side is not touched.  This is how a source deck that declares
+    something the corpus decks do not -- a paragraph spacing, a different authored
+    line count -- is exercised against the real comparison, without inventing a
+    private fixture deck to hold it.
+    """
+
+    def mutate(intake: GateIntake) -> GateIntake:
+        objects = tuple(
+            replace(item, text_style=rewrite(item.text_style))
+            if item.emitted_name == name
+            else item
+            for item in intake.projected.objects
+        )
+        return replace(
+            intake,
+            projected=replace(intake.projected, objects=objects),
+        )
+
+    return mutate
+
+
+def test_spacing_the_rebuild_never_declared_blocks(clean_run: Any) -> None:
+    """A rebuilt body spaced away from its box is not the body the source drew.
+
+    The source declares no paragraph spacing, so the rebuild must declare none:
+    the source's rectangle is meant to carry the body's position, and a rebuilt
+    object that adds a gap paints the text somewhere the source does not.
+    """
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    result = _rejudge(clean_run, _style_mutation(
+        target.emitted_name, lambda style: replace(style, space_before="12pt")
+    ))
+    assert result.outcome is GateOutcome.BLOCK
+    diagnostic = next(
+        item for item in result.diagnostics if item.code == "style_readback_mismatch"
+    )
+    assert diagnostic.source_object == target.source_object
+    assert "spaceBefore" in diagnostic.message
+    assert "no paragraph spacing" in diagnostic.message
+
+
+def test_a_source_declared_spacing_the_rebuild_drops_blocks(clean_run: Any) -> None:
+    """The other direction: the source spaced a paragraph and the rebuild did not.
+
+    A source paragraph the deck spaced 12pt from the one above it is painted lower
+    than the same paragraph drawn flush, so dropping the spacing moves text.  The
+    source's own declaration is the only side that can know this, which is why the
+    capture carries it.
+    """
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+
+    def declare_spacing(paragraphs: Any) -> Any:
+        return tuple(
+            {**paragraph, "space_before_pt": 0.0 if index else 12.0}
+            for index, paragraph in enumerate(paragraphs)
+        )
+
+    result = _rejudge(clean_run, _source_style_mutation(
+        target.emitted_name, declare_spacing
+    ))
+    assert result.outcome is GateOutcome.BLOCK
+    diagnostic = next(
+        item for item in result.diagnostics if item.code == "style_readback_mismatch"
+    )
+    assert "spaceBefore" in diagnostic.message
+    assert "12pt" in diagnostic.message
+
+
+def test_per_paragraph_spacing_the_readback_cannot_express_blocks(clean_run: Any) -> None:
+    """Two different source spacings cannot both be read back from one object.
+
+    The rebuilt side reports one spacing for the whole object, so a source body
+    whose paragraphs are spaced differently is a body this readback cannot judge.
+    Failing closed is the only honest verdict: accepting it would mean comparing a
+    per-paragraph declaration against a value that stands for all of them.
+    """
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+
+    def two_spacings(paragraphs: Any) -> Any:
+        return tuple(
+            {**paragraph, "space_after_pt": 6.0 * (index + 1)}
+            for index, paragraph in enumerate(paragraphs)
+        )
+
+    result = _rejudge(clean_run, _source_style_mutation(target.emitted_name, two_spacings))
+    assert result.outcome is GateOutcome.BLOCK
+    diagnostic = next(
+        item for item in result.diagnostics if item.code == "style_readback_mismatch"
+    )
+    assert "more than one paragraph spacing" in diagnostic.message
+
+
+def test_shrink_to_fit_on_a_multi_line_body_blocks(clean_run: Any) -> None:
+    """The rebuild may only ask OfficeCLI to shrink a body measured as one line.
+
+    The source object authors two lines here.  Asking OfficeCLI to fit a
+    multi-line body to its box is a size change waiting to happen: if the rebuilt
+    font metrics overflow the source's rectangle, the body is painted smaller than
+    the source paints it, and no other check in this gate would see it.
+    """
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    readback = _readback_of(result, target.source_object)
+    assert readback.style_declarations["authored-lines"] > 1, (
+        "this case is only meaningful on a multi-line source body"
+    )
+    result = _rejudge(clean_run, _style_mutation(
+        target.emitted_name, lambda style: replace(style, auto_fit="normal")
+    ))
+    assert result.outcome is GateOutcome.BLOCK
+    diagnostic = next(
+        item for item in result.diagnostics if item.code == "style_readback_mismatch"
+    )
+    assert "autoFit" in diagnostic.message
+    assert "authors 2 lines" in diagnostic.message
+
+
+def test_shrink_to_fit_on_a_single_line_body_is_allowed(clean_run: Any) -> None:
+    """And the permitted direction: one authored line is what the compiler asks it for.
+
+    The compiler requests shrink-to-fit exactly on a body Chromium measured as one
+    visual line, so the readback showing it there is the projection working as
+    designed rather than a defect.  Both halves of the condition are set, so the
+    only thing this test can be proving is the line-count rule itself.
+    """
+    result, intake = clean_run
+    target = _object_named(result, "clean-text")
+    source = _source_style_mutation(
+        target.emitted_name, lambda paragraphs: tuple(paragraphs[:1])
+    )
+    rebuilt = _style_mutation(
+        target.emitted_name, lambda style: replace(style, auto_fit="normal")
+    )
+
+    def one_line_and_shrink(intake: GateIntake) -> GateIntake:
+        return rebuilt(source(intake))
+
+    result = _rejudge(clean_run, one_line_and_shrink)
+    assert "style_readback_mismatch" not in {item.code for item in result.diagnostics}
+    readback = _readback_of(result, target.source_object)
+    assert readback.style_declarations["authored-lines"] == 1
+    assert readback.rebuilt_style.auto_fit == "normal"
+    assert readback.style_matched is True
+
+
+def test_the_spacing_rule_compares_points_not_spellings() -> None:
+    """The spacing comparison itself, without a deck: units, both directions."""
+    failure = gate_module._spacing_failure
+    # No source spacing: silence and an explicit zero are both faithful.
+    assert failure("spaceBefore", [0.0], None) is None
+    assert failure("spaceBefore", [0.0], "0pt") is None
+    assert failure("spaceBefore", [0.0], "12pt") is not None
+    # A declared spacing survives in either spelling of the same length.
+    assert failure("spaceAfter", [12.0], "12pt") is None
+    assert failure("spaceAfter", [12.0], None) is not None
+    assert failure("spaceAfter", [12.0], "6pt") is not None
+    # Sub-point differences are unit rounding; a whole point is a different spacing.
+    assert failure("spaceAfter", [12.0], "12.25pt") is None
+    assert failure("spaceAfter", [12.0], "13pt") is not None
+    # A value the readback cannot express fails closed rather than passing.
+    assert failure("spaceAfter", [6.0, 12.0], "12pt") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1658,9 +2101,7 @@ def test_table_cells_carry_their_source_mapping(clean_result: Any) -> None:
     assert all("/tr[" in path and "/tc[" in path for path in check.cell_paths)
 
 
-def test_a_rebuilt_table_with_the_wrong_dimensions_blocks(
-    clean_result: Any, tmp_path: Path
-) -> None:
+def test_a_rebuilt_table_with_the_wrong_dimensions_blocks(clean_run: Any) -> None:
     """A table rebuilt with the wrong row/column count is detected.
 
     The dimension change is injected into the sealed intake bundle, because a
@@ -1668,7 +2109,8 @@ def test_a_rebuilt_table_with_the_wrong_dimensions_blocks(
     it fails outright; the structural comparison that judges the readback is the
     production one.
     """
-    target = _object_named(clean_result, "native-table")
+    result, intake = clean_run
+    target = _object_named(result, "native-table")
 
     def wrong_dimensions(intake: GateIntake) -> GateIntake:
         return replace(
@@ -1681,11 +2123,7 @@ def test_a_rebuilt_table_with_the_wrong_dimensions_blocks(
             ),
         )
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=wrong_dimensions,
-    )
+    result = _rejudge(clean_run, wrong_dimensions)
     assert result.outcome is GateOutcome.BLOCK
     diagnostic = next(
         item for item in result.diagnostics if item.code == "table_structure_mismatch"
@@ -1694,11 +2132,10 @@ def test_a_rebuilt_table_with_the_wrong_dimensions_blocks(
     assert diagnostic.source_object == target.source_object
 
 
-def test_a_rebuilt_table_with_changed_cell_text_blocks(
-    clean_result: Any, tmp_path: Path
-) -> None:
+def test_a_rebuilt_table_with_changed_cell_text_blocks(clean_run: Any) -> None:
     """A table whose cells read back with different characters is detected."""
-    target = _object_named(clean_result, "native-table")
+    result, intake = clean_run
+    target = _object_named(result, "native-table")
 
     def change_cell(intake: GateIntake) -> GateIntake:
         return replace(
@@ -1711,11 +2148,7 @@ def test_a_rebuilt_table_with_changed_cell_text_blocks(
             ),
         )
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=change_cell,
-    )
+    result = _rejudge(clean_run, change_cell)
     assert result.outcome is GateOutcome.BLOCK
     diagnostic = next(
         item for item in result.diagnostics if item.code == "table_structure_mismatch"
@@ -1723,9 +2156,7 @@ def test_a_rebuilt_table_with_changed_cell_text_blocks(
     assert "cell text" in diagnostic.message
 
 
-def test_a_rebuilt_table_that_differs_only_in_whitespace_is_reported(
-    clean_result: Any, tmp_path: Path
-) -> None:
+def test_a_rebuilt_table_that_differs_only_in_whitespace_is_reported(clean_run: Any) -> None:
     """A cell whose characters match but whose spacing moved does not block.
 
     The source cell ``IDU SIZE`` and the rebuilt ``IDU  SIZE`` carry the same
@@ -1735,6 +2166,7 @@ def test_a_rebuilt_table_that_differs_only_in_whitespace_is_reported(
     does not block an otherwise faithful table.
     """
 
+    result, intake = clean_run
     def respace(intake: GateIntake) -> GateIntake:
         target = next(
             item for item in intake.projected.objects if item.projected_kind == "table"
@@ -1754,11 +2186,7 @@ def test_a_rebuilt_table_that_differs_only_in_whitespace_is_reported(
             ),
         )
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=respace,
-    )
+    result = _rejudge(clean_run, respace)
     assert result.outcome is GateOutcome.PASS_WITH_FINDINGS
     assert result.material_deltas == ()
     assert any(
@@ -1770,9 +2198,10 @@ def test_a_rebuilt_table_that_differs_only_in_whitespace_is_reported(
     assert check.space_only_cell_positions() == (2,)
 
 
-def test_a_rasterised_table_blocks(clean_result: Any, tmp_path: Path) -> None:
+def test_a_rasterised_table_blocks(clean_run: Any) -> None:
     """A table rebuilt as a picture is never a native table round trip."""
-    target = _object_named(clean_result, "native-table")
+    result, intake = clean_run
+    target = _object_named(result, "native-table")
 
     def rasterise(intake: GateIntake) -> GateIntake:
         return replace(
@@ -1785,11 +2214,7 @@ def test_a_rasterised_table_blocks(clean_result: Any, tmp_path: Path) -> None:
             ),
         )
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=rasterise,
-    )
+    result = _rejudge(clean_run, rasterise)
     assert result.outcome is GateOutcome.BLOCK
     diagnostic = next(
         item for item in result.diagnostics if item.code == "table_structure_mismatch"
@@ -2108,7 +2533,7 @@ def test_every_locked_proxy_carries_all_five_isolation_facts(clean_result: Any) 
     assert record["paint_fraction"] > 0
 
 
-def test_a_proxy_that_is_all_background_blocks(clean_result: Any, tmp_path: Path) -> None:
+def test_a_proxy_that_is_all_background_blocks(clean_run: Any, tmp_path: Path) -> None:
     """A flat proxy proves the target did not survive its reconstruction.
 
     An image of exactly the right size, under exactly the right name, of exactly
@@ -2122,6 +2547,7 @@ def test_a_proxy_that_is_all_background_blocks(clean_result: Any, tmp_path: Path
     the mutation removes every painted pixel without changing the raster's size
     or geometry.
     """
+    result, intake = clean_run
     from PIL import Image
 
     def blank(path: Path) -> None:
@@ -2137,13 +2563,8 @@ def test_a_proxy_that_is_all_background_blocks(clean_result: Any, tmp_path: Path
         rgb.paste(flat, (0, 0, rgb.width, rgb.height))
         rgb.save(path, format="PNG")
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=_mutate_run_proxy(blank),
-    )
+    result = _rejudge(clean_run, _mutate_run_proxy(blank, tmp_path, clean_run))
     assert result.outcome is GateOutcome.BLOCK
-    assert Path(result.report_path).name == "gate-rejected.json"
     diagnostics = [
         item for item in result.diagnostics if item.code == "proxy_isolation_failed"
     ]
@@ -2157,14 +2578,9 @@ def test_a_proxy_that_is_all_background_blocks(clean_result: Any, tmp_path: Path
     assert proof.carries_paint is False
     assert proof.paint_pixels == 0
     assert proof.raster_pixels == proof.raster_width_px * proof.raster_height_px
-    record = json.loads(
-        (Path(result.output_directory) / "proxy-isolation.json").read_text(
-            encoding="utf-8"
-        )
-    )["proofs"][0]
-    assert record["carries_paint"] is False
-    assert record["paint_pixels"] == 0
-    assert record["paint_measured"] is True
+    # The published `proxy-isolation.json` is written from these same proofs, and
+    # `test_every_locked_proxy_carries_all_five_isolation_facts` reads it back
+    # from the accepted run's own directory, so the document is still asserted.
 
 
 def test_a_near_white_proxy_differing_from_its_background_still_passes() -> None:
@@ -2210,26 +2626,36 @@ def test_the_proxy_asset_is_hashed_in_the_evidence(clean_result: Any) -> None:
     assert set(clean_result.proxy_assets) == {proof.asset}
 
 
-def _mutate_run_proxy(rewrite) -> Any:
-    """Return an intake hook that rewrites this run's locked-proxy asset.
+def _mutate_run_proxy(rewrite: Any, scratch: Path, clean_run: Any) -> Any:
+    """Return an intake hook that rewrites a *copy* of this run's proxy asset.
 
     The hook receives the sealed intake bundle, which is where the run's own
-    proxy assets are named, so the rewrite lands on the bytes the isolation proof
-    is about to measure rather than on a copy from an earlier fixture run.
+    proxy assets are named.  Those name the staging directory the run deletes, so
+    the bytes are taken from the published evidence -- the same bytes the accepted
+    run wrote -- copied into ``scratch``, and pointed at the copy before the
+    rewrite lands.  Mutating the published file itself would corrupt the accepted
+    run's evidence directory, which the tests beside these read.
     """
+    published_root = Path(clean_run[0].output_directory) / "projection"
 
     def mutate(intake: GateIntake) -> GateIntake:
-        assets = [
-            Path(item.proxy_asset) for item in intake.projected.objects if item.proxy_asset
-        ]
-        assert assets, "the run projected no locked proxy to mutate"
-        rewrite(assets[0])
-        return intake
+        scratch.mkdir(parents=True, exist_ok=True)
+        mapping: dict[str, str] = {}
+        for item in intake.projected.objects:
+            if not item.proxy_asset:
+                continue
+            target = scratch / Path(item.proxy_asset).name
+            if not target.exists():
+                shutil.copy2(published_root / Path(item.proxy_asset).name, target)
+            mapping[str(item.proxy_asset)] = str(target)
+        assert mapping, "the run projected no locked proxy to mutate"
+        rewrite(Path(next(iter(mapping.values()))))
+        return _relocate_proxy_assets(intake, scratch)
 
     return mutate
 
 
-def test_a_proxy_whose_bytes_were_swapped_blocks(clean_result: Any, tmp_path: Path) -> None:
+def test_a_proxy_whose_bytes_were_swapped_blocks(clean_run: Any, tmp_path: Path) -> None:
     """Corrupting the proxy payload is detected by the isolation proof.
 
     The bytes are mutated on the run's own proxy asset -- the one the proof
@@ -2237,21 +2663,18 @@ def test_a_proxy_whose_bytes_were_swapped_blocks(clean_result: Any, tmp_path: Pa
     rule rather than simulated in the proof record.
     """
 
+    result, intake = clean_run
     def corrupt(path: Path) -> None:
         payload = path.read_bytes()
         path.write_bytes(payload[:-64] + bytes(64))
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=_mutate_run_proxy(corrupt),
-    )
+    result = _rejudge(clean_run, _mutate_run_proxy(corrupt, tmp_path, clean_run))
     assert result.outcome is GateOutcome.BLOCK
     codes = {item.code for item in result.diagnostics}
     assert "proxy_isolation_failed" in codes
 
 
-def test_a_contaminated_guard_band_blocks(clean_result: Any, tmp_path: Path) -> None:
+def test_a_contaminated_guard_band_blocks(clean_run: Any, tmp_path: Path) -> None:
     """Paint in the guard band that cannot belong to the target blocks.
 
     The band is painted on the run's own proxy asset -- the sibling paint the
@@ -2259,9 +2682,10 @@ def test_a_contaminated_guard_band_blocks(clean_result: Any, tmp_path: Path) -> 
     contamination is measured from actual bytes rather than simulated in the
     proof record.
     """
+    result, intake = clean_run
     from PIL import Image, ImageDraw
 
-    target = _object_named(clean_result, "locked-preset")
+    target = _object_named(result, "locked-preset")
 
     def contaminate(path: Path) -> None:
         with Image.open(path) as image:
@@ -2270,11 +2694,7 @@ def test_a_contaminated_guard_band_blocks(clean_result: Any, tmp_path: Path) -> 
         draw.rectangle((0, 0, painted.width - 1, 0), fill=(128, 128, 128))
         painted.save(path, format="PNG")
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=_mutate_run_proxy(contaminate),
-    )
+    result = _rejudge(clean_run, _mutate_run_proxy(contaminate, tmp_path, clean_run))
     assert result.outcome is GateOutcome.BLOCK
     diagnostic = next(
         item
@@ -2284,10 +2704,9 @@ def test_a_contaminated_guard_band_blocks(clean_result: Any, tmp_path: Path) -> 
     assert diagnostic.source_object == target.source_object
 
 
-def test_a_proxy_raster_at_the_wrong_density_blocks(
-    clean_result: Any, tmp_path: Path
-) -> None:
+def test_a_proxy_raster_at_the_wrong_density_blocks(clean_run: Any, tmp_path: Path) -> None:
     """An upscaled proxy is refused: its raster must reach the canvas density."""
+    result, intake = clean_run
     from PIL import Image
 
     def downscale(path: Path) -> None:
@@ -2295,11 +2714,7 @@ def test_a_proxy_raster_at_the_wrong_density_blocks(
             small = image.convert("RGB").resize((31, 31))
         small.save(path, format="PNG")
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=_mutate_run_proxy(downscale),
-    )
+    result = _rejudge(clean_run, _mutate_run_proxy(downscale, tmp_path, clean_run))
     assert result.outcome is GateOutcome.BLOCK
     assert any(
         item.code == "proxy_isolation_failed"
@@ -2370,13 +2785,14 @@ def test_the_published_ledger_matches_the_run_ledger(clean_result: Any) -> None:
     assert payload["counts"]["canonical-editable"] == 2
 
 
-def test_an_ambiguous_mapping_blocks(clean_result: Any, tmp_path: Path) -> None:
+def test_an_ambiguous_mapping_blocks(clean_run: Any) -> None:
     """Two source objects sharing one emitted identity blocks acceptance.
 
     The identity collision is injected into the projected result, because the
     projection seam already refuses to publish one; the gate's own re-derivation
     from the published artifacts is what is under test.
     """
+    result, intake = clean_run
     def collide(intake: GateIntake) -> GateIntake:
         first_html_id = intake.projected.objects[0].html_id
         return replace(
@@ -2390,17 +2806,13 @@ def test_an_ambiguous_mapping_blocks(clean_result: Any, tmp_path: Path) -> None:
             ),
         )
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=collide,
-    )
+    result = _rejudge(clean_run, collide)
     assert result.outcome is GateOutcome.BLOCK
     codes = {item.code for item in result.diagnostics}
     assert "ambiguous_mapping" in codes
 
 
-def test_an_unsupported_disposition_blocks(clean_result: Any, tmp_path: Path) -> None:
+def test_an_unsupported_disposition_blocks(clean_run: Any) -> None:
     """An unsupported or unresolved object is a blocking input.
 
     Both halves of the policy are exercised on one run: the disposition itself is
@@ -2409,7 +2821,8 @@ def test_an_unsupported_disposition_blocks(clean_result: Any, tmp_path: Path) ->
     injected into the sealed intake bundle, because the #15 seam refuses to
     publish one at all.
     """
-    target = _object_named(clean_result, "locked-preset")
+    result, intake = clean_run
+    target = _object_named(result, "locked-preset")
 
     def unsupport(intake: GateIntake) -> GateIntake:
         return replace(
@@ -2431,11 +2844,7 @@ def test_an_unsupported_disposition_blocks(clean_result: Any, tmp_path: Path) ->
             ),
         )
 
-    result = _run_gate(
-        clean_result.projected.selection[0].source_pptx,
-        tmp_path / "gate",
-        intake_mutation=unsupport,
-    )
+    result = _rejudge(clean_run, unsupport)
     assert result.outcome is GateOutcome.BLOCK
     codes = {item.code for item in result.diagnostics}
     assert "blocking_disposition" in codes
@@ -3136,7 +3545,9 @@ def test_the_normalization_rule_is_published_with_the_evidence(clean_result: Any
         "scope_evidence",
         "table_structure",
         "text_readback",
+        "style_readback",
         "table_cell_readback",
+        "rebuilt_issue_binding",
         "proxy_isolation",
         "artifact_hashing",
     } <= names

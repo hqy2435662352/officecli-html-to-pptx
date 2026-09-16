@@ -620,8 +620,8 @@ class ProjectedObject:
     #: what the source actually declared.  Without it the gate could only re-parse
     #: the generated HTML, which is the artifact under test -- a style check that
     #: compares the projection with itself.  Each entry is one paragraph:
-    #: ``{"align", "line_spacing", "runs": ({"font","size","color","bold",
-    #: "italic","underline"}, ...)}``.
+    #: ``{"align", "line_spacing", "space_before_pt", "space_after_pt",
+    #: "runs": ({"font","size","color","bold","italic","underline"}, ...)}``.
     text_style: tuple[Mapping[str, Any], ...] = ()
 
     @property
@@ -2212,6 +2212,14 @@ def _captured_text_style(obj: CapturedObject) -> tuple[Mapping[str, Any], ...]:
             {
                 "align": str(paragraph.align or ALIGNMENT_DEFAULT).lower(),
                 "line_spacing": paragraph.line_spacing,
+                # The source paragraph's own native spacing before and after it.
+                # Captured because the rebuild writes paragraph spacing only for
+                # a table cell's paragraphs: a standalone text body's spacing is
+                # *not* re-created, and whether that is faithful is something the
+                # gate has to be able to judge from the source's declaration
+                # rather than from the projection's own output.
+                "space_before_pt": float(paragraph.space_before_pt or 0.0),
+                "space_after_pt": float(paragraph.space_after_pt or 0.0),
                 "runs": tuple(
                     {
                         "font": run.font_family,

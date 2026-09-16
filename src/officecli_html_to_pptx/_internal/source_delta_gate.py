@@ -157,16 +157,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import base64
+import contextvars
+import errno
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
-from .acceptance import _run_officecli
 from .author_projector import (
     BLOCKING_DISPOSITIONS,
     COMPILED_KIND_BY_PROJECTED_KIND,
@@ -185,7 +188,7 @@ from .author_projector import (
     _write_text_exact,
     project_pptx_to_author_html,
 )
-from .pptx_reader import PROXY_DENSITY_TOLERANCE
+from .pptx_reader import ALIGNMENT_DEFAULT, PROXY_DENSITY_TOLERANCE, length_to_points
 
 GATE_SCHEMA_VERSION = 1
 
@@ -315,6 +318,14 @@ class NormalizationRule:
         return {"name": self.name, "rule": self.rule}
 
 
+#: How far a rebuilt paragraph spacing may differ from the source's own, in
+#: points, before it counts as a different spacing.  OfficeCLI reports a length
+#: in whatever unit the deck states and the source's is captured as points, so a
+#: sub-point difference is unit rounding rather than a moved paragraph; half a
+#: point is below anything a reader can see at deck scale.
+PARAGRAPH_SPACING_TOLERANCE_PT = 0.5
+
+
 COMPARISON_RULES: tuple[NormalizationRule, ...] = (
     NormalizationRule(
         name="source_identity_key",
@@ -393,6 +404,33 @@ COMPARISON_RULES: tuple[NormalizationRule, ...] = (
             "a retained finding with both spellings; a structural difference is a "
             "blocking finding, because the characters survive while the line "
             "boundary the source painted does not."
+        ),
+    ),
+    NormalizationRule(
+        name="style_readback",
+        rule=(
+            "A canonical-editable text object's supported formatting is read back "
+            "from the rebuilt PPTX through OfficeCLI and compared with the SOURCE "
+            "OBJECT's own captured declaration, never with the generated HTML: the "
+            "HTML is the artifact under test, and comparing against it would only "
+            "prove the projection agrees with itself. The two sides are read from "
+            "different places, so the comparison can fail. Compared: font family, "
+            "font size, colour, bold, italic and underline per run; paragraph "
+            "alignment; line spacing; paragraph spacing before and after; and "
+            "shrink-to-fit. Runs are compared as the Canonical Run rule defines them "
+            "(adjacent runs whose resolved formatting is identical are one run, and "
+            "an unstated declaration is spelled '-' or 'false' on different sides), "
+            "so a permitted merge is not reported as lost formatting while a real "
+            "formatting difference is. Alignment resolves both sides through the "
+            "native default, so a rebuilt object that states nothing is the default "
+            "rather than a lost declaration. Line spacing is compared as a "
+            "measurement, resolving a multiple against each side's own font size. "
+            "Paragraph spacing must be absent on the rebuilt side unless the source "
+            f"declared it, within {PARAGRAPH_SPACING_TOLERANCE_PT}pt. Shrink-to-fit "
+            "is accepted only on a body the source authors as one line, because that "
+            "is the only case the compiler asks for it. A readback that cannot be "
+            "established, a run count that does not match, or a source mapping that "
+            "is ambiguous is a blocking style_readback_mismatch rather than a pass."
         ),
     ),
     NormalizationRule(
@@ -633,6 +671,89 @@ def _style_token(value: Any) -> str | None:
     if not text or text.lower() in {"none", "false", "-"}:
         return None
     return text.lower()
+
+
+#: How far a rebuilt paragraph spacing may differ from the source's own, in
+#: points, before it counts as a different spacing.  OfficeCLI reports a length
+#: in whatever unit the deck states and the source's is captured as points, so a
+#: sub-point difference is unit rounding rather than a moved paragraph; half a
+#: point is below anything a reader can see at deck scale.
+PARAGRAPH_SPACING_TOLERANCE_PT = 0.5
+
+
+#: How far a rebuilt paragraph spacing may differ from the source's own, in
+#: points, before it counts as a different spacing.  OfficeCLI reports a length
+#: in whatever unit the deck states and the source's is captured as points, so a
+#: sub-point difference is unit rounding rather than a moved paragraph; half a
+#: point is below anything a reader can see at deck scale.
+PARAGRAPH_SPACING_TOLERANCE_PT = 0.5
+
+
+def _spacing_failure(side: str, declared: Sequence[float], actual: Any) -> str | None:
+    """Return why one side's paragraph spacing did not survive, or ``None``.
+
+    ``declared`` is the set of distinct non-zero spacings the source's paragraphs
+    state on this side; a value of zero means "not spaced".  The rebuilt side
+    reports one value for the whole object, so the comparison is only meaningful
+    when the source states at most one distinct non-zero value -- anything more is
+    a body whose per-paragraph spacing the readback cannot express, and failing
+    closed is the only honest verdict there.
+    """
+    reported = _points_of(actual) or 0.0
+    stated = sorted({round(value, 4) for value in declared if value})
+    if not stated:
+        if abs(reported) > PARAGRAPH_SPACING_TOLERANCE_PT:
+            return (
+                f"{side}: the source declares no paragraph spacing and the rebuilt "
+                f"object reports {actual!r}"
+            )
+        return None
+    if len(stated) > 1:
+        return (
+            f"{side}: the source declares more than one paragraph spacing "
+            f"({', '.join(f'{value:g}pt' for value in stated)}) and the rebuilt "
+            f"object reports {actual!r}, which cannot express them"
+        )
+    expected = stated[0]
+    if abs(reported - expected) > PARAGRAPH_SPACING_TOLERANCE_PT:
+        return (
+            f"{side}: expected {expected:g}pt from the source, rebuilt reports "
+            f"{actual!r}"
+        )
+    return None
+
+
+def _alignment_token(value: Any) -> str:
+    """Return a comparable alignment token, with absence meaning the default.
+
+    The source states its own alignment and OfficeCLI states the rebuilt
+    object's, and the two sides spell the default differently: the source's
+    capture writes ``left``, a rebuilt body may state nothing at all, and either
+    side may write ``start`` for a relative alignment.  All three are the native
+    default, so they normalize to one token -- and a body the rebuild centred or
+    right-aligned then differs from a source that stated the default, which the
+    previous rule could not see at all because it skipped any source declaration
+    of ``left``.
+    """
+    token = _style_token(value)
+    return ALIGNMENT_DEFAULT if token in {None, "start"} else token
+
+
+def _points_of(value: Any) -> float | None:
+    """Return a length OfficeCLI reported, in points, or ``None`` when it states none.
+
+    The two sides of the spacing comparison are spelled differently: the source's
+    own spacing is captured through the reader as a float in points, and the
+    rebuilt object's is whatever length token OfficeCLI reports.  Reading both as
+    points is what makes them the same measurement.
+    """
+    token = _style_token(value)
+    if token is None:
+        return None
+    try:
+        return float(length_to_points(token))
+    except (TypeError, ValueError):
+        return None
 
 
 def _font_size_pt(declarations: Mapping[str, Any]) -> float | None:
@@ -980,10 +1101,39 @@ def expected_style_declarations(projected: Any) -> dict[str, Any]:
     paragraphs = list(getattr(projected, "text_style", ()) or ())
     if paragraphs:
         first = paragraphs[0]
-        if first.get("align") and str(first["align"]).lower() not in {"left", "start"}:
-            payload["text-align"] = first["align"]
+        # The source's alignment is published even when it is the native default.
+        # Omitting it made "the source declared nothing special" indistinguishable
+        # from "the source's alignment is unknown", so a rebuild that centred a
+        # body the source drew left had nothing to be compared against.
+        alignment = _style_token(first.get("align"))
+        if alignment is not None:
+            payload["text-align"] = alignment
         if first.get("line_spacing"):
             payload["line-height"] = first["line_spacing"]
+        # How many lines the source body authors.  The rebuild asks OfficeCLI to
+        # shrink a body to its box only when the browser measured that body as a
+        # single visual line, so a multi-line body reporting a shrink-to-fit is
+        # behaviour the projection never requested.
+        payload["authored-lines"] = len(paragraphs)
+        # The source's own paragraph spacing, as the distinct non-zero values it
+        # declares per side.  Published even when they are all zero, because
+        # "the source spaced nothing" is a claim the rebuilt side can contradict.
+        before = sorted(
+            {
+                round(float(paragraph.get("space_before_pt") or 0.0), 4)
+                for paragraph in paragraphs
+            }
+        )
+        after = sorted(
+            {
+                round(float(paragraph.get("space_after_pt") or 0.0), 4)
+                for paragraph in paragraphs
+            }
+        )
+        payload["paragraph-spacing"] = {
+            "space_before_pt": before,
+            "space_after_pt": after,
+        }
         runs: list[str] = []
         for paragraph in paragraphs:
             for run in paragraph.get("runs") or ():
@@ -1111,17 +1261,21 @@ class TextReadback:
             if expected is None:
                 continue
             actual = built.align if name == "align" else built.line_spacing
-            if actual is None:
-                found.append(
-                    f"{name}: the source declares {expected!r} and the rebuilt "
-                    "object reports none"
-                )
-            elif name == "align":
-                if _style_token(expected) != _style_token(actual):
+            if name == "align":
+                # Both sides resolve through the native default, so a rebuilt
+                # object that states nothing is the default rather than a lost
+                # declaration -- and a rebuilt object that states a different
+                # alignment is a body the source did not paint that way.
+                if _alignment_token(expected) != _alignment_token(actual):
                     found.append(
                         f"{name}: expected {expected!r} from the source, rebuilt "
                         f"reports {actual!r}"
                     )
+            elif actual is None:
+                found.append(
+                    f"{name}: the source declares {expected!r} and the rebuilt "
+                    "object reports none"
+                )
             elif not _leading_matches_two_sided(
                 expected,
                 actual,
@@ -1133,6 +1287,37 @@ class TextReadback:
                     f"{name}: expected {expected!r} from the source, rebuilt "
                     f"reports {actual!r}"
                 )
+        # Paragraph spacing.  The Author Contract emits paragraph spacing only for
+        # a table cell's paragraphs -- a standalone text body's spacing is not
+        # re-created, because its measured rectangle is meant to carry it.  The
+        # source's own native spacing is therefore a claim the rebuilt object can
+        # contradict in both directions: a source paragraph the deck spaced away
+        # from the one above it is painted where the rebuild does not paint it,
+        # and a rebuild that spaces a body the source drew flush has invented the
+        # gap.  Neither was compared at all while this rule was missing.
+        spacing = self.style_declarations.get("paragraph-spacing") or {}
+        for side, declared, actual in (
+            ("spaceBefore", spacing.get("space_before_pt"), built.space_before),
+            ("spaceAfter", spacing.get("space_after_pt"), built.space_after),
+        ):
+            if declared is None:
+                continue
+            failure = _spacing_failure(side, declared, actual)
+            if failure is not None:
+                found.append(failure)
+        # Shrink-to-fit.  ``autoFit: normal`` is OfficeCLI's token for "shrink the
+        # text into its box", and the compiler asks for it only on a body Chromium
+        # measured as one visual line.  On a multi-line body the same declaration
+        # is a size change waiting to happen: if the rebuilt font metrics overflow
+        # the source's rectangle, PowerPoint paints the body smaller than the
+        # source does, and nothing else in this gate would notice.
+        authored_lines = self.style_declarations.get("authored-lines")
+        if authored_lines and int(authored_lines) > 1 and built.auto_fit is not None:
+            found.append(
+                f"autoFit: the source body authors {int(authored_lines)} lines and "
+                f"the rebuilt object reports {built.auto_fit!r}, which fits the "
+                "body to its box instead of painting it at the source's size"
+            )
         # Per-run formatting is compared run for run.  A body whose runs were
         # flattened into one style has fewer entries and fails here, which is the
         # point: a representative value is not a faithful readback.
@@ -1745,6 +1930,12 @@ class ProjectionGateResult:
     # failed for each.
     unbound_rebuilt: tuple[UnboundRebuiltIssue, ...] = ()
     rules: tuple[NormalizationRule, ...] = COMPARISON_RULES
+    #: Every bounded OfficeCLI read this run made, with its attempt count and
+    #: whether a resident close ran.  Carried on the result because "the tool
+    #: answered" and "the tool answered on the third attempt after a close" are
+    #: different facts about a run's reliability, and only the run knows which it
+    #: was.
+    officecli_calls: tuple[OfficeCliCall, ...] = ()
     # Where the projection's own artifacts were published, keyed by role.  They
     # are the artifacts the verdict is about, so they travel with the result
     # instead of disappearing with a temporary directory.
@@ -2410,8 +2601,14 @@ def _rebuilt_objects(
             columns = detailed_format.get("cols")
             cells: tuple[str, ...] = ()
             if str(child.get("type", "")) == "table":
+                # The cell text is carried as OfficeCLI reports it, not pre-collapsed:
+                # the comparison normalizes both sides with the same
+                # structure-preserving rule the object text uses, and collapsing
+                # here first would destroy the line structure before the rule could
+                # see it -- the source's rules became strict while the table's were
+                # left whitespace-blind, which is one rule too many.
                 cells = tuple(
-                    normalize_text(cell.get("text", ""))
+                    str(cell.get("text", "") or "")
                     for row in detailed.get("children", []) or []
                     if str(row.get("type", "")) == "tr"
                     for cell in row.get("children", []) or []
@@ -2493,7 +2690,7 @@ def collect_issue_records(deck: str | Path) -> tuple[Mapping[str, Any], ...]:
     the issue subtype and the object path as separate fields, so the gate reads
     the tool's own classification instead of reparsing a sentence.
     """
-    payload = _run_officecli("view", deck, "issues", "--json", json_output=True)
+    payload = _gate_officecli("view", deck, "issues", "--json", json_output=True)
     data = payload.get("data", {}) if isinstance(payload, Mapping) else {}
     issues = data.get("issues", []) if isinstance(data, Mapping) else []
     return tuple(item for item in issues if isinstance(item, Mapping))
@@ -2505,11 +2702,216 @@ def collect_deck_tree(deck: str | Path) -> tuple[Mapping[str, Any], Mapping[str,
     ``--depth 1`` carries every slide and object identity; ``--depth 5`` carries
     the table matrix and the object properties the readback checks compare.
     """
-    shallow_payload = _run_officecli("get", deck, "/", "--depth", "1", json_output=True)
-    deep_payload = _run_officecli("get", deck, "/", "--depth", "5", json_output=True)
+    shallow_payload = _gate_officecli("get", deck, "/", "--depth", "1", json_output=True)
+    deep_payload = _gate_officecli("get", deck, "/", "--depth", "5", json_output=True)
     shallow = shallow_payload["data"]["results"][0]
     deep = deep_payload["data"]["results"][0]
     return shallow, deep
+
+
+# How many times one gate read is attempted before the run gives up, and how long
+# it waits between attempts.
+#
+# OfficeCLI keeps documents resident, and on a loaded machine an individual
+# command can exit non-zero with no message and then succeed unchanged on the very
+# next attempt.  The retry exists for that, and only for that: a bounded number of
+# attempts, each one preceded by closing the resident handle on the document it
+# names, because a resident left over from the failed attempt is the one cause a
+# blind retry cannot clear.  The count is a named constant rather than a literal
+# so the published evidence can state the policy the run actually applied, and it
+# is deliberately small -- an unbounded retry turns a genuine tool error into a
+# hang, and a schema error is never transient at all.
+OFFICECLI_READ_ATTEMPTS = 3
+OFFICECLI_READ_ATTEMPTS_ENV = "HTML_TO_PPTX_GATE_OFFICECLI_ATTEMPTS"
+OFFICECLI_READ_BACKOFF_SECONDS = 0.5
+OFFICECLI_READ_TIMEOUT_SECONDS = 180
+
+
+@dataclass(frozen=True)
+class OfficeCliCall:
+    """What one bounded OfficeCLI read cost, so the report can say so.
+
+    Recorded for every call the gate makes, not only the failing ones: a reviewer
+    asking "did this run quietly retry its way past a broken tool?" needs the
+    attempt count of the calls that *succeeded*.
+    """
+
+    command: str
+    attempts: int
+    status: str
+    resident_closed: bool
+    error: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "command": self.command,
+            "attempts": self.attempts,
+            "status": self.status,
+            "resident_closed": self.resident_closed,
+        }
+        if self.error:
+            payload["error"] = self.error
+        return payload
+
+
+class GateOfficeCliError(RuntimeError):
+    """A gate read failed after every bounded attempt was spent."""
+
+    code = "officecli_read_failed"
+
+
+def _gate_officecli(*args: str | Path, json_output: bool = False) -> Any:
+    """Read through OfficeCLI, with a bounded retry and an explicit resident close.
+
+    Returns the decoded payload.  Raises :class:`GateOfficeCliError` when every
+    attempt failed, carrying the command, the attempt count, and whether a
+    resident close ran -- so a failure names what was tried rather than only that
+    something went wrong.
+    """
+    command = ["officecli", *(str(arg) for arg in args)]
+    if json_output:
+        command.append("--json")
+    calls = _ACTIVE_CALLS.get()
+    attempts_allowed = _officecli_attempts()
+    document = next(
+        (str(arg) for arg in args[1:] if str(arg).lower().endswith(".pptx")), None
+    )
+    closed = False
+    last = ""
+    for attempt in range(1, attempts_allowed + 1):
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=OFFICECLI_READ_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as expired:
+            last = f"timed out after {OFFICECLI_READ_TIMEOUT_SECONDS}s: {expired}"
+            completed = None
+        except OSError as error:
+            last = f"could not run: {error}"
+            completed = None
+        if completed is not None and completed.returncode == 0 and completed.stdout.strip():
+            payload = _decode_officecli(command, completed.stdout, json_output)
+            if payload is not _UNDECODABLE:
+                if calls is not None:
+                    calls.append(
+                        OfficeCliCall(
+                            command=" ".join(command),
+                            attempts=attempt,
+                            status="ok",
+                            resident_closed=closed,
+                        )
+                    )
+                return payload
+            # A payload that does not decode is a schema error, not a transient
+            # one: retrying it would spend the whole budget on a command whose
+            # answer this code cannot read anyway.
+            last = "the reply could not be decoded as the expected document"
+            break
+        if completed is not None:
+            last = (
+                f"exit code {completed.returncode}: "
+                f"{(completed.stderr or completed.stdout or '').strip()}"
+            )
+        if attempt < attempts_allowed:
+            closed = _close_resident(document) or closed
+            time.sleep(OFFICECLI_READ_BACKOFF_SECONDS * attempt)
+    if calls is not None:
+        calls.append(
+            OfficeCliCall(
+                command=" ".join(command),
+                attempts=attempt,
+                status="failed",
+                resident_closed=closed,
+                error=last,
+            )
+        )
+    raise GateOfficeCliError(
+        f"{' '.join(command)} failed after {attempt} attempt(s); "
+        f"resident close ran: {closed}. Last error: {last}"
+    )
+
+
+# Sentinel distinguishing "the reply was not the document this code expects" from
+# a legitimate payload, including one that is itself ``None``.
+_UNDECODABLE = object()
+
+
+def _decode_officecli(command: Sequence[str], stdout: str, json_output: bool) -> Any:
+    """Return the decoded reply, or the undecodable sentinel."""
+    if not json_output:
+        return stdout
+    try:
+        return json.loads(stdout)
+    except ValueError:
+        return _UNDECODABLE
+
+
+def _officecli_attempts() -> int:
+    """Return how many attempts this run may spend on one read.
+
+    A named bound, overridable only to make a run *stricter* or to let a test
+    prove the bound is honoured; an invalid or non-positive value is refused
+    rather than silently replaced.
+    """
+    configured = os.environ.get(OFFICECLI_READ_ATTEMPTS_ENV)
+    if not configured:
+        return OFFICECLI_READ_ATTEMPTS
+    try:
+        value = int(configured)
+    except ValueError as error:
+        raise ProjectionError(
+            f"{OFFICECLI_READ_ATTEMPTS_ENV} is not an integer: {configured!r}",
+            code="invalid_retry_policy",
+        ) from error
+    if value < 1:
+        raise ProjectionError(
+            f"{OFFICECLI_READ_ATTEMPTS_ENV} must be at least 1, got {value}",
+            code="invalid_retry_policy",
+        )
+    return value
+
+
+def _close_resident(document: str | None) -> bool:
+    """Close any resident handle OfficeCLI holds on one document.
+
+    Returns whether a close was attempted.  A close that itself fails is not an
+    error: the retry it precedes may still succeed, and the record says the close
+    ran either way.
+    """
+    if not document:
+        return False
+    try:
+        subprocess.run(
+            ["officecli", "close", document],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=OFFICECLI_READ_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return True
+
+
+#: Where the current run's OfficeCLI call records are collected.
+#:
+#: A context variable rather than a parameter because the readers below are also
+#: handed to :class:`GateSources` as plain callables, and threading a recorder
+#: through every one of them would put a reporting concern into each read's
+#: signature.  It is scoped to the run: :func:`gate_projected_author_html` sets it
+#: for the duration and reads it back, so a call made outside a run is simply not
+#: recorded rather than landing in another run's evidence.
+_ACTIVE_CALLS: contextvars.ContextVar[list[OfficeCliCall] | None] = (
+    contextvars.ContextVar("gate_officecli_calls", default=None)
+)
 
 
 # ---------------------------------------------------------------------------
@@ -2599,7 +3001,7 @@ def _default_sources() -> GateSources:
         # The prose form is what OfficeCLI publishes for a human and what the
         # product's existing build path records, so the gate records the same
         # text rather than a second projection of it.
-        return str(_run_officecli("validate", deck))
+        return str(_gate_officecli("validate", deck))
 
     return GateSources(
         project=project,
@@ -3215,7 +3617,9 @@ def source_table_matrix(
         if str(row.get("type")) != "tr":
             continue
         values = [
-            normalize_text(cell.get("text", ""))
+            # Raw, for the same reason as the rebuilt side: the structure-preserving
+            # rule is applied once, at comparison time, to both sides.
+            str(cell.get("text", "") or "")
             for cell in (row.get("children") or [])
             if str(cell.get("type")) == "tc"
         ]
@@ -3250,11 +3654,7 @@ class SourceTableUnavailable(RuntimeError):
 
 def _read_source_node(source_path: str, source_object: str) -> Mapping[str, Any]:
     """Read one node of a source deck through OfficeCLI, with the seam's retry."""
-    from .acceptance import _run_officecli
-
-    text = _run_officecli(
-        "get", source_path, source_object, "--depth", "2", "--json"
-    )
+    text = _gate_officecli("get", source_path, source_object, "--depth", "2", "--json")
     payload = json.loads(text)
     results = payload.get("data", {}).get("results")
     if not isinstance(results, list) or not results:
@@ -3316,34 +3716,6 @@ def _emitted_table_cell_paths(html_text: str, html_id: str) -> tuple[str, ...]:
         for row in nodes[0].xpath(".//tr")
         for cell in row.xpath("./td|./th")
     )
-
-
-def _style_declarations(html_text: str, html_id: str) -> dict[str, str]:
-    """Return the emitted object's own inline style declarations.
-
-    The declaration names are the canonical surface's supported formatting
-    vocabulary; the values are what the emitted object declares and what the
-    rebuilt object's readback is compared against.
-    """
-    from lxml import html as lxml_html
-
-    document = lxml_html.fromstring(html_text)
-    nodes = document.xpath(f'//*[@id="{html_id}"]')
-    if not nodes:
-        return {}
-    node = nodes[0]
-    element = node if node.tag == "div" else None
-    if element is None:
-        # A proxy is an <img> whose guard-band style is not a formatting
-        # declaration, so a non-div object declares no text style of its own.
-        element = node
-    declarations: dict[str, str] = {}
-    for part in str(element.get("style", "") or "").split(";"):
-        name, _, value = part.partition(":")
-        name = name.strip()
-        if name and value.strip():
-            declarations[name] = value.strip()
-    return declarations
 
 
 def _collapse_findings(
@@ -4157,7 +4529,11 @@ def _unbound_rebuilt_material_delta(item: UnboundRebuiltIssue) -> MaterialDelta:
 # ---------------------------------------------------------------------------
 
 
-def _evidence_document(evaluation: GateEvaluation) -> dict[str, Any]:
+def _evidence_document(
+    evaluation: GateEvaluation,
+    *,
+    officecli_calls: Sequence[OfficeCliCall] = (),
+) -> dict[str, Any]:
     """Return the published gate report for one evaluation.
 
     The report is self-describing: it carries the per-page records themselves,
@@ -4173,6 +4549,25 @@ def _evidence_document(evaluation: GateEvaluation) -> dict[str, Any]:
         "accepted": evaluation.outcome is not GateOutcome.BLOCK,
         "checks_complete": evaluation.checks_complete,
         "comparison_rules": [item.as_dict() for item in COMPARISON_RULES],
+        "reliability": {
+            # The policy the run applied, as numbers rather than as prose, so a
+            # reviewer can tell a run that read cleanly from one that retried its
+            # way to the same verdict.
+            "officecli_read_attempts": OFFICECLI_READ_ATTEMPTS,
+            "officecli_read_backoff_seconds": OFFICECLI_READ_BACKOFF_SECONDS,
+            "officecli_read_timeout_seconds": OFFICECLI_READ_TIMEOUT_SECONDS,
+            "publication_attempts": PUBLICATION_ATTEMPTS,
+            "publication_backoff_seconds": PUBLICATION_BACKOFF_SECONDS,
+            "publication_claim": "atomic-rename-refuses-an-existing-destination",
+            "calls": [item.as_dict() for item in officecli_calls],
+            "calls_retried": sum(1 for item in officecli_calls if item.attempts > 1),
+            "calls_failed": sum(
+                1 for item in officecli_calls if item.status != "ok"
+            ),
+            "resident_closes": sum(
+                1 for item in officecli_calls if item.resident_closed
+            ),
+        },
         "selection": [page.as_dict() for page in projected.selection],
         "sources": [record.as_dict() for record in projected.sources],
         "counts": {
@@ -4311,6 +4706,7 @@ def _publish(
     html_text: str,
     rebuilt_path: Path,
     proxy_paths: Sequence[Path],
+    officecli_calls: Sequence[OfficeCliCall] = (),
 ) -> tuple[tuple[ArtifactHash, ...], Mapping[str, str], str, str]:
     """Stage, hash, and move the whole evidence set into place in one step.
 
@@ -4341,7 +4737,10 @@ def _publish(
             "projection_report": str((shadow / PROJECTION_REPORT_NAME).resolve()),
         }
         report = _write_evaluation_documents(
-            staging, evaluation, report_name=report_name
+            staging,
+            evaluation,
+            report_name=report_name,
+            officecli_calls=officecli_calls,
         )
         report["projection_artifacts"] = dict(projection_artifacts)
         _write_text_exact(staging / CANONICAL_HTML_NAME, html_text)
@@ -4408,7 +4807,7 @@ def _publish(
                 f"Gate output appeared during the run: {destination}",
                 code="output_collision",
             )
-        _atomic_replace(staging, destination)
+        _claim_destination(staging, destination)
         published = True
     finally:
         if not published:
@@ -4441,27 +4840,109 @@ def _publish(
     )
 
 
-def _atomic_replace(staging: Path, destination: Path) -> None:
-    """Move a complete staging directory onto its destination, retrying briefly.
+#: How many times the publication move is attempted against a transient Windows
+#: sharing violation, and how long it waits between attempts.
+PUBLICATION_ATTEMPTS = 20
+PUBLICATION_BACKOFF_SECONDS = 0.25
 
-    The move is still one step -- the destination never exists in a partial
-    state -- but on Windows a handle the run's own subprocesses opened on an
-    artifact can outlive the process that opened it for a moment, and the move
-    then fails with a sharing violation rather than publishing evidence that is
-    already complete.  A short retry is what distinguishes "a reader has not let
-    go yet" from "this cannot be published", and the final attempt raises the
-    real error so a genuine failure still reaches the caller.
+
+def _claim_destination(staging: Path, destination: Path) -> None:
+    """Publish a complete staging directory onto a destination nobody else owns.
+
+    The claim and the publication are the *same* operation.  ``os.rename`` moves
+    the whole artifact set into place in one step and refuses a destination that
+    already exists, so two publishers racing for one directory cannot both
+    succeed, and neither can leave half a set behind for a reader to find.
+
+    ``Path.replace`` was the wrong primitive for this.  It overwrites an existing
+    destination, so the pair of "test whether it exists, then replace it" left a
+    window in which both racers pass the test and the second silently discards the
+    first run's evidence.  Renaming onto an existing directory fails instead: a
+    fresh ``FileExistsError`` on Windows, ``ENOTEMPTY``/``EEXIST`` on POSIX.  Both
+    are reported as an ``output_collision`` and neither is retried -- a destination
+    that exists is somebody else's publication, not a lock to wait on.
+
+    The one error that *is* retried is a sharing violation, which is not a
+    collision at all: on Windows a handle this run's own subprocesses opened on an
+    artifact can outlive the process by a moment, and the move then fails against
+    a destination that does not exist.  That distinction is why a genuine failure
+    reaches the caller promptly instead of after the full retry budget.
     """
     last: OSError | None = None
-    for attempt in range(20):
+    for attempt in range(PUBLICATION_ATTEMPTS):
         try:
-            staging.replace(destination)
+            os.rename(staging, destination)
             return
         except OSError as error:
+            if _is_collision(error):
+                raise ProjectionError(
+                    "Gate output appeared during the run, so this run published "
+                    f"nothing: {destination}",
+                    code="output_collision",
+                ) from error
+            if not _is_sharing_violation(error):
+                raise
             last = error
-            time.sleep(0.25 * (attempt + 1))
+            time.sleep(PUBLICATION_BACKOFF_SECONDS * (attempt + 1))
     assert last is not None
     raise last
+
+
+def _is_collision(error: OSError) -> bool:
+    """Whether this rename failure means the destination is already taken."""
+    if isinstance(error, FileExistsError):
+        return True
+    return error.errno in {errno.EEXIST, errno.ENOTEMPTY}
+
+
+def _is_sharing_violation(error: OSError) -> bool:
+    """Whether this rename failure is a handle, not an occupied destination.
+
+    Only a Windows sharing or lock violation is retried.  Nothing else is: an
+    access refusal, a missing parent, a full disk and a cross-device move are all
+    real answers, and waiting on them would only delay the report.  POSIX has no
+    case here at all -- there, renaming onto a destination that does not exist is
+    atomic, and an open handle on the source is not a reason to refuse it.
+    """
+    if isinstance(error, FileExistsError):
+        return False
+    return getattr(error, "winerror", None) in _SHARING_VIOLATION_WINERRORS
+
+
+#: Windows ``ERROR_SHARING_VIOLATION`` and ``ERROR_LOCK_VIOLATION``: a handle is
+#: still open on the artifact, which is a matter of timing rather than of state.
+_SHARING_VIOLATION_WINERRORS = frozenset({32, 33})
+
+
+def _close_residents(paths: Iterable[str | Path]) -> tuple[str, ...]:
+    """Close OfficeCLI's resident handles on every deck this run opened.
+
+    Called once per run, after the verdict and on the failure path alike.  A
+    resident handle left open is what makes the *next* run's read fail for no
+    visible reason -- and, on Windows, what makes a published artifact
+    un-replaceable -- so the run that opened a document is the run that closes it.
+    A close that fails is recorded and otherwise ignored: the run's verdict is
+    already decided, and refusing to return it because a cleanup step failed would
+    turn a hygiene problem into a lost result.
+    """
+    failed: list[str] = []
+    for path in paths:
+        document = str(path)
+        if not document.lower().endswith(".pptx"):
+            continue
+        try:
+            subprocess.run(
+                ["officecli", "close", document],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=OFFICECLI_READ_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            failed.append(document)
+    return tuple(failed)
 
 
 def _json_dump(path: Path, payload: Mapping[str, Any]) -> None:
@@ -4511,7 +4992,11 @@ def _relocate_proxy_assets(
 
 
 def _write_evaluation_documents(
-    staging: Path, evaluation: GateEvaluation, *, report_name: str
+    staging: Path,
+    evaluation: GateEvaluation,
+    *,
+    report_name: str,
+    officecli_calls: Sequence[OfficeCliCall] = (),
 ) -> dict[str, Any]:
     """Write every document that is a projection of one evaluation.
 
@@ -4523,7 +5008,7 @@ def _write_evaluation_documents(
     ``gate-rejected.json`` for a blocked one -- which is what keeps partial
     evidence from ever appearing as a completed gate result.
     """
-    report = _evidence_document(evaluation)
+    report = _evidence_document(evaluation, officecli_calls=officecli_calls)
     report["report_name"] = report_name
     _json_dump(staging / report_name, report)
     _json_dump(staging / "pages.json", {"pages": [item.as_dict() for item in evaluation.pages]})
@@ -4647,6 +5132,10 @@ def gate_projected_author_html(
         )
 
     sources = _sources or _default_sources()
+    # Every OfficeCLI read this run makes is recorded here, so the evidence can
+    # say whether the run read cleanly or retried its way to the same verdict.
+    call_log: list[OfficeCliCall] = []
+    calls_token = _ACTIVE_CALLS.set(call_log)
     staging = Path(
         tempfile.mkdtemp(prefix=f".{destination.name}-gate-run-", dir=str(destination.parent))
     )
@@ -4778,6 +5267,7 @@ def gate_projected_author_html(
             published_proxies=published_proxies,
         )
     except BaseException:
+        _ACTIVE_CALLS.reset(calls_token)
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
@@ -4794,8 +5284,17 @@ def gate_projected_author_html(
             html_text=html_text,
             rebuilt_path=rebuilt_path,
             proxy_paths=proxy_paths,
+            officecli_calls=tuple(call_log),
         )
     finally:
+        # The run that opened a document closes it, on every path out: a resident
+        # handle left open is what makes the next run's read fail for no visible
+        # reason, and on Windows what makes a published artifact un-replaceable.
+        sources_opened = [record.source_path for record in projected.sources]
+        _close_residents(
+            [*sources_opened, rebuilt_path, destination / REBUILT_PPTX_NAME]
+        )
+        _ACTIVE_CALLS.reset(calls_token)
         shutil.rmtree(staging, ignore_errors=True)
     return ProjectionGateResult(
         outcome=evaluation.outcome,
@@ -4817,6 +5316,7 @@ def gate_projected_author_html(
         rebuilt_objects=evaluation.rebuilt_objects,
         unbound_rebuilt=evaluation.unbound_rebuilt,
         projection_artifacts=projection_artifacts,
+        officecli_calls=tuple(call_log),
     )
 
 
@@ -4937,9 +5437,17 @@ __all__ = [
     "IssueRecord",
     "MaterialDelta",
     "NormalizationRule",
+    "OFFICECLI_READ_ATTEMPTS",
+    "OFFICECLI_READ_ATTEMPTS_ENV",
+    "OFFICECLI_READ_BACKOFF_SECONDS",
+    "OFFICECLI_READ_TIMEOUT_SECONDS",
     "OVERFLOW_RATIO_ABSOLUTE_TOLERANCE",
     "OVERFLOW_RATIO_RELATIVE_TOLERANCE",
+    "OfficeCliCall",
     "OfficeCliEvidence",
+    "PARAGRAPH_SPACING_TOLERANCE_PT",
+    "PUBLICATION_ATTEMPTS",
+    "PUBLICATION_BACKOFF_SECONDS",
     "PageResponse",
     "ProjectionGateResult",
     "ProxyIsolationProof",

@@ -347,6 +347,7 @@ def local_verification_record(
     *,
     resolved: Mapping[str, Path],
     digests: Mapping[str, str],
+    digests_after: Mapping[str, str] | None = None,
     unchanged: Mapping[str, bool] | None = None,
 ) -> dict[str, Any]:
     """Return the local-only record of what the run actually verified.
@@ -355,8 +356,14 @@ def local_verification_record(
     beside the evidence bundle and gitignored, so the public tree can carry the
     verdict -- "hashed before and after, identical" -- without carrying the
     private values that make it checkable.
+
+    ``digests`` is each deck's hash before the run and ``digests_after`` its hash
+    afterwards.  They are separate arguments because they are separate
+    measurements: one deck's after-hash standing in for another's would make the
+    per-source immutability claim unfalsifiable.
     """
     unchanged = dict(unchanged or {})
+    after = dict(digests_after if digests_after is not None else digests)
     return {
         "note": (
             "Local-only record. Private source identity, paths and digests live "
@@ -368,7 +375,7 @@ def local_verification_record(
                 "path": str(resolved.get(source.slot, "")),
                 "pages": list(source.pages),
                 "sha256_before": digests.get(source.slot),
-                "sha256_after": digests.get(source.slot),
+                "sha256_after": after.get(source.slot),
                 "verified_unchanged": unchanged.get(source.slot),
             }
             for source in CORPUS_SOURCES

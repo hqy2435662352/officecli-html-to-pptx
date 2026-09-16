@@ -20,6 +20,16 @@ half of the same hidden seam.  Its caller-facing result
 (:class:`GateOutcome`) are exported for the same reason: a caller has to be able
 to read the decision and the evidence behind it.  It too is not a supported
 command and carries no compatibility promise.
+
+Everything *behind* those two results stays internal on purpose.  The gate's
+evidence records (the text readback, the table check, the proxy isolation proof,
+the disposition page record, material deltas, retained findings, scope evidence,
+artifact hashes), its normalization-rule constants, and the mapping error it
+raises are reachable through the returned records but are not names a caller
+needs to write down, so they live in ``_internal.source_delta_gate``.  ADR 0030
+asks for one exported seam, not a second API beside it; a public name is a
+compatibility promise, and these carry none.  ``test_v042_public_surface.py``
+pins the exact set so the seam cannot widen again by accident.
 """
 
 from importlib.metadata import PackageNotFoundError, version
@@ -40,7 +50,6 @@ from ._internal.author_projector import (
     DISPOSITION_UNSUPPORTED,
     DISPOSITIONS,
     REASON_CODES,
-    AmbiguousMappingError,
     DispositionLedgerEntry,
     MissingPageError,
     OutputCollisionError,
@@ -59,19 +68,8 @@ from ._internal.author_projector import (
     project_pptx_to_author_html,
 )
 from ._internal.source_delta_gate import (
-    COMPARISON_RULES,
-    ArtifactHash,
-    GateDiagnostic,
     GateOutcome,
-    GatePageRecord,
-    MaterialDelta,
-    NormalizationRule,
     ProjectionGateResult,
-    ProxyIsolationProof,
-    RetainedFinding,
-    ScopeEvidence,
-    TableCheck,
-    TextReadback,
     gate_projected_author_html,
 )
 
@@ -82,9 +80,7 @@ except PackageNotFoundError:
 
 __all__ = [
     "Artifact",
-    "ArtifactHash",
     "CommandResult",
-    "COMPARISON_RULES",
     "Diagnostic",
     "DISPOSITION_BASE_ONLY",
     "DISPOSITION_CANONICAL",
@@ -93,14 +89,9 @@ __all__ = [
     "DISPOSITION_UNSUPPORTED",
     "DISPOSITIONS",
     "REASON_CODES",
-    "AmbiguousMappingError",
     "DispositionLedgerEntry",
-    "GateDiagnostic",
     "GateOutcome",
-    "GatePageRecord",
-    "MaterialDelta",
     "MissingPageError",
-    "NormalizationRule",
     "OutputCollisionError",
     "PageSelection",
     "ProjectedObject",
@@ -113,13 +104,8 @@ __all__ = [
     "ProjectionSelectionError",
     "ProjectionSourceError",
     "ProjectionSourceRecord",
-    "ProxyIsolationProof",
-    "RetainedFinding",
-    "ScopeEvidence",
     "SelectedPage",
     "SourceChangedError",
-    "TableCheck",
-    "TextReadback",
     "build_author_html",
     "check_author_html",
     "diagnose_environment",
