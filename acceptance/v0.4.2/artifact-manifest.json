@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "algorithm": "sha256",
-  "commit": "f0d94222b5947c348e4d892e8083119c8418dccf (working tree dirty)",
-  "run_id": "aa087d95bbde02b627d5e0b8d886e7b68467507421b9e061b107dbcd6e64c53a",
+  "commit": "f5fd4e8ac8a285ed222e37782dd8b31e526ced80 (working tree dirty: cceptance/v0.4.2/acceptance-report.md, scripts/run_v042_acceptance.py)",
+  "run_id": "43753269658f235b89fb9ce7d8cb9e1be78ed2d03472383400b53eeeebbdb1db",
   "note": "artifact-manifest.json is excluded from its own inventory: a document cannot contain its own hash. Every other file in the bundle is listed, and this manifest records acceptance-report.md's own hash in report_sha256.  `in_repository` says which entries a clone of the repository carries: the rest are the run's local evidence -- the gate directory and the page renders -- which `.gitignore` excludes and which therefore cannot be verified anywhere but on the machine that produced them.  All published documents are written with LF endings and `.gitattributes` keeps them that way, so their digests are the same in every checkout, and their digests are taken over the text without carriage returns -- the form the repository stores -- so they verify in a checkout whatever its line-ending configuration.",
   "artifact_count": 127,
   "published_count": 6,
@@ -10,43 +10,43 @@
   "artifacts": [
     {
       "name": "acceptance-report.md",
-      "sha256": "4bab6d35e4b6ac8b6d6237d2373e67c8e1dca35e1776732b9b0114b705552c88",
-      "size_bytes": 46109,
+      "sha256": "3f95c74be1472708f4e3c0e535910dba70fb3a442a37b63ab72fc632961182f0",
+      "size_bytes": 46210,
       "in_repository": true
     },
     {
       "name": "canonical-author.html",
-      "sha256": "30171df758dcd2f1b77e989265dbab70a63ac70faf44bc8a869cd24e21b375ef",
+      "sha256": "3beaebe12fafa17acbddeb60b0ebc160b51bfe140ec445ec4ce96158cb2620a4",
       "size_bytes": 42639867,
       "in_repository": false
     },
     {
       "name": "corpus-manifest.json",
-      "sha256": "f3a1bf70f90599bd813b2f19e9a45599dde90725c574aeab9b0a9856c648f271",
-      "size_bytes": 20894,
+      "sha256": "dc6e6f30e6b252fc418b8ffe6789d226d90568d8182314c189a117ff50dd1d29",
+      "size_bytes": 20965,
       "in_repository": true
     },
     {
       "name": "gate/canonical-author.html",
-      "sha256": "30171df758dcd2f1b77e989265dbab70a63ac70faf44bc8a869cd24e21b375ef",
+      "sha256": "3beaebe12fafa17acbddeb60b0ebc160b51bfe140ec445ec4ce96158cb2620a4",
       "size_bytes": 42639867,
       "in_repository": false
     },
     {
       "name": "gate/disposition-ledger.json",
-      "sha256": "66dbfb36d12495bb5356861f3fae6fcfda607a00c4ca0a0d78f57460d8e32adb",
-      "size_bytes": 245606,
+      "sha256": "12693c72ea2aaa7f2564b4454e7aa40e66cb39e9f5fd24497b150a56b7efe774",
+      "size_bytes": 245629,
       "in_repository": false
     },
     {
       "name": "gate/gate-report.json",
-      "sha256": "aa087d95bbde02b627d5e0b8d886e7b68467507421b9e061b107dbcd6e64c53a",
-      "size_bytes": 1338421,
+      "sha256": "43753269658f235b89fb9ce7d8cb9e1be78ed2d03472383400b53eeeebbdb1db",
+      "size_bytes": 1338606,
       "in_repository": false
     },
     {
       "name": "gate/gate-report.md",
-      "sha256": "804c70bb076fb0401ba1a6dbc056881b72be5b354d5a0083ae4a93719141460a",
+      "sha256": "5d2ffb2e4df53108808671f683dd22e5b7ddf8ff20c7cecec9135b1785057190",
       "size_bytes": 26055,
       "in_repository": false
     },
@@ -58,20 +58,20 @@
     },
     {
       "name": "gate/pages.json",
-      "sha256": "a3b1caef2718d73af5cfe9989f0d53305fea26ab27bcfef705d8855875165436",
-      "size_bytes": 495153,
+      "sha256": "f048d80fa625d2f69b8f924d17a5243c5bcf20c3cea2600dcaa472abecfc4891",
+      "size_bytes": 495192,
       "in_repository": false
     },
     {
       "name": "gate/projection/canonical-author.html",
-      "sha256": "30171df758dcd2f1b77e989265dbab70a63ac70faf44bc8a869cd24e21b375ef",
+      "sha256": "3beaebe12fafa17acbddeb60b0ebc160b51bfe140ec445ec4ce96158cb2620a4",
       "size_bytes": 42639867,
       "in_repository": false
     },
     {
       "name": "gate/projection/projection-report.json",
-      "sha256": "1852e0d497ba70fa8d854ded022fe310315e375aa1b0526c66549c50485fa7fa",
-      "size_bytes": 654540,
+      "sha256": "aea06885455427d6236dbab8451cfaa249d43d3eafcc1150f630126570b48a0f",
+      "size_bytes": 654623,
       "in_repository": false
     },
     {
@@ -298,14 +298,14 @@
     },
     {
       "name": "gate/projection/source-map.json",
-      "sha256": "1f7de7ddaa0806e35fb6d5ae419b6803270d85ec78458fb5f64c46e01ded5a4e",
-      "size_bytes": 595512,
+      "sha256": "975cc7d780de52dd4bfcc05eef2db67c76368aea7842f47387ca3a715c3cbda8",
+      "size_bytes": 595591,
       "in_repository": false
     },
     {
       "name": "gate/projection-report.json",
-      "sha256": "1852e0d497ba70fa8d854ded022fe310315e375aa1b0526c66549c50485fa7fa",
-      "size_bytes": 654540,
+      "sha256": "aea06885455427d6236dbab8451cfaa249d43d3eafcc1150f630126570b48a0f",
+      "size_bytes": 654623,
       "in_repository": false
     },
     {
@@ -532,14 +532,14 @@
     },
     {
       "name": "gate/proxy-isolation.json",
-      "sha256": "aafb2ee2f1859ef61ebfa0d05f6ddf6007a10e2aa7a2f9cf93bf654c013e299e",
-      "size_bytes": 53693,
+      "sha256": "d45d65172b9c2dd4779f3b3432a224bc299acfc21a0a4905c3569f73cbe3b4e7",
+      "size_bytes": 53730,
       "in_repository": false
     },
     {
       "name": "gate/rebuilt.pptx",
-      "sha256": "4c63036b3242adac454c5550d35882ae2a4e83e7e14eb8bc5f8f97425c0b915c",
-      "size_bytes": 31352300,
+      "sha256": "77d034b940d5c72b7def7ce5b19c6676fd9d25ab01bb8407400c274bc3b28b7b",
+      "size_bytes": 31352175,
       "in_repository": false
     },
     {
@@ -556,8 +556,8 @@
     },
     {
       "name": "gate/source-map.json",
-      "sha256": "1f7de7ddaa0806e35fb6d5ae419b6803270d85ec78458fb5f64c46e01ded5a4e",
-      "size_bytes": 595512,
+      "sha256": "975cc7d780de52dd4bfcc05eef2db67c76368aea7842f47387ca3a715c3cbda8",
+      "size_bytes": 595591,
       "in_repository": false
     },
     {
@@ -586,8 +586,8 @@
     },
     {
       "name": "local/source-verification.json",
-      "sha256": "7f1af3f4a455c15369597209231049e84ab45fd891667d73a7956896e26dd4c5",
-      "size_bytes": 4311,
+      "sha256": "a31b39b2e22677a810d3b697bdd84c72dc0354d7584b5f8cd67797a4a54e8394",
+      "size_bytes": 4315,
       "in_repository": false
     },
     {
@@ -742,7 +742,7 @@
     },
     {
       "name": "visual/p09-author.html",
-      "sha256": "5ab240408f123e0dd36844b72216d1f07a1d2ffaf8d2694cb9e446fdd1449513",
+      "sha256": "18a6fe4b24a840444ed892646ede1ec8fedd96f4da7f3335bbc5019c027db7b1",
       "size_bytes": 3630,
       "in_repository": false
     },
@@ -760,7 +760,7 @@
     },
     {
       "name": "visual/p10-author.html",
-      "sha256": "36713e7d736b734bad8b39fa8878fe233560701aca4d3690d81a1c9f9c1d3384",
+      "sha256": "f3400ee4482b71d12d8b8e052d315873a7ace612d3ca6d9d2ea14df88d8d8407",
       "size_bytes": 21460,
       "in_repository": false
     },
@@ -771,6 +771,6 @@
       "in_repository": false
     }
   ],
-  "report_sha256": "4bab6d35e4b6ac8b6d6237d2373e67c8e1dca35e1776732b9b0114b705552c88",
+  "report_sha256": "3f95c74be1472708f4e3c0e535910dba70fb3a442a37b63ab72fc632961182f0",
   "report_name": "acceptance-report.md"
 }

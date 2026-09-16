@@ -350,6 +350,7 @@ def report_only(bundle: Path) -> int:
     if not manifest.get("run_id"):
         manifest["run_id"] = run_id(bundle)
     write_json(manifest_path, manifest)
+    review = gate3_verdict(bundle)
     printable = build_report(
         result=result,
         elapsed=float(manifest.get("elapsed_seconds") or 0.0),
@@ -362,6 +363,13 @@ def report_only(bundle: Path) -> int:
         commit=str(manifest.get('commit') or ''),
         run_id=str(manifest.get('run_id') or ''),
         probes={},
+        review=review,
+        review_majors=review_majors(bundle),
+        other_reviews=sorted(
+            path.name
+            for path in bundle.glob("GATE3-REVIEW*.md")
+            if path.is_file() and (review is None or path.name != review[1])
+        ),
     )
     published_report = apply_independent_review(
         bundle, apply_withdrawal(bundle, printable)
@@ -810,6 +818,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest["visual_records"] = visual_records
     write_json(bundle / "corpus-manifest.json", manifest)
 
+    review = gate3_verdict(bundle)
     report = build_report(
         result=result,
         elapsed=elapsed,
@@ -822,6 +831,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         commit=manifest["commit"],
         run_id=manifest["run_id"],
         probes=probes,
+        review=review,
+        review_majors=review_majors(bundle),
+        other_reviews=sorted(
+            path.name
+            for path in bundle.glob("GATE3-REVIEW*.md")
+            if path.is_file() and (review is None or path.name != review[1])
+        ),
     )
     report = apply_independent_review(bundle, apply_withdrawal(bundle, report))
     (bundle / "acceptance-report.md").write_text(
@@ -915,15 +931,24 @@ def commit_sha() -> str:
             "the acceptance report must name the commit it describes, and "
             "`git rev-parse HEAD` did not report one"
         )
-    dirty = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=no"],
-        cwd=str(REPO),
-        capture_output=True,
-        check=False,
-    ).stdout.decode("utf-8", errors="replace").strip()
-    if not dirty:
+    dirty_lines = [
+        line
+        for line in subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=str(REPO),
+            capture_output=True,
+            check=False,
+        )
+        .stdout.decode("utf-8", errors="replace")
+        .splitlines()
+        if line.strip()
+    ]
+    if not dirty_lines:
         return sha
-    paths = [line[3:].strip().strip('"') for line in dirty.splitlines() if line.strip()]
+    # The status columns are exactly two characters and one space, so the path starts
+    # at index 3 -- and the *whole output* must not be stripped first, which eats the
+    # leading space of the first line and turns its path into one starting mid-word.
+    paths = [line[3:].strip().strip('"') for line in dirty_lines]
     outside = [path for path in paths if not path.replace("\\", "/").startswith(BUNDLE_RELATIVE)]
     if outside:
         return f"{sha} (working tree dirty: {', '.join(sorted(outside)[:3])})"
@@ -1174,6 +1199,9 @@ def build_report(
     commit: str = "",
     run_id: str = "",
     probes: dict[str, Path],
+    review: tuple[str, str] | None = None,
+    review_majors: int | None = None,
+    other_reviews: Sequence[str] = (),
 ) -> str:
     counts = result.counts
     accepted = result.accepted
@@ -1683,33 +1711,26 @@ def build_report(
     lines.append("")
     lines.append("## 14. Gate 3 — independent review")
     lines.append("")
-    reviewed = gate3_verdict(bundle)
-    majors = review_majors(bundle)
-    if reviewed is None:
+    if review is None:
         lines.append(
             "> **No independent review is recorded in this bundle.** The machine "
             "evidence below is evidence about the checks this run performed; it is "
             "not a claim that a reader would see no defect, and it is not acceptance."
         )
     else:
-        verdict, source = reviewed
+        verdict, source = review
         lines.append(
             f"> **The latest independent review is `{source}`: `{verdict}`"
-            + (f", MAJOR {majors}" if majors is not None else ", major count unreadable")
+            + (f", MAJOR {review_majors}" if review_majors is not None else ", major count unreadable")
             + ".** It is the bundle's verdict and the reviews beside it are the "
             "record: each finding is located by `(source slot, source page, source "
             "object)`."
         )
-        others = sorted(
-            path.name
-            for path in bundle.glob("GATE3-REVIEW*.md")
-            if path.is_file() and path.name != source
-        )
-        if others:
+        if other_reviews:
             lines.append(">")
             lines.append(
                 "> The other review document(s) in this bundle -- "
-                + ", ".join(f"`{name}`" for name in others)
+                + ", ".join(f"`{name}`" for name in other_reviews)
                 + " -- are **historical**: they judged earlier revisions and their "
                 "verdicts are superseded. A verdict of `PASS_WITH_FINDINGS` in one of "
                 "them is a reading of *that* revision's page renders, not a statement "

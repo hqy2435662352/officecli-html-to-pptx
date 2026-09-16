@@ -150,7 +150,7 @@
       "coverage_purpose": "proxy/overlay isolation: no sibling text may be embedded in any raster payload, and no wording may appear twice in the rebuilt deck",
       "scope_note": "Every object on this probe is canonical-editable and no proxy is emitted, so the rebuilt deck must contain no raster payload for this page at all. The overlay wording is asserted to appear exactly once in the rebuilt deck; if the rect, the ellipse or the arrow were ever replaced by a picture, this probe's unaccounted picture count would show it.",
       "synthetic": true,
-      "fixture_sha256": "ede4fa6d7a92677341ca1213531b378b3d88944710dc762d1d2f1adf6aa1e278"
+      "fixture_sha256": "72a81c7a9810711d108d52d529e45fb5335d7ee3fbb50418149a2129eeac929d"
     },
     {
       "order": 10,
@@ -162,7 +162,7 @@
       "coverage_purpose": "rich text semantics and the locked container boundary: mixed runs, hard break, empty paragraph, bullet nesting, numbering, Latin/CJK fonts, theme-token evidence, fixed numeric strings, and one group with a bound connector represented exactly once",
       "scope_note": "OfficeCLI reports no inheritance source for the theme run's colour, so the gate classifies it canonical-editable and the projection emits it without a colour declaration; the theme token is preserved in the source and in the projection's evidence, and no semantic token round trip is claimed. The group is one locked container boundary whose child shape and connector are represented once inside it and never emitted again as siblings.",
       "synthetic": true,
-      "fixture_sha256": "16cc6f1ee147848f6455938f639c745b32e2467ccbe091f508acbed4852d291e"
+      "fixture_sha256": "af1ffbcea8513d15f854ac9cdfa2b3341dbb957b26a2f8b78dc8402b7d5516b4"
     }
   ],
   "seam_selection": [
@@ -227,14 +227,14 @@
       "page_id": "probe-a",
       "source_id": "probe-a",
       "source_page": 1,
-      "source_sha256": "ede4fa6d7a92677341ca1213531b378b3d88944710dc762d1d2f1adf6aa1e278"
+      "source_sha256": "72a81c7a9810711d108d52d529e45fb5335d7ee3fbb50418149a2129eeac929d"
     },
     {
       "order": 10,
       "page_id": "probe-b",
       "source_id": "probe-b",
       "source_page": 1,
-      "source_sha256": "16cc6f1ee147848f6455938f639c745b32e2467ccbe091f508acbed4852d291e"
+      "source_sha256": "af1ffbcea8513d15f854ac9cdfa2b3341dbb957b26a2f8b78dc8402b7d5516b4"
     }
   ],
   "source_decks": [
@@ -288,9 +288,9 @@
   },
   "source_deck_write_operations": 0,
   "synthetic_only": false,
-  "elapsed_seconds": 445.8,
-  "commit": "f0d94222b5947c348e4d892e8083119c8418dccf (working tree dirty)",
-  "run_id": "aa087d95bbde02b627d5e0b8d886e7b68467507421b9e061b107dbcd6e64c53a",
+  "elapsed_seconds": 400.0,
+  "commit": "f5fd4e8ac8a285ed222e37782dd8b31e526ced80 (working tree dirty: cceptance/v0.4.2/acceptance-report.md, scripts/run_v042_acceptance.py)",
+  "run_id": "43753269658f235b89fb9ce7d8cb9e1be78ed2d03472383400b53eeeebbdb1db",
   "privacy": "This manifest is committed text. It records each private source deck's selection order and page numbers and the fact that every deck was hashed and verified unchanged, but it carries no private filename, no absolute path and no private hash: the source sha256 values are withheld and the verification is recorded as a per-deck verdict instead. The gate's own evidence under acceptance/v0.4.2/gate/ does carry the absolute paths; .gitignore excludes it from the repository. If page numbers themselves must not be published, the corpus has to run against decks that may be named, because a page selection cannot be reviewed without them.",
   "visual_records": [
     {
