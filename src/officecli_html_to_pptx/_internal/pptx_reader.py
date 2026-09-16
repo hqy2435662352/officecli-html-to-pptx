@@ -2923,12 +2923,22 @@ class IsolatedRenderer:
                         deck,
                         additions,
                         source_object=source_object,
-                        run_sets={
-                            str(rebuild.get("name") or ""): run_range_sets(
-                                str(rebuild.get("name") or ""), paragraphs
-                            )
-                            for _, rebuild in additions
-                        },
+                        # Only a single-object reconstruction has the object's own
+                        # paragraphs to range over.  A container's members each
+                        # carry their own text, and applying the container's ranges
+                        # to a member would format one member's characters by
+                        # another object's runs, so a container's members keep the
+                        # object-level formatting their own properties state.
+                        run_sets=(
+                            {}
+                            if is_container
+                            else {
+                                str(rebuild.get("name") or ""): run_range_sets(
+                                    str(rebuild.get("name") or ""), paragraphs
+                                )
+                                for _, rebuild in additions
+                            }
+                        ),
                     )
                     self._screenshot(deck, 1, raster)
                     if is_container:

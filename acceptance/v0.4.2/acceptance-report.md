@@ -14,12 +14,12 @@ Authoritative acceptance of the V0.4.2 representative-projection slice (ticket #
 
 ## 1. Verdict and its evidence basis
 
-~~**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 412.0s.~~ **withdrawn — see `ACCEPTANCE-WITHDRAWN.md`**
+~~**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 374.3s.~~ **withdrawn — see `ACCEPTANCE-WITHDRAWN.md`**
 
 | binding | value |
 |---|---|
-| commit | `8a98823c61ab49c1ff317d6653d932d0ab7d2886 (working tree dirty)` |
-| run id (gate report sha256) | `a0c541fba5207d68d4a3506f1139b37c18ec64dd6ae1ef2cfa1f73dcca2f1be2` |
+| commit | `3f2b9679c181d0c8ddfc0cb85e61c2614dfa1367 (working tree dirty)` |
+| run id (gate report sha256) | `162c239d38c8c4bbb9493348a85f860488087b46069afdc6d84f9a81fee62c42` |
 
 The report, the source map, the artifact manifest and the review package all belong to the run id above: it is the digest of the gate's own verdict document, so a reader can check that they describe one run without a registry to consult. The commit is the revision the verdict is about.
 
@@ -278,16 +278,16 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 
 | artifact | sha256 | size |
 |---|---|---|
-| `canonical-author.html` | `52e4c49130f52ce98c226268ffc6b9a37bea0ff28b6a0937f5d9e97f62fc972a` | 42561353 |
-| `disposition-ledger.json` | `b80a2664d046009b955f2615822420154cdd1717dea34096f79ff053d7df0c80` | 251447 |
+| `canonical-author.html` | `7536179715a55e1c0d71d539885d52967ec7a540144cf0261f783a851911607b` | 42633665 |
+| `disposition-ledger.json` | `8b57ce95f35d06fc2ee90293c1149b56da853f9b6422e4149023ae1491512eb3` | 251424 |
 | `material-deltas.json` | `d4990d01e9de41f6d7bce97cb1d079aff18ce0c5fc576a2117e92b9b1cfd5d3a` | 31 |
-| `pages.json` | `2bd7ba682687595737e87abb11d0329fe691c535eb6716fac1ebd401ba7826d8` | 509853 |
-| `projection/canonical-author.html` | `52e4c49130f52ce98c226268ffc6b9a37bea0ff28b6a0937f5d9e97f62fc972a` | 42561353 |
-| `projection/projection-report.json` | `383748108d706142afd6c63620f3ed8f8bac72bd341269337cfa7a9ddbe3fd65` | 671537 |
+| `pages.json` | `bd4de7f4a8d470d61ea703b5ea2a6d5b6460b6c8e83283c09edd2f4a196f21df` | 509810 |
+| `projection/canonical-author.html` | `7536179715a55e1c0d71d539885d52967ec7a540144cf0261f783a851911607b` | 42633665 |
+| `projection/projection-report.json` | `adf89a9815d49c5ffa45d22e7007db013c1a693dddab1f51228c8b079b8f2e7c` | 671454 |
 | `projection/proxy-src1-slide-002-007.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
 | `projection/proxy-src1-slide-002-010.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
-| `projection/proxy-src1-slide-002-028.png` | `d2a5702e43081ea50b44fd5ce48c811a8ac51379e0ec4df22ca04b8340016641` | 19045 |
-| `projection/proxy-src1-slide-002-029.png` | `1e1415cd1c33082986bb599fbb099dc5c569099ec61d4446d997b1036375e23c` | 4758 |
+| `projection/proxy-src1-slide-002-028.png` | `90da3b87ff2ffc129d81d7e725731c353e2c6bfdf2087d6831fbd09eabfb53a5` | 21259 |
+| `projection/proxy-src1-slide-002-029.png` | `4496df52e84c4b8817f35493d03043be55c24aaa821e7935eb7208d996c3d5e7` | 5631 |
 | `projection/proxy-src1-slide-005-011.png` | `bf16c05721d2321183a96aa704ac36f2218b67a0685bddc44e29118a47067ef4` | 9054 |
 | `projection/proxy-src1-slide-012-004.png` | `45781f35837ca0876e29cbae9e2b9da745e548fa6fff4db1911e95545776f8a2` | 502 |
 | `projection/proxy-src1-slide-012-007.png` | `864aa5d97e8c3ca65f971bf48963d359cc7c7fe8e03151ea4aea17112726472a` | 519 |
@@ -295,38 +295,38 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `projection/proxy-src1-slide-030-011.png` | `fa42c3b14e6629a34b84425bbc3b1781156e6a7d5d639f00f716f7ca096850eb` | 1356 |
 | `projection/proxy-src1-slide-030-012.png` | `dccbd0aea3935032d56b2f6989905842c38c403b372fa37492ae3339dca1a318` | 1671 |
 | `projection/proxy-src1-slide-030-013.png` | `04a64039d9773baee6076dc52ab5101911fdf2ba0f18bce1aa36e462da3ec0bc` | 1612 |
-| `projection/proxy-src1-slide-030-018.png` | `dedcff3e8cf255b58acda1726ff352ad84dff9b95940110efeea61cfab7ca496` | 6718 |
-| `projection/proxy-src1-slide-030-022.png` | `6d728759cc80dd73caffd3771dc76dba04cd2b9213f63b6a6796e14ef62d2b11` | 6320 |
+| `projection/proxy-src1-slide-030-018.png` | `31e487f931ffcef7e89dfc9308f93c4a6bddc5cf6e957d16df0e2d9f2956fc8b` | 11720 |
+| `projection/proxy-src1-slide-030-022.png` | `1e12303c8ffbd5f25ea36cbd0ae8a6adebe44682d2045070ab3c178b8b6836aa` | 13838 |
 | `projection/proxy-src1-slide-030-024.png` | `6201c30542dd1e70d7a09a62d20d21114a60b11aa6f4525c863b853fcb4a7404` | 8128 |
-| `projection/proxy-src1-slide-030-027.png` | `c8521b3957b53940a997f819485db589af0d66190858642c3b0bd5275d6c5e85` | 6506 |
+| `projection/proxy-src1-slide-030-027.png` | `98483daf6f2970640fa4120ae792aa1447ee53155a35e541228ce0a75228755b` | 11283 |
 | `projection/proxy-src1-slide-030-028.png` | `1b776c5266d61294d8af5b0a61908e66c94ac5d051e1c405c68ba2464e5f6dae` | 290 |
 | `projection/proxy-src1-slide-030-029.png` | `1e049c004091d93d7c7b07c320a625d49a026635553233e308938ea4f6092c38` | 319 |
 | `projection/proxy-src1-slide-030-030.png` | `75336da6e353a2dfd599db783a8e9b19a69bbdf965f1ac52ddcad67797b9f26d` | 284 |
-| `projection/proxy-src1-slide-030-032.png` | `243e4c4dc78c49752abc1abe8011e46408a63268b6dfb6b8b176061fea366059` | 6547 |
-| `projection/proxy-src1-slide-030-034.png` | `a18b1b7bebd22304c075f4d2f737aecdddb214d5f2fc09ec26ac2783b312aad0` | 4527 |
-| `projection/proxy-src1-slide-030-037.png` | `8b91cf30059f817156058e9e946879596336f54460f1c415527e19256b3220b6` | 4771 |
-| `projection/proxy-src1-slide-030-040.png` | `140e81c132e6b91a250415dce31ce8b1843ab2a7304b6e933ef3251e66148b2a` | 4831 |
+| `projection/proxy-src1-slide-030-032.png` | `04cbef14f537f9ed388acb5128b7bb527fd8afee205e97d7673363fa58cffecc` | 13108 |
+| `projection/proxy-src1-slide-030-034.png` | `53bcb33e4258ac0587abc975711985b37ab4103ae1768428e3f5803900171d22` | 5688 |
+| `projection/proxy-src1-slide-030-037.png` | `4d167bdb2f3478179aa045ef4be6419ea092aa2924c512bc657409b5f20d6bb7` | 6166 |
+| `projection/proxy-src1-slide-030-040.png` | `026a8a0ca27de2b0cb8a208710249c7aa5251d4131d2f3fa2d7590552b44df3c` | 6649 |
 | `projection/proxy-src1-slide-030-042.png` | `0c121e40b2e805d76b5f2b1f4000a3d6c4419a2dd563b43e81ea68dfde39ba19` | 576 |
 | `projection/proxy-src1-slide-030-043.png` | `ec451dfed1ffa2ee82434977ba393d26e411b609955e1f4cf0640227ef019d2a` | 573 |
-| `projection/proxy-src1-slide-030-044.png` | `b287f5e94ab76a5bb3b135d29239b7bebd8f62c72dd6d5e92da427b835dce130` | 5027 |
-| `projection/proxy-src1-slide-030-045.png` | `245ba2a59cf23142f571f5dfcec1e81faa3ad9ca6b46eae1af8e5cf07095832f` | 4729 |
+| `projection/proxy-src1-slide-030-044.png` | `b14545d84741f364cb6cb6881024e248e7c517b929ba071edabb5824bc43d5cb` | 9397 |
+| `projection/proxy-src1-slide-030-045.png` | `55b9c07892fd278b374b5eaa8056b56374920be7aae5acac42f386d72e65f141` | 6334 |
 | `projection/proxy-src1-slide-030-048.png` | `da7fdd38735b92809955f9fe38c7f7e331666c0680283cb9d574dba39fad005c` | 293 |
-| `projection/proxy-src1-slide-030-050.png` | `4eb26fc30c42fd2238abb570b65006f42e9bdf5eeace096038961c79f68558c6` | 8797 |
+| `projection/proxy-src1-slide-030-050.png` | `68b77f24656b52978eb5d5e007daa3f10ee1d243e4a4a234c13ea5bb4c193713` | 19572 |
 | `projection/proxy-src1-slide-030-052.png` | `f2eb3807b6970b8895149098f6cc1be32373edfa856be1e690b7eabc4bc0099e` | 576 |
 | `projection/proxy-src1-slide-030-053.png` | `0e3ad3e0caf7d5b5ae86ee31dce11ad6400614c993dffe76461ac6964c6e741e` | 685 |
 | `projection/proxy-src1-slide-030-054.png` | `d99d247a4c86b0e49cb98b7c19e87fca65aacf20985f5e4d0651d826a435428e` | 761 |
 | `projection/proxy-src1-slide-030-055.png` | `2f756780f76b040509dcd9e6e9158dbbde4b2b5e1c0007cc1c58a3e4c10c2f87` | 843 |
-| `projection/proxy-src1-slide-030-056.png` | `754b60a902d4c7214a54dd5abf5f3f89d7585156fe643bd77f25b2becf428641` | 6123 |
+| `projection/proxy-src1-slide-030-056.png` | `5187bb3d179e0c9833cc491d2910dd72282a91ae8446ad4a6b967bee55fc2f50` | 12289 |
 | `projection/proxy-src2-slide-009-023.png` | `fb99c8431a611b963e450ffb95c9855dbb69e9eddb73aff0680899ddb111ebf8` | 12936 |
 | `projection/proxy-src2-slide-009-024.png` | `8f1b189665eecf0061d556edc09e2566f36522a45ca07c5d01cc55f3dbbfa3c8` | 18586 |
 | `projection/proxy-src5-slide-001-004.png` | `bcea1a3055b82a799a06ded6c66db21b0311f2715ce59c553b9c24f9d2a82a01` | 8881 |
 | `projection/proxy-src5-slide-001-009.png` | `0c1eeb7f5a662e4a421203c92d4341596326618fd0e6e13c63de7ddd0378c3c7` | 2420 |
-| `projection/source-map.json` | `7c2356ac346d6b9b68a1d3a151c400247802e17e3c862cade881b05072eede2a` | 611997 |
-| `projection-report.json` | `383748108d706142afd6c63620f3ed8f8bac72bd341269337cfa7a9ddbe3fd65` | 671537 |
+| `projection/source-map.json` | `39ca0b7cf539256b0affbed95fbcbb1fa9b1f626db6f6c3c6514152fff3d29ea` | 611918 |
+| `projection-report.json` | `adf89a9815d49c5ffa45d22e7007db013c1a693dddab1f51228c8b079b8f2e7c` | 671454 |
 | `proxies/proxy-src1-slide-002-007.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
 | `proxies/proxy-src1-slide-002-010.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
-| `proxies/proxy-src1-slide-002-028.png` | `d2a5702e43081ea50b44fd5ce48c811a8ac51379e0ec4df22ca04b8340016641` | 19045 |
-| `proxies/proxy-src1-slide-002-029.png` | `1e1415cd1c33082986bb599fbb099dc5c569099ec61d4446d997b1036375e23c` | 4758 |
+| `proxies/proxy-src1-slide-002-028.png` | `90da3b87ff2ffc129d81d7e725731c353e2c6bfdf2087d6831fbd09eabfb53a5` | 21259 |
+| `proxies/proxy-src1-slide-002-029.png` | `4496df52e84c4b8817f35493d03043be55c24aaa821e7935eb7208d996c3d5e7` | 5631 |
 | `proxies/proxy-src1-slide-005-011.png` | `bf16c05721d2321183a96aa704ac36f2218b67a0685bddc44e29118a47067ef4` | 9054 |
 | `proxies/proxy-src1-slide-012-004.png` | `45781f35837ca0876e29cbae9e2b9da745e548fa6fff4db1911e95545776f8a2` | 502 |
 | `proxies/proxy-src1-slide-012-007.png` | `864aa5d97e8c3ca65f971bf48963d359cc7c7fe8e03151ea4aea17112726472a` | 519 |
@@ -334,37 +334,37 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `proxies/proxy-src1-slide-030-011.png` | `fa42c3b14e6629a34b84425bbc3b1781156e6a7d5d639f00f716f7ca096850eb` | 1356 |
 | `proxies/proxy-src1-slide-030-012.png` | `dccbd0aea3935032d56b2f6989905842c38c403b372fa37492ae3339dca1a318` | 1671 |
 | `proxies/proxy-src1-slide-030-013.png` | `04a64039d9773baee6076dc52ab5101911fdf2ba0f18bce1aa36e462da3ec0bc` | 1612 |
-| `proxies/proxy-src1-slide-030-018.png` | `dedcff3e8cf255b58acda1726ff352ad84dff9b95940110efeea61cfab7ca496` | 6718 |
-| `proxies/proxy-src1-slide-030-022.png` | `6d728759cc80dd73caffd3771dc76dba04cd2b9213f63b6a6796e14ef62d2b11` | 6320 |
+| `proxies/proxy-src1-slide-030-018.png` | `31e487f931ffcef7e89dfc9308f93c4a6bddc5cf6e957d16df0e2d9f2956fc8b` | 11720 |
+| `proxies/proxy-src1-slide-030-022.png` | `1e12303c8ffbd5f25ea36cbd0ae8a6adebe44682d2045070ab3c178b8b6836aa` | 13838 |
 | `proxies/proxy-src1-slide-030-024.png` | `6201c30542dd1e70d7a09a62d20d21114a60b11aa6f4525c863b853fcb4a7404` | 8128 |
-| `proxies/proxy-src1-slide-030-027.png` | `c8521b3957b53940a997f819485db589af0d66190858642c3b0bd5275d6c5e85` | 6506 |
+| `proxies/proxy-src1-slide-030-027.png` | `98483daf6f2970640fa4120ae792aa1447ee53155a35e541228ce0a75228755b` | 11283 |
 | `proxies/proxy-src1-slide-030-028.png` | `1b776c5266d61294d8af5b0a61908e66c94ac5d051e1c405c68ba2464e5f6dae` | 290 |
 | `proxies/proxy-src1-slide-030-029.png` | `1e049c004091d93d7c7b07c320a625d49a026635553233e308938ea4f6092c38` | 319 |
 | `proxies/proxy-src1-slide-030-030.png` | `75336da6e353a2dfd599db783a8e9b19a69bbdf965f1ac52ddcad67797b9f26d` | 284 |
-| `proxies/proxy-src1-slide-030-032.png` | `243e4c4dc78c49752abc1abe8011e46408a63268b6dfb6b8b176061fea366059` | 6547 |
-| `proxies/proxy-src1-slide-030-034.png` | `a18b1b7bebd22304c075f4d2f737aecdddb214d5f2fc09ec26ac2783b312aad0` | 4527 |
-| `proxies/proxy-src1-slide-030-037.png` | `8b91cf30059f817156058e9e946879596336f54460f1c415527e19256b3220b6` | 4771 |
-| `proxies/proxy-src1-slide-030-040.png` | `140e81c132e6b91a250415dce31ce8b1843ab2a7304b6e933ef3251e66148b2a` | 4831 |
+| `proxies/proxy-src1-slide-030-032.png` | `04cbef14f537f9ed388acb5128b7bb527fd8afee205e97d7673363fa58cffecc` | 13108 |
+| `proxies/proxy-src1-slide-030-034.png` | `53bcb33e4258ac0587abc975711985b37ab4103ae1768428e3f5803900171d22` | 5688 |
+| `proxies/proxy-src1-slide-030-037.png` | `4d167bdb2f3478179aa045ef4be6419ea092aa2924c512bc657409b5f20d6bb7` | 6166 |
+| `proxies/proxy-src1-slide-030-040.png` | `026a8a0ca27de2b0cb8a208710249c7aa5251d4131d2f3fa2d7590552b44df3c` | 6649 |
 | `proxies/proxy-src1-slide-030-042.png` | `0c121e40b2e805d76b5f2b1f4000a3d6c4419a2dd563b43e81ea68dfde39ba19` | 576 |
 | `proxies/proxy-src1-slide-030-043.png` | `ec451dfed1ffa2ee82434977ba393d26e411b609955e1f4cf0640227ef019d2a` | 573 |
-| `proxies/proxy-src1-slide-030-044.png` | `b287f5e94ab76a5bb3b135d29239b7bebd8f62c72dd6d5e92da427b835dce130` | 5027 |
-| `proxies/proxy-src1-slide-030-045.png` | `245ba2a59cf23142f571f5dfcec1e81faa3ad9ca6b46eae1af8e5cf07095832f` | 4729 |
+| `proxies/proxy-src1-slide-030-044.png` | `b14545d84741f364cb6cb6881024e248e7c517b929ba071edabb5824bc43d5cb` | 9397 |
+| `proxies/proxy-src1-slide-030-045.png` | `55b9c07892fd278b374b5eaa8056b56374920be7aae5acac42f386d72e65f141` | 6334 |
 | `proxies/proxy-src1-slide-030-048.png` | `da7fdd38735b92809955f9fe38c7f7e331666c0680283cb9d574dba39fad005c` | 293 |
-| `proxies/proxy-src1-slide-030-050.png` | `4eb26fc30c42fd2238abb570b65006f42e9bdf5eeace096038961c79f68558c6` | 8797 |
+| `proxies/proxy-src1-slide-030-050.png` | `68b77f24656b52978eb5d5e007daa3f10ee1d243e4a4a234c13ea5bb4c193713` | 19572 |
 | `proxies/proxy-src1-slide-030-052.png` | `f2eb3807b6970b8895149098f6cc1be32373edfa856be1e690b7eabc4bc0099e` | 576 |
 | `proxies/proxy-src1-slide-030-053.png` | `0e3ad3e0caf7d5b5ae86ee31dce11ad6400614c993dffe76461ac6964c6e741e` | 685 |
 | `proxies/proxy-src1-slide-030-054.png` | `d99d247a4c86b0e49cb98b7c19e87fca65aacf20985f5e4d0651d826a435428e` | 761 |
 | `proxies/proxy-src1-slide-030-055.png` | `2f756780f76b040509dcd9e6e9158dbbde4b2b5e1c0007cc1c58a3e4c10c2f87` | 843 |
-| `proxies/proxy-src1-slide-030-056.png` | `754b60a902d4c7214a54dd5abf5f3f89d7585156fe643bd77f25b2becf428641` | 6123 |
+| `proxies/proxy-src1-slide-030-056.png` | `5187bb3d179e0c9833cc491d2910dd72282a91ae8446ad4a6b967bee55fc2f50` | 12289 |
 | `proxies/proxy-src2-slide-009-023.png` | `fb99c8431a611b963e450ffb95c9855dbb69e9eddb73aff0680899ddb111ebf8` | 12936 |
 | `proxies/proxy-src2-slide-009-024.png` | `8f1b189665eecf0061d556edc09e2566f36522a45ca07c5d01cc55f3dbbfa3c8` | 18586 |
 | `proxies/proxy-src5-slide-001-004.png` | `bcea1a3055b82a799a06ded6c66db21b0311f2715ce59c553b9c24f9d2a82a01` | 8881 |
 | `proxies/proxy-src5-slide-001-009.png` | `0c1eeb7f5a662e4a421203c92d4341596326618fd0e6e13c63de7ddd0378c3c7` | 2420 |
-| `proxy-isolation.json` | `f4996b13fdeb8b233a2afd8b725eaa4640440d810d1e420934e457f622afecc0` | 55313 |
-| `rebuilt.pptx` | `becaf43037fc6f4f0b0f7f77346a6ced6552bb06fa180f053696261f072e2800` | 31293884 |
+| `proxy-isolation.json` | `8f68cb5ce7e305b9c225afe35535239aef63974249668048f987a4921e97a388` | 55272 |
+| `rebuilt.pptx` | `1fb9c0db08e3b62d7cb25979a6724dc8f9eaf17a5856ce6e6c1e13178e0f45c5` | 31348011 |
 | `retained-findings.json` | `3ab74f6274f2fa0382c999e55811d1493872a461da3e24b0e17a0cccc33d9b69` | 41174 |
 | `scope-evidence.json` | `73586ba9de0a57672f271fc9fe84f25637c6248ea6177d2cbd5e818c3c4266e1` | 22398 |
-| `source-map.json` | `7c2356ac346d6b9b68a1d3a151c400247802e17e3c862cade881b05072eede2a` | 611997 |
+| `source-map.json` | `39ca0b7cf539256b0affbed95fbcbb1fa9b1f626db6f6c3c6514152fff3d29ea` | 611918 |
 
 `gate/gate-report.json` and `gate/gate-report.md` are excluded from that list because a document cannot contain its own hash; the bundle's `artifact-manifest.json` covers them instead, except for itself.
 
@@ -374,16 +374,16 @@ Every page has three records: the source page render, the rebuilt page render (b
 
 | # | page | source page | before | after | author html | before px | after px | before non-background | after non-background |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | source-a:2 | 2 | `visual/p01-before.png` | `visual/p01-after.png` | `visual/p01-author.html` | 1280x720 | 1280x720 | 1.0000 | 1.0000 |
-| 2 | source-a:5 | 5 | `visual/p02-before.png` | `visual/p02-after.png` | `visual/p02-author.html` | 1280x720 | 1280x720 | 1.0000 | 1.0000 |
-| 3 | source-a:12 | 12 | `visual/p03-before.png` | `visual/p03-after.png` | `visual/p03-author.html` | 1280x720 | 1280x720 | 1.0000 | 1.0000 |
-| 4 | source-a:30 | 30 | `visual/p04-before.png` | `visual/p04-after.png` | `visual/p04-author.html` | 1280x720 | 1280x720 | 1.0000 | 1.0000 |
-| 5 | source-b:3 | 3 | `visual/p05-before.png` | `visual/p05-after.png` | `visual/p05-author.html` | 1280x720 | 1280x720 | 1.0000 | 1.0000 |
-| 6 | source-b:9 | 9 | `visual/p06-before.png` | `visual/p06-after.png` | `visual/p06-author.html` | 1280x720 | 1280x720 | 1.0000 | 1.0000 |
-| 7 | source-c:2 | 2 | `visual/p07-before.png` | `visual/p07-after.png` | `visual/p07-author.html` | 1280x720 | 1280x720 | 1.0000 | 1.0000 |
-| 8 | source-c:21 | 21 | `visual/p08-before.png` | `visual/p08-after.png` | `visual/p08-author.html` | 1280x720 | 1280x720 | 1.0000 | 1.0000 |
-| 9 | probe-a | 1 | `visual/p09-before.png` | `visual/p09-after.png` | `visual/p09-author.html` | 1280x720 | 1280x720 | 1.0000 | 1.0000 |
-| 10 | probe-b | 1 | `visual/p10-before.png` | `visual/p10-after.png` | `visual/p10-author.html` | 1280x720 | 1280x720 | 1.0000 | 1.0000 |
+| 1 | source-a:2 | 2 | `visual/p01-before.png` | `visual/p01-after.png` | `visual/p01-author.html` | 1280x720 | 1280x720 | 0.1108 | 0.1129 |
+| 2 | source-a:5 | 5 | `visual/p02-before.png` | `visual/p02-after.png` | `visual/p02-author.html` | 1280x720 | 1280x720 | 0.5587 | 0.5311 |
+| 3 | source-a:12 | 12 | `visual/p03-before.png` | `visual/p03-after.png` | `visual/p03-author.html` | 1280x720 | 1280x720 | 0.3247 | 0.3162 |
+| 4 | source-a:30 | 30 | `visual/p04-before.png` | `visual/p04-after.png` | `visual/p04-author.html` | 1280x720 | 1280x720 | 0.9253 | 0.9316 |
+| 5 | source-b:3 | 3 | `visual/p05-before.png` | `visual/p05-after.png` | `visual/p05-author.html` | 1280x720 | 1280x720 | 0.3845 | 0.3783 |
+| 6 | source-b:9 | 9 | `visual/p06-before.png` | `visual/p06-after.png` | `visual/p06-author.html` | 1280x720 | 1280x720 | 0.3156 | 0.3097 |
+| 7 | source-c:2 | 2 | `visual/p07-before.png` | `visual/p07-after.png` | `visual/p07-author.html` | 1280x720 | 1280x720 | 0.3574 | 0.3595 |
+| 8 | source-c:21 | 21 | `visual/p08-before.png` | `visual/p08-after.png` | `visual/p08-author.html` | 1280x720 | 1280x720 | 0.4143 | 0.4116 |
+| 9 | probe-a | 1 | `visual/p09-before.png` | `visual/p09-after.png` | `visual/p09-author.html` | 1280x720 | 1280x720 | 0.0945 | 0.0945 |
+| 10 | probe-b | 1 | `visual/p10-before.png` | `visual/p10-after.png` | `visual/p10-author.html` | 1280x720 | 1280x720 | 0.0681 | 0.0695 |
 
 These are mechanical facts about the images (size, distinct colours, non-background fraction). They are **not** a visual verdict.
 
