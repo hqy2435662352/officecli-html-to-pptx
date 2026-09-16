@@ -519,6 +519,12 @@ EXTRACTION_JS = """
             // right arrow has no CSS declaration that means it, so the emitted
             // object names the preset and the lowering reads it here.
             shapeGeometry: el.getAttribute('data-shape-geometry'),
+            // Present exactly when this element came from the V0.4.x
+            // PPTX-to-Author-HTML projection.  A projected object's text
+            // formatting is a reading of a source deck the product was asked to
+            // reproduce, which the lowering treats differently from a value an
+            // author wrote by hand.
+            projectedFrom: el.getAttribute('data-projection-id'),
             borderColor: hasBorder ? style.borderColor : null,
             borderWidth: hasBorder ? parseFloat(style.borderWidth) : 0,
             borderStyle: hasBorder ? style.borderStyle : null,
