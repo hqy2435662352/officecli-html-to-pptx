@@ -26,7 +26,7 @@ The real deck is 63 MB, is not committed, and is not required by CI.  The
 always-run half of this module drives the two synthetic probes through the same
 seam; the real half is skipped with an explicit reason unless both the deck and
 an explicit opt-in are present, and the full ten-page corpus is run by
-``.scratch/tools/run_v042_acceptance.py`` as a scripted acceptance run.
+``scripts/run_v042_acceptance.py`` as a scripted acceptance run.
 """
 
 from __future__ import annotations
@@ -129,7 +129,7 @@ def _skip_reason() -> str:
     return (
         "the private representative decks are present but the real half of the "
         f"acceptance is opt-in: set {REAL_CORPUS_ENV}=1 to run the full ten-page "
-        "corpus through this module, or run .scratch/tools/run_v042_acceptance.py."
+        "corpus through this module, or run scripts/run_v042_acceptance.py."
     )
 
 
@@ -1597,7 +1597,7 @@ def test_the_published_acceptance_manifest_agrees_with_disk() -> None:
     """The bundle's artifact manifest can be checked against disk, independently.
 
     Skipped when the bundle has not been published in this workspace; the full
-    ten-page run is `.scratch/tools/run_v042_acceptance.py`, which writes it and
+    ten-page run is `scripts/run_v042_acceptance.py`, which writes it and
     performs this same check as part of publishing.
 
     Only the entries the repository carries are required to be on disk.  The rest
@@ -1611,7 +1611,7 @@ def test_the_published_acceptance_manifest_agrees_with_disk() -> None:
     if not manifest_path.is_file():
         pytest.skip(
             "the acceptance bundle has not been published here; run "
-            ".scratch/tools/run_v042_acceptance.py to create it"
+            "scripts/run_v042_acceptance.py to create it"
         )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["algorithm"] == "sha256"
