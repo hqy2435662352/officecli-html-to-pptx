@@ -6,8 +6,8 @@
   "artifacts": [
     {
       "name": "acceptance-report.md",
-      "sha256": "06a9d9d252f7f874c1b833d241ea98fa39ecfb388e37adad68b005c064dfd8d9",
-      "size_bytes": 43333
+      "sha256": "bac710a72d7f4bb802ebdc570904c0fd00abae634279153d91340f730236caa5",
+      "size_bytes": 43830
     },
     {
       "name": "ACCEPTANCE-WITHDRAWN.md",
@@ -21,8 +21,8 @@
     },
     {
       "name": "corpus-manifest.json",
-      "sha256": "f46d0df5b0c82b29b42e568b3c01080d28d2c2d738ec8c3fa0039ebf094184a9",
-      "size_bytes": 21370
+      "sha256": "c40c57e1015e28a993565c1ee41b7f2942991bf022f0ccf8dd1cfb564be9889a",
+      "size_bytes": 21529
     },
     {
       "name": "gate/canonical-author.html",
@@ -605,6 +605,6 @@
       "size_bytes": 30064
     }
   ],
-  "report_sha256": "06a9d9d252f7f874c1b833d241ea98fa39ecfb388e37adad68b005c064dfd8d9",
+  "report_sha256": "bac710a72d7f4bb802ebdc570904c0fd00abae634279153d91340f730236caa5",
   "report_name": "acceptance-report.md"
 }

@@ -11,6 +11,13 @@ Authoritative acceptance of the V0.4.2 representative-projection slice (ticket #
 
 ~~**BLOCK** (gate outcome `BLOCK`, `published=True`, `accepted=False`), reached in 376.1s.~~ **withdrawn — see `ACCEPTANCE-WITHDRAWN.md`**
 
+| binding | value |
+|---|---|
+| commit | `81981da1acd5017272bdf0b422500b0f5d7c8613 (working tree dirty)` |
+| run id (gate report sha256) | `db8d512bc6cdc36ef07de9dda5c7e2700323377ceefeefcb9eaf185073569072` |
+
+The report, the source map, the artifact manifest and the review package all belong to the run id above: it is the digest of the gate's own verdict document, so a reader can check that they describe one run without a registry to consult. The commit is the revision the verdict is about.
+
 The verdict is the gate's own derived outcome. It is *not* inferred from a process exit code, from the Author Contract status, from OfficeCLI validation, or from the screenshots below. The evidence set that produced it is:
 
 | evidence | value |
