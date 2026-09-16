@@ -82,7 +82,7 @@ from .pptx_reader import (
     container_placements,
     painted_run_size_pt,
 )
-from ..contract import check_contract
+from ..contract import LIST_LEVELS, check_contract
 
 PROJECTION_SCHEMA_VERSION = 2
 SOURCE_MAP_SCHEMA_VERSION = 2
@@ -152,6 +152,11 @@ REASON_TEXT_BASE_ONLY = "text_base_only"
 # itself, and it is why such a body is represented by its own object-local paint
 # rather than by an editable rebuild that would paint it wrong.
 REASON_TEXT_PARAGRAPH_LAYOUT_BASE_ONLY = "text_paragraph_layout_base_only"
+# A list item whose level is above 0.  The Contract's declared list surface is
+# top-level-only (``LIST_LEVELS == (0,)``), and a flat emission does not merely
+# lose an indent: PowerPoint continues an automatic number at level 0, so the
+# source's "1." came out as "2.".  Refused rather than emitted at the wrong level.
+REASON_LIST_LEVEL_NOT_SUPPORTED = "list_level_not_supported"
 REASON_KIND_UNMAPPED = "kind_not_mapped"
 REASON_PROXY_ASSETS_UNAVAILABLE = "proxy_assets_unavailable"
 REASON_PROXY_ISOLATION_UNAVAILABLE = "proxy_isolation_unavailable"
@@ -182,6 +187,7 @@ REASON_CODES = frozenset(
         REASON_LINE_NOT_SOLID,
         REASON_TEXT_BASE_ONLY,
         REASON_TEXT_PARAGRAPH_LAYOUT_BASE_ONLY,
+        REASON_LIST_LEVEL_NOT_SUPPORTED,
         REASON_KIND_UNMAPPED,
         REASON_PROXY_ASSETS_UNAVAILABLE,
         REASON_PROXY_ISOLATION_UNAVAILABLE,
@@ -1210,6 +1216,17 @@ def _emit_list_html(
     ``margin-left`` carries the item's own indent, which is how a nested item
     stays indented even though the declared surface is top-level-only and a
     literally nested list is outside it.
+
+    That indentation is all the surface carries.  A level above 0 is **not**
+    representable: emitting the item flat changes an automatic number, because
+    PowerPoint continues the counter at level 0 -- the source paints "1." on a
+    nested numbered item and the flat rebuild painted "2.".  Declaring the level by
+    nesting is not available either, and that was measured rather than assumed:
+    nesting inside the item above is accepted by a *browser* but the lowering then
+    produced an empty text body for the whole object, because the measurement reads
+    an element's paragraphs from its own flow and a list nested inside an item is
+    not that.  So such a body is refused by :func:`_classify` with a reason, rather
+    than emitted at the wrong level or at no level at all.
     """
     parts: list[str] = [f"<{_list_tag(obj.paragraphs[0])}>"]
     first_style = _paragraph_style(obj.paragraphs[0])
@@ -1492,6 +1509,17 @@ def _classify(
                 (),
                 REASON_TEXT_PARAGRAPH_LAYOUT_BASE_ONLY,
             )
+        list_level = _list_level_reason(obj)
+        if list_level is not None:
+            # A level the *contract* does not declare: the surface now understands
+            # nesting up to ``contract.LIST_LEVELS``, and anything deeper has no
+            # representation at all.
+            return (
+                DISPOSITION_UNSUPPORTED,
+                list_level,
+                ("list_level",),
+                REASON_LIST_LEVEL_NOT_SUPPORTED,
+            )
         return DISPOSITION_CANONICAL, None, (), None
     return (
         DISPOSITION_LOCKED,
@@ -1499,6 +1527,45 @@ def _classify(
         "object mapping.",
         (),
         REASON_KIND_UNMAPPED,
+    )
+
+
+def _list_level_reason(obj: CapturedObject) -> str | None:
+    """Return why a list body's level is outside the declared surface, or ``None``.
+
+    The Author list surface is top-level-only -- ``contract.LIST_LEVELS`` is
+    ``(0,)``, and the Contract checker blocks a nested list as outside it -- so a
+    source item at level 1 has no representation.  Emitting it flat keeps its indent
+    and loses its level, and PowerPoint's automatic number *continues* at level 0:
+    the source paints "1." on a nested numbered item and the flat rebuild painted
+    "2.", which is a change of content rather than of position.
+
+    Declaring the level by nesting the list inside the item above was tried and
+    measured rather than assumed: a browser accepts it, but the lowering then
+    produced an **empty text body** for the whole object -- the measurement reads an
+    element's paragraphs from its own flow, and a list nested inside an item is not
+    that flow.  So the surface cannot express a level today, and widening it is a
+    change to the Contract's declared list surface plus the measurement seam, not a
+    change this projection may make on its own.
+
+    The body is therefore refused.  ``unsupported`` rather than ``base-only``: a
+    locked proxy of a list body carries the item texts but not their markers
+    either, so a picture would be a different wrong answer rather than an honest
+    one.
+    """
+    if not obj.paragraphs:
+        return None
+    deepest = max(LIST_LEVELS)
+    levels = sorted({paragraph.level for paragraph in obj.paragraphs if paragraph.level})
+    if not levels or levels[-1] <= deepest:
+        return None
+    return (
+        "The source body is a list whose items reach level "
+        + ", ".join(str(level) for level in levels)
+        + ", and the declared Author list surface is top-level-only "
+        f"(contract.LIST_LEVELS is {LIST_LEVELS}): an item emitted flat keeps its "
+        "indent but not its level, which changes an automatic number rather than "
+        "only its position."
     )
 
 
@@ -1531,7 +1598,21 @@ def _paragraph_layout_reason(obj: CapturedObject) -> str | None:
     """
     if not obj.has_text or len(obj.paragraphs) < 2:
         return None
+    previous_level = 0
     for paragraph in obj.paragraphs:
+        # A list level is expressed by nesting, because that is what the
+        # measurement counts.  A jump of more than one step cannot be written
+        # without inventing an intervening empty item, which would add a paragraph
+        # the source does not paint, so the body is classified rather than emitted
+        # at the wrong level.
+        if paragraph.level > previous_level + 1:
+            return (
+                f"The source body's list level jumps from {previous_level} to "
+                f"{paragraph.level} in one step, and the canonical list surface "
+                "expresses a level by nesting, which can only descend one step at "
+                "a time."
+            )
+        previous_level = paragraph.level
         if paragraph.space_before_pt or paragraph.space_after_pt:
             return (
                 "The source body declares paragraph spacing ("

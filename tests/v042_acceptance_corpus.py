@@ -553,16 +553,26 @@ PROBE_B_LIST_BLOCK = "list-block"
 PROBE_B_LIST_BOX = (50.0, 160.0, 500.0, 130.0)
 PROBE_B_LIST_ITEMS: tuple[str, ...] = (
     "Level zero bullet item",
-    "Nested level one bullet item",
+    "Second bullet item",
     "Numbered item one",
-    "Nested numbered item",
+    "Numbered item two",
 )
 PROBE_B_LIST_TEXT = "\n".join(PROBE_B_LIST_ITEMS)
+#: The list probe declares only levels the Author list surface has.  It used to
+#: carry a nested item at level 1, and that was *outside* the declared surface --
+#: ``contract.LIST_LEVELS`` is ``(0,)`` and the Contract checker blocks a nested
+#: list -- while the projection silently emitted it flat.  The flat emission keeps
+#: the indent and loses the level, and PowerPoint continues an automatic number at
+#: level 0, so the source's "1." came out as "2.": a change of content, found by
+#: the independent visual review and confirmed against both files.  The projection
+#: now *refuses* a level the surface does not declare, and the corpus exercises the
+#: surface it does -- one list, four top-level items, both marker kinds.  The
+#: refusal is covered by its own unit tests rather than by a corpus that cannot pass.
 PROBE_B_LIST_PARAGRAPHS: tuple[tuple[str, int, float], ...] = (
     ("bullet", 0, 18.0),
-    ("bullet", 1, 36.0),
+    ("bullet", 0, 18.0),
     ("numbered", 0, 18.0),
-    ("numbered", 1, 36.0),
+    ("numbered", 0, 18.0),
 )
 
 PROBE_B_THEME_BLOCK = "theme-text-block"

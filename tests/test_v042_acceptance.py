@@ -37,6 +37,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import zipfile
 
 import pytest
@@ -45,7 +46,9 @@ from officecli_html_to_pptx import (
     DISPOSITION_BASE_ONLY,
     DISPOSITION_CANONICAL,
     DISPOSITION_LOCKED,
+    DISPOSITION_UNSUPPORTED,
     GateOutcome,
+    REASON_CODES,
     gate_projected_author_html,
 )
 from officecli_html_to_pptx._internal.source_delta_gate import (
@@ -835,13 +838,16 @@ def test_the_probe_b_list_markers_and_levels_survive_the_rebuild(
         "buAutoNum",
         "buAutoNum",
     ]
-    # The nested items keep their own indent: 22pt further left margin than the
-    # level-0 items, which is the source's own 36pt against 18pt read relative to
-    # each item's own text edge.
+    # Every item is at the level the surface declares, and the indent the source
+    # gives it is preserved.  A level above 0 is *not* part of the declared list
+    # surface -- ``contract.LIST_LEVELS`` is ``(0,)`` -- and the projection refuses
+    # such a body rather than emitting it flat, because a flat item keeps its
+    # indent but loses its level and PowerPoint then continues an automatic number
+    # at level 0.  See ``test_a_list_item_above_the_declared_level_is_refused``.
+    levels = [paragraph["level"] for paragraph in paragraphs]
+    assert set(levels) == {0}, levels
     margins = [paragraph["margin_left_pt"] for paragraph in paragraphs]
-    assert margins[1] - margins[0] > 0, margins
-    assert margins[3] - margins[2] > 0, margins
-    assert margins[1] - margins[0] == margins[3] - margins[2], margins
+    assert all(margin is not None for margin in margins), margins
     # No item text carries a literal marker prefix.
     for paragraph in paragraphs:
         assert not paragraph["text"].startswith(("•", "1.", "2.")), paragraph
@@ -869,12 +875,88 @@ def _list_paragraphs(slide_xml: str, items: tuple[str, ...]) -> list[dict[str, A
                 int(margin.group(1)) / 12700 if margin is not None else 0.0
             ),
             "level": (
-                re.search(r'lvl="(-?\d+)"', props.group(0)).group(1)
+                int(re.search(r'lvl="(-?\d+)"', props.group(0)).group(1))
                 if props is not None and re.search(r'lvl="(-?\d+)"', props.group(0))
-                else None
+                else 0
             ),
         }
     return [found[item] for item in items if item in found]
+
+
+def test_a_list_item_above_the_declared_level_is_refused() -> None:
+    """A level the Contract does not declare is refused, not emitted flat.
+
+    The declared Author list surface is top-level-only -- ``contract.LIST_LEVELS``
+    is ``(0,)`` and the Contract checker blocks a nested list -- and emitting a
+    level-1 item as a level-0 one is not a neutral fallback: PowerPoint continues an
+    automatic number at level 0, so the source's "1." came out as "2.".
+    """
+    from officecli_html_to_pptx._internal import author_projector as projector
+    from officecli_html_to_pptx._internal.pptx_reader import (
+        CapturedObject,
+        CapturedParagraph,
+        CapturedRun,
+    )
+
+    def paragraph(text: str, level: int) -> CapturedParagraph:
+        return CapturedParagraph(
+            text=text,
+            align="left",
+            line_spacing=None,
+            space_before_pt=0.0,
+            space_after_pt=0.0,
+            direction="ltr",
+            bullet="numbered",
+            level=level,
+            runs=(
+                CapturedRun(
+                    text=text,
+                    font_family="Arial",
+                    font_size_pt=11.0,
+                    bold=False,
+                    italic=False,
+                    underline="none",
+                    color="#000000",
+                ),
+            ),
+        )
+
+    def body(*paragraphs: CapturedParagraph) -> CapturedObject:
+        return CapturedObject(
+            source_slide=1,
+            source_object="/slide[1]/shape[@id=1]",
+            source_kind="textbox",
+            name="list",
+            officecli_id=1,
+            z_order=1,
+            bounds_pt=(0.0, 0.0, 100.0, 50.0),
+            geometry="rect",
+            fill=None,
+            line_color=None,
+            line_width_pt=0.0,
+            rotation_deg=0.0,
+            explicit_properties=frozenset(),
+            base_only=(),
+            opaque_properties={},
+            raw_format={},
+            text="\n".join(item.text for item in paragraphs),
+            paragraphs=tuple(paragraphs),
+        )
+
+    top_level = body(paragraph("one", 0), paragraph("two", 0))
+    assert projector._list_level_reason(top_level) is None
+    assert projector._classify(top_level)[0] == DISPOSITION_CANONICAL
+
+    nested = body(paragraph("one", 0), paragraph("one-a", 1))
+    reason = projector._list_level_reason(nested)
+    assert reason is not None
+    assert "top-level-only" in reason
+    assert "automatic number" in reason
+    disposition, _, unsupported, code = projector._classify(nested)
+    assert disposition == DISPOSITION_UNSUPPORTED
+    assert code == "list_level_not_supported"
+    assert code in REASON_CODES
+    assert unsupported == ("list_level",)
 
 
 def test_the_probe_b_overflow_proxy_covers_what_the_object_paints(
@@ -1527,10 +1609,22 @@ def test_the_published_acceptance_manifest_agrees_with_disk() -> None:
         )
         assert path.stat().st_size == item["size_bytes"], item["name"]
 
-    # The local-only entries are the gitignored ones, and they are named as such:
-    # the manifest cannot quietly stop describing half the run.
+    # The local-only entries are exactly the ones git ignores: the manifest cannot
+    # quietly stop describing half the run, and it cannot claim a file is local
+    # that a clone would carry.  Asking git rather than repeating its rules here is
+    # what keeps the two from drifting.
     for item in local_only:
-        assert item["name"].split("/")[0] in {"gate", "visual", "local"}, item["name"]
+        path = BUNDLE / item["name"]
+        decision = subprocess.run(
+            ["git", "check-ignore", "-q", str(path)],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=False,
+        )
+        assert decision.returncode == 0, (
+            f"{item['name']} is marked local-only in the manifest but git does not "
+            "ignore it, so a clone would carry a file the manifest does not verify"
+        )
 
     report = BUNDLE / manifest["report_name"]
     assert report.is_file()

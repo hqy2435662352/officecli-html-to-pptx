@@ -2396,6 +2396,12 @@ _REBUILD_PROPERTIES = (
     "fill",
     "line",
     "lineWidth",
+    # A dashed outline is a *visible* property of the stroke, and the readback and
+    # the write path agree on its name.  Leaving it out made every dashed line in
+    # the corpus render solid: the independent visual review saw three horizontal
+    # row separators and four vertical ones on src1 page 30 as wrong, and the audit
+    # measured the proxies at 99-100% coverage against the source's 56-58%.
+    "lineDash",
     "adj",
     "rotation",
     "opacity",
@@ -2413,7 +2419,10 @@ def rebuild_keys(object_kind: str) -> tuple[str, ...]:
     :func:`connector_stroke`.
     """
     if object_kind == "connector":
-        return ("shape", "lineWidth")
+        # ``lineDash`` is carried for the same reason every other kind carries it:
+        # the seven dashed separators on src1 page 30 are connectors, and a
+        # reconstruction without it paints them solid.
+        return ("shape", "lineDash", "lineWidth")
     return _REBUILD_PROPERTIES
 
 
@@ -2548,7 +2557,10 @@ _GRADIENT_STOP_RE = re.compile(r"#[0-9a-fA-F]{6,8}")
 
 
 def proxy_paint_value(
-    key: str, value: Any, properties: Mapping[str, Any]
+    key: str,
+    value: Any,
+    properties: Mapping[str, Any],
+    scheme: Mapping[str, str] | None = None,
 ) -> str | None:
     """Return an OfficeCLI-acceptable colour for a proxy's ``fill``/``line``.
 
@@ -2565,6 +2577,11 @@ def proxy_paint_value(
     which keeps the proxy local to the object and honest about not reproducing
     the gradient, instead of failing the run.
 
+    A theme *expression* (``accent2+lumMod20+lumOff80``) is resolved against the
+    deck's own scheme when one is supplied, because it names a real colour rather
+    than a paint this surface cannot write: dropping it painted a filled cell
+    white.
+
     Returns ``None`` when the paint cannot be rendered at all, in which case the
     caller omits the property rather than writing an invalid token.
     """
@@ -2577,6 +2594,9 @@ def proxy_paint_value(
         return text
     if parse_color(text) is not None:
         return text
+    resolved = resolve_paint_expression(text, scheme)
+    if resolved is not None:
+        return resolved
     if text.lower() in {"gradient", "gradfill"} or "gradient" in properties:
         stops = _GRADIENT_STOP_RE.findall(str(properties.get("gradient", "")))
         for stop in stops:
@@ -2584,6 +2604,84 @@ def proxy_paint_value(
             if parsed is not None:
                 return parsed
     return None
+
+
+def resolve_paint_expression(
+    value: Any, scheme: Mapping[str, str] | None
+) -> str | None:
+    """Resolve a DrawingML colour *expression* against a deck's colour scheme.
+
+    OfficeCLI reports a scheme fill as the expression the file declares --
+    ``accent2+lumMod20+lumOff80`` -- and that is neither a colour its write path
+    accepts nor a gradient, so the fill used to be dropped and the proxy painted
+    without it.  Measured on src1 page 30: the source's brand header cells are
+    ``schemeClr accent2 lumMod=20000 lumOff=80000``, a peach fill, and the rebuilt
+    cells came out white.
+
+    The maths is DrawingML's own: the scheme colour is converted to HSL and its
+    luminance becomes ``L * lumMod + lumOff``, with hue and saturation unchanged.
+    ``#ED7D31`` under ``lumMod 20% / lumOff 80%`` is ``(251, 229, 214)``, which is
+    the peach the source paints.
+
+    Returns ``None`` when the token is not a scheme entry this deck holds, or when
+    the expression carries a modifier this function does not model -- so an
+    unmodelled expression is refused rather than approximated.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    plain = parse_color(text)
+    if plain is not None:
+        return plain
+    if scheme is None:
+        return None
+    parts = text.split("+")
+    base = scheme.get(parts[0].strip())
+    if base is None:
+        return None
+    luma_mod = 1.0
+    luma_off = 0.0
+    for modifier in parts[1:]:
+        token = modifier.strip()
+        match = re.fullmatch(r"(lumMod|lumOff)(\d+)", token, re.IGNORECASE)
+        if match is None:
+            return None
+        raw = int(match.group(2))
+        # OfficeCLI's *token* states the value as a percentage -- ``lumMod20`` is
+        # the XML's ``val="20000"`` -- while the XML itself states thousandths of a
+        # percent.  Reading the token as the XML number made a 20% modulation a
+        # 0.02% one, which paints black.
+        amount = raw / 100.0 if raw <= 100 else raw / 100000.0
+        if match.group(1).lower() == "lummod":
+            luma_mod = amount
+        else:
+            luma_off = amount
+    if luma_mod == 1.0 and luma_off == 0.0:
+        return base
+    return _shift_luminance(base, luma_mod, luma_off)
+
+
+def _shift_luminance(colour: str, luma_mod: float, luma_off: float) -> str:
+    """Return ``colour`` with DrawingML's luminance transform applied.
+
+    Hue and saturation are preserved and only the HSL lightness moves, which is
+    what ``lumMod``/``lumOff`` mean: a tint or a shade of the same colour rather
+    than a blend towards white or black.
+    """
+    import colorsys
+
+    hex_text = str(colour).lstrip("#")
+    red, green, blue = (
+        int(hex_text[0:2], 16) / 255.0,
+        int(hex_text[2:4], 16) / 255.0,
+        int(hex_text[4:6], 16) / 255.0,
+    )
+    hue, lightness, saturation = colorsys.rgb_to_hls(red, green, blue)
+    shifted = min(1.0, max(0.0, lightness * luma_mod + luma_off))
+    red, green, blue = colorsys.hls_to_rgb(hue, shifted, saturation)
+    return "#{:02X}{:02X}{:02X}".format(
+        round(red * 255), round(green * 255), round(blue * 255)
+    )
 
 
 def connector_stroke(properties: Mapping[str, Any]) -> str | None:
@@ -2629,6 +2727,10 @@ class IsolatedRenderer:
         # plus one object, so the difference between the two is exactly what that
         # object painted -- which is what a proxy should carry and nothing else.
         self._blank_reference_path: Path | None = None
+        # The deck's own colour scheme, read once: a scheme *expression* names a
+        # real colour, and a reconstruction that does not resolve it paints the
+        # shape unfilled.
+        self._scheme: dict[str, str] | None = None
         node = _run_officecli_json("get", str(self.source_path), "/", "--depth", "0")
         root_format = dict(node.get("format") or {})
         self.slide_width_pt = length_to_points(root_format.get("slideWidth"))
@@ -2731,7 +2833,10 @@ class IsolatedRenderer:
                 try:
                     additions = (
                         [
-                            (member.source_kind, self._member_properties(member))
+                            (
+                                member.source_kind,
+                                self._member_properties(member, scheme=self._scheme_map()),
+                            )
                             for member in members
                         ]
                         if is_container
@@ -2743,6 +2848,7 @@ class IsolatedRenderer:
                                     media_path=media_path,
                                     text=text,
                                     painted_size_pt=painted_size_pt,
+                                    scheme=self._scheme_map(),
                                 ),
                             )
                         ]
@@ -2951,6 +3057,7 @@ class IsolatedRenderer:
         media_path: str | Path | None,
         text: str = "",
         painted_size_pt: float = 0.0,
+        scheme: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
         """Return the OfficeCLI ``add`` props that reproduce the object's paint.
 
@@ -2991,7 +3098,9 @@ class IsolatedRenderer:
                 # A non-solid paint (a gradient, say) is named by kind in the
                 # readback and is not a colour OfficeCLI accepts on write, so the
                 # proxy carries the object's representative stop instead.
-                paint = proxy_paint_value(key, value_text, properties)
+                paint = proxy_paint_value(
+                    key, value_text, properties, scheme=scheme
+                )
                 if paint is None:
                     continue
                 rebuild[key] = paint
@@ -3016,7 +3125,9 @@ class IsolatedRenderer:
         return rebuild
 
     @staticmethod
-    def _member_properties(member: ContainerMember) -> dict[str, str]:
+    def _member_properties(
+        member: ContainerMember, *, scheme: Mapping[str, str] | None = None
+    ) -> dict[str, str]:
         """Return the ``add`` props that reproduce one container member.
 
         A container member is rebuilt from its own readback, exactly as a
@@ -3047,7 +3158,7 @@ class IsolatedRenderer:
                 # Same rule as a single-object proxy: a paint named by kind in
                 # the readback becomes the member's representative colour so the
                 # container's reconstruction still renders.
-                paint = proxy_paint_value(key, text, properties)
+                paint = proxy_paint_value(key, text, properties, scheme=scheme)
                 if paint is None:
                     continue
                 rebuild[key] = paint
@@ -3147,6 +3258,12 @@ class IsolatedRenderer:
             f"OfficeCLI did not render the isolated object after 5 attempts: "
             f"{last_error or 'no image was produced'}"
         )
+
+    def _scheme_map(self) -> dict[str, str]:
+        """Return the deck's colour scheme, read once and cached."""
+        if self._scheme is None:
+            self._scheme = theme_color_scheme(self.source_path)
+        return self._scheme
 
     def _blank_reference(self) -> Path | None:
         """Render an empty reconstruction deck once, and cache it.
