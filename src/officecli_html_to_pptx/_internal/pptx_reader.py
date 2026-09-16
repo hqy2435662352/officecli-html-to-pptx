@@ -639,21 +639,28 @@ def theme_color_scheme(pptx_path: str | Path) -> dict[str, str]:
 def _resolve_run_colors(
     paragraphs: Sequence[CapturedParagraph], scheme: Mapping[str, str]
 ) -> tuple[CapturedParagraph, ...]:
-    """Resolve every run's theme-token colour against the deck's own scheme.
+    """Resolve every run's scheme colour against the deck's own scheme.
 
     A run whose colour is already a plain colour is untouched, and a token the
     scheme does not hold is left unresolved so it still reports as a base-only
     claim rather than as a colour nobody measured.
+
+    Both spellings are resolved, and the second is the one that mattered: a plain
+    token (``accent1``) *and* an expression (``accent2+lumMod75`` -- a shade of a
+    scheme colour).  Resolving only the first left every shaded run colour unknown,
+    so a proxy rebuilt those runs black while the plain-hex runs beside them kept
+    theirs: the independent review found four such cells on src1 page 30, whose
+    orange feature lines paint black.
     """
     if not scheme:
         return tuple(paragraphs)
     resolved: list[CapturedParagraph] = []
     for paragraph in paragraphs:
         runs = tuple(
-            dataclasses.replace(run, color=scheme[str(run.properties.get("color")).strip()])
+            dataclasses.replace(run, color=resolve_paint_expression(declared, scheme))
             if run.color is None
-            and run.properties.get("color") is not None
-            and str(run.properties.get("color")).strip() in scheme
+            and (declared := _declared_run_color(run)) is not None
+            and resolve_paint_expression(declared, scheme) is not None
             else run
             for run in paragraph.runs
         )
@@ -661,6 +668,15 @@ def _resolve_run_colors(
             paragraph if runs == paragraph.runs else dataclasses.replace(paragraph, runs=runs)
         )
     return tuple(resolved)
+
+
+def _declared_run_color(run: CapturedRun) -> str | None:
+    """Return the colour token or expression a run declares, if it declares one."""
+    value = run.properties.get("color")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def alpha_of(value: Any) -> float:

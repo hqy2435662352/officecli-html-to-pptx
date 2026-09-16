@@ -2,8 +2,8 @@
   "schema_version": 1,
   "algorithm": "sha256",
   "commit": "3f2b9679c181d0c8ddfc0cb85e61c2614dfa1367 (working tree dirty)",
-  "run_id": "162c239d38c8c4bbb9493348a85f860488087b46069afdc6d84f9a81fee62c42",
-  "note": "artifact-manifest.json is excluded from its own inventory: a document cannot contain its own hash. Every other file in the bundle is listed, and this manifest records acceptance-report.md's own hash in report_sha256.  `in_repository` says which entries a clone of the repository carries: the rest are the run's local evidence -- the gate directory and the page renders -- which `.gitignore` excludes and which therefore cannot be verified anywhere but on the machine that produced them.  All published documents are written with LF endings and `.gitattributes` keeps them that way, so their digests are the same in every checkout.",
+  "run_id": "632f2bc7ed89dd53b578d0042fc2075ef9a1a7cf222cb69a1a6c7f93e2d7fedb",
+  "note": "artifact-manifest.json is excluded from its own inventory: a document cannot contain its own hash. Every other file in the bundle is listed, and this manifest records acceptance-report.md's own hash in report_sha256.  `in_repository` says which entries a clone of the repository carries: the rest are the run's local evidence -- the gate directory and the page renders -- which `.gitignore` excludes and which therefore cannot be verified anywhere but on the machine that produced them.  All published documents are written with LF endings and `.gitattributes` keeps them that way, so their digests are the same in every checkout, and their digests are taken over the text without carriage returns -- the form the repository stores -- so they verify in a checkout whatever its line-ending configuration.",
   "artifact_count": 125,
   "published_count": 4,
   "local_only_count": 121,
@@ -40,13 +40,13 @@
     },
     {
       "name": "gate/disposition-ledger.json",
-      "sha256": "8b57ce95f35d06fc2ee90293c1149b56da853f9b6422e4149023ae1491512eb3",
+      "sha256": "45697b432f4482900ae7dd805533c4b36d1dc85a4123e02306a9c3d3b0b6ffca",
       "size_bytes": 251424,
       "in_repository": false
     },
     {
       "name": "gate/gate-report.json",
-      "sha256": "162c239d38c8c4bbb9493348a85f860488087b46069afdc6d84f9a81fee62c42",
+      "sha256": "632f2bc7ed89dd53b578d0042fc2075ef9a1a7cf222cb69a1a6c7f93e2d7fedb",
       "size_bytes": 1376974,
       "in_repository": false
     },
@@ -58,13 +58,13 @@
     },
     {
       "name": "gate/material-deltas.json",
-      "sha256": "d4990d01e9de41f6d7bce97cb1d079aff18ce0c5fc576a2117e92b9b1cfd5d3a",
+      "sha256": "55e51092d333ce5355cfc5a1853f3aa03f22b6dc6e49eb6fb5f9c00d42fc7405",
       "size_bytes": 31,
       "in_repository": false
     },
     {
       "name": "gate/pages.json",
-      "sha256": "bd4de7f4a8d470d61ea703b5ea2a6d5b6460b6c8e83283c09edd2f4a196f21df",
+      "sha256": "e7edcbd828acacab604753e77c01598a465c8ac7d5c275ae19ad1a96cd6bc792",
       "size_bytes": 509810,
       "in_repository": false
     },
@@ -76,7 +76,7 @@
     },
     {
       "name": "gate/projection/projection-report.json",
-      "sha256": "adf89a9815d49c5ffa45d22e7007db013c1a693dddab1f51228c8b079b8f2e7c",
+      "sha256": "558eae6ed36f389f75e364385476309796532b13f40f56d38bbea4cb179df367",
       "size_bytes": 671454,
       "in_repository": false
     },
@@ -304,13 +304,13 @@
     },
     {
       "name": "gate/projection/source-map.json",
-      "sha256": "39ca0b7cf539256b0affbed95fbcbb1fa9b1f626db6f6c3c6514152fff3d29ea",
+      "sha256": "6c7e97955fc74c7a3aeab251d816f30a1c915fe5ac3552fafd2294efa980e83f",
       "size_bytes": 611918,
       "in_repository": false
     },
     {
       "name": "gate/projection-report.json",
-      "sha256": "adf89a9815d49c5ffa45d22e7007db013c1a693dddab1f51228c8b079b8f2e7c",
+      "sha256": "558eae6ed36f389f75e364385476309796532b13f40f56d38bbea4cb179df367",
       "size_bytes": 671454,
       "in_repository": false
     },
@@ -538,7 +538,7 @@
     },
     {
       "name": "gate/proxy-isolation.json",
-      "sha256": "8f68cb5ce7e305b9c225afe35535239aef63974249668048f987a4921e97a388",
+      "sha256": "64310b6acedf50173a546ca0b50b1bf7ea742e09da52dd5d0c2a4344c59e66d3",
       "size_bytes": 55272,
       "in_repository": false
     },
@@ -550,19 +550,19 @@
     },
     {
       "name": "gate/retained-findings.json",
-      "sha256": "3ab74f6274f2fa0382c999e55811d1493872a461da3e24b0e17a0cccc33d9b69",
+      "sha256": "7f6e0c5a1d0ea015af7cf11dc21ad100c81a060336466a5f9d26bacb937766fb",
       "size_bytes": 41174,
       "in_repository": false
     },
     {
       "name": "gate/scope-evidence.json",
-      "sha256": "73586ba9de0a57672f271fc9fe84f25637c6248ea6177d2cbd5e818c3c4266e1",
+      "sha256": "49788ae6b85eded92d1a235ee0f2df23bd4d3e89ffd4909a370bee6099c412c9",
       "size_bytes": 22398,
       "in_repository": false
     },
     {
       "name": "gate/source-map.json",
-      "sha256": "39ca0b7cf539256b0affbed95fbcbb1fa9b1f626db6f6c3c6514152fff3d29ea",
+      "sha256": "6c7e97955fc74c7a3aeab251d816f30a1c915fe5ac3552fafd2294efa980e83f",
       "size_bytes": 611918,
       "in_repository": false
     },

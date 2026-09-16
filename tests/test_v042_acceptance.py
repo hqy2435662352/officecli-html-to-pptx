@@ -1567,6 +1567,26 @@ def test_the_seam_selection_order_is_the_corpus_order(
 
 BUNDLE = REPO_ROOT / "acceptance" / "v0.4.2"
 
+#: The suffixes whose digest is taken over the document's text with LF endings.
+#:
+#: A repository cannot force a clone's line-ending behaviour: `.gitattributes`
+#: declares ``text eol=lf`` for these files, and a clone with ``core.autocrlf=true``
+#: still handed back CRLF for a document the run had written with LF, so this check
+#: failed in a fresh checkout on a document whose *content* was identical.  The
+#: digest is therefore defined over the text without carriage returns -- the form
+#: the repository stores -- which is stable in every checkout and still changes if a
+#: single character of the document changes.  The artifact manifest's own note
+#: states the same rule.
+_TEXT_SUFFIXES = (".md", ".json", ".html", ".txt", ".csv")
+
+
+def _bundle_sha256(path: Path) -> str:
+    """Return the digest a published document is verified by."""
+    payload = path.read_bytes()
+    if path.suffix.lower() in _TEXT_SUFFIXES:
+        payload = payload.replace(b"\r\n", b"\n")
+    return hashlib.sha256(payload).hexdigest()
+
 
 def test_the_published_acceptance_manifest_agrees_with_disk() -> None:
     """The bundle's artifact manifest can be checked against disk, independently.
@@ -1603,7 +1623,7 @@ def test_the_published_acceptance_manifest_agrees_with_disk() -> None:
     for item in published:
         path = BUNDLE / item["name"]
         assert path.is_file(), item["name"]
-        assert _sha256(path) == item["sha256"], (
+        assert _bundle_sha256(path) == item["sha256"], (
             f"{item['name']}: the checkout's bytes are not the bytes the manifest "
             "hashed -- a line-ending conversion would do exactly this"
         )
@@ -1628,7 +1648,7 @@ def test_the_published_acceptance_manifest_agrees_with_disk() -> None:
 
     report = BUNDLE / manifest["report_name"]
     assert report.is_file()
-    assert _sha256(report) == manifest["report_sha256"]
+    assert _bundle_sha256(report) == manifest["report_sha256"]
 
 
 # ---------------------------------------------------------------------------
