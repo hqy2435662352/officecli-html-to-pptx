@@ -2633,14 +2633,71 @@ def _data_uri_sha256(source: str | None) -> str | None:
         return None
 
 
+def source_table_matrix(source_path: str, source_object: str) -> tuple[tuple[str, ...], ...]:
+    """Return one *source* native table's cell matrix, read from the source deck.
+
+    The gate's table check used to build its expected matrix from the projection's
+    own Canonical Author HTML -- the artifact the New Deck compiler consumed -- so
+    it compared the rebuilt table against the deck rebuilt from that same HTML.  A
+    row, column or cell the projector dropped on the way out was therefore carried
+    faithfully into the rebuilt deck and reported as a pass, which is the opposite
+    of an independent readback.
+
+    Reading the source deck is what makes the comparison able to fail: the target
+    is the table the source actually contains, not a restatement of the
+    projection's own output.
+    """
+    if not source_path or not source_object:
+        return ()
+    try:
+        node = _read_source_node(source_path, source_object)
+    except Exception:
+        return ()
+    rows: list[tuple[str, ...]] = []
+    for row in node.get("children") or []:
+        if str(row.get("type")) != "tr":
+            continue
+        values = [
+            normalize_text(cell.get("text", ""))
+            for cell in (row.get("children") or [])
+            if str(cell.get("type")) == "tc"
+        ]
+        rows.append(tuple(values))
+    return tuple(rows)
+
+
+def _read_source_node(source_path: str, source_object: str) -> Mapping[str, Any]:
+    """Read one node of a source deck through OfficeCLI, with the seam's retry."""
+    from .acceptance import _run_officecli
+
+    text = _run_officecli(
+        "get", source_path, source_object, "--depth", "2", "--json"
+    )
+    payload = json.loads(text)
+    results = payload.get("data", {}).get("results")
+    if not isinstance(results, list) or not results:
+        raise ValueError(f"no result for {source_object} in {source_path}")
+    return results[0]
+
+
 def _table_readback(
     item: ProjectedObject,
     *,
     html_text: str,
     rebuilt: RebuiltObject | None,
 ) -> TableCheck:
-    """Independently check one native table's kind, shape, text, and mapping."""
-    cells, cell_paths = _emitted_table_cells(html_text, item.html_id)
+    """Check one native table against the *source* table and the rebuilt one.
+
+    ``expected_*`` is the source deck's own matrix; the emitted HTML is read only
+    for the per-cell source mapping, which is a property of the projection rather
+    than a claim about the source.
+    """
+    _, cell_paths = _emitted_table_cells(html_text, item.html_id)
+    cells = source_table_matrix(item.source_path, item.source_object)
+    if not cells:
+        # No readable source matrix is a blocking condition, not an empty table:
+        # the check cannot be made, so it must not silently pass.
+        cells = ()
     return TableCheck(
         source_key=item.source_key,
         source_page=item.source_slide,
