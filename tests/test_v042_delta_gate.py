@@ -2994,17 +2994,33 @@ def test_the_text_comparison_preserves_structure() -> None:
     # non-breaking space, and a tab where the source had a space.
     assert structure_text("one\x0btwo") == structure_text("one\ntwo")
     assert structure_text("one\rtwo") == structure_text("one\ntwo")
+    # A Windows line ending is ONE line ending, not two.
+    assert structure_text("one\r\ntwo") == structure_text("one\ntwo")
     assert structure_text("A\u00a0B") == structure_text("A B")
     assert structure_text("A\tB") == structure_text("A B")
     assert structure_text("A  B") == structure_text("A B")
     assert structure_text("A \nB") == structure_text("A\nB")
 
-    # May not differ: structure lost, words run together, characters changed.
+    # May not differ: an unapproved Unicode space, structure lost, words run
+    # together, characters changed.
+    #
+    # U+00A0 is the ONE display-only normalization the product approves.  U+202F
+    # must not be normalized implicitly: Python's str.split() would treat it as
+    # whitespace, which is why the collapse uses an explicit character class.  If
+    # this ever passes, the enumerated rule has quietly widened.
+    assert structure_text("A\u202fB") != structure_text("A B"), (
+        "U+202F is not an approved display-only normalization"
+    )
     assert structure_text("line one\nline two") != structure_text("line oneline two")
     assert structure_text("line one\nline two") != structure_text("line one line two")
     assert structure_text("A B") != structure_text("AB")
     assert structure_text("Model 12K") != structure_text("Model 12")
     assert structure_text("MODEL") != structure_text("MODLE")
+
+    # An empty paragraph between content is a paragraph the source painted, so it
+    # is preserved; a trailing one carries no content and is dropped.
+    assert structure_text("A\n\nB") != structure_text("A\nB")
+    assert structure_text("A\n\n") == structure_text("A")
 
     # The exact shape of the defect that a whitespace-blind rule accepted.
     merged = "Hard break probe linesecond visual line"

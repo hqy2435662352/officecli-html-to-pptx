@@ -380,26 +380,34 @@ COMPARISON_RULES: tuple[NormalizationRule, ...] = (
         name="text_readback",
         rule=(
             "Canonical-editable text is read back from the rebuilt PPTX and "
-            "compared with the source object's captured text character by "
-            "character with every whitespace character removed (compact_text). "
-            "A dropped, changed, or invented character blocks; a difference that "
-            "is only whitespace placement -- a source run boundary that becomes a "
-            "native paragraph break, or a merged run that carries a space the "
-            "source's runs did not -- is accepted and reported as a retained "
-            "finding with both spellings. Paragraph and run boundaries are "
-            "asserted separately by the projection seam's own Contract and "
-            "round-trip suites."
+            "compared with the source object's captured text under an explicit "
+            "structure-preserving normalization (structure_text), NOT by removing "
+            "whitespace. A paragraph break, a hard break and a page break all "
+            "normalize to one newline; U+00A0 normalizes to a space (the one "
+            "display-only rule the product documents); a run of spaces or tabs "
+            "collapses to one space; whitespace touching a line boundary is "
+            "dropped. Everything else compares exactly, so a dropped, changed or "
+            "invented character blocks, AND so does a lost hard break, a lost "
+            "paragraph boundary, or two words run together. A difference that is "
+            "only whitespace placement *within* a line is accepted and reported as "
+            "a retained finding with both spellings; a structural difference is a "
+            "blocking finding, because the characters survive while the line "
+            "boundary the source painted does not."
         ),
     ),
     NormalizationRule(
         name="table_cell_readback",
         rule=(
             "A native table's cell text is read back from the rebuilt PPTX and "
-            "compared with the source object's own captured matrix under the same "
-            "character-level rule as object text; a whitespace-only difference is "
-            "reported as a retained finding rather than blocking, and the table's "
-            "kind, row count, column count, cell count, and per-cell source "
-            "mapping are compared exactly."
+            "compared with the SOURCE DECK's own matrix, which is read from the "
+            "source PPTX through OfficeCLI rather than from the projection's "
+            "emitted HTML; comparing against the emitted HTML would only prove "
+            "that the projection is consistent with itself. Cell text is compared "
+            "under the same structure-preserving rule as object text. The table's "
+            "kind, row count, column count, cell count and per-cell source mapping "
+            "are compared exactly, and a source matrix that cannot be read is a "
+            "blocking source_table_readback_unavailable diagnostic rather than an "
+            "empty expectation."
         ),
     ),
     NormalizationRule(
@@ -1362,8 +1370,25 @@ def compact_text(value: Any) -> str:
 #: paragraph boundary and a hard break are not the same thing as a space, and
 #: ``line one\\nline two`` collapsing into ``line oneline two`` is a text
 #: corruption that a whitespace-blind comparison cannot see.
-_STRUCTURE_BREAKS = {"\n": "\n", "\r": "\n", "\x0b": "\n", "\x0c": "\n"}
-_STRUCTURE_SPACE = {" ", "\t"}
+_STRUCTURE_BREAKS = {"\r\n": "\n", "\r": "\n", "\n": "\n", "\x0b": "\n", "\x0c": "\n"}
+
+#: The one display-only normalization the product documents.  A non-breaking
+#: space is the same character to a reader as a space, so a projection that
+#: resolves one into the other has not changed the text.
+#:
+#: Nothing else is normalized.  In particular U+202F NARROW NO-BREAK SPACE is
+#: deliberately absent: the product does not approve it, and a rule that silently
+#: widens what may differ is a rule that stops being able to fail.  Python's
+#: ``str.split()`` treats U+202F and the other Unicode space separators as
+#: whitespace, so the collapse below is done with an explicit character class
+#: rather than ``split()`` -- otherwise an unapproved character would be
+#: normalized implicitly and this enumeration would be a fiction.
+_DISPLAY_ONLY_SPACES = {"\u00a0": " "}
+
+#: Exactly the characters the collapse may treat as a space: the ASCII space and
+#: tab.  A Unicode space separator that is not in ``_DISPLAY_ONLY_SPACES`` is a
+#: character, and if a projection drops or changes it the comparison must see it.
+_COLLAPSIBLE_SPACE_RE = re.compile(r"[ \t]+")
 
 
 def structure_text(value: Any) -> str:
@@ -1374,18 +1399,22 @@ def structure_text(value: Any) -> str:
     * a paragraph boundary, a hard break and a page break all normalize to one
       ``\\n`` -- they are different PowerPoint constructs that a projection may
       legitimately interchange, and all three mean "a new line starts here";
+      ``\\r\\n`` is normalized as one line ending, so a Windows newline does not
+      become two;
     * a non-breaking space normalizes to an ordinary space, which is the one
       display-only normalization the product already documents;
     * a run of spaces and tabs becomes one space, so a run boundary cannot
       invent a difference;
     * whitespace touching a line boundary is dropped, so a space before a
-      paragraph break is not a lost character.
+      paragraph break is not a lost character;
+    * empty trailing lines are dropped -- a trailing paragraph boundary carries
+      no content.
 
-    Everything else is compared exactly.  That is what makes the comparison able
-    to fail: ``Hard break probe line\\nsecond visual line`` and
-    ``Hard break probe linesecond visual line`` differ under this rule while
-    ``A B`` and ``A B`` do not, and no character can be dropped, reordered or
-    invented without changing the result.
+    An empty line *between* content is preserved, because it is a paragraph the
+    source painted.  Everything else is compared exactly, which is what makes the
+    comparison able to fail: ``Hard break probe line\\nsecond visual line`` and
+    ``Hard break probe linesecond visual line`` differ under this rule, and no
+    character can be dropped, reordered or invented without changing the result.
 
     The earlier rule removed *all* whitespace, which meant a lost hard break, a
     lost paragraph boundary and two words run together were all invisible to the
@@ -1394,16 +1423,18 @@ def structure_text(value: Any) -> str:
     text = str(value or "")
     for source, replacement in _STRUCTURE_BREAKS.items():
         text = text.replace(source, replacement)
-    text = text.replace("\u00a0", " ").replace("\u202f", " ")
+    for source, replacement in _DISPLAY_ONLY_SPACES.items():
+        text = text.replace(source, replacement)
 
     pieces: list[str] = []
     for line in text.split("\n"):
-        # Collapse runs of horizontal whitespace inside the line, and drop the
-        # whitespace that touches either end: it cannot be a lost character
-        # because it is not adjacent to any content.
-        collapsed = " ".join(line.split())
-        pieces.append(collapsed.strip())
+        # Collapse runs of the characters this rule treats as a space, and drop
+        # the ones touching either end: whitespace adjacent to a line boundary
+        # cannot be a lost character, because it is not adjacent to any content.
+        pieces.append(_COLLAPSIBLE_SPACE_RE.sub(" ", line).strip(" "))
     # Trailing empty lines carry no content and are not a structural difference.
+    # An empty line between two content lines is kept: it is a paragraph the
+    # source painted, and dropping it would hide an empty-paragraph regression.
     while pieces and not pieces[-1]:
         pieces.pop()
     return "\n".join(pieces)
@@ -2633,7 +2664,9 @@ def _data_uri_sha256(source: str | None) -> str | None:
         return None
 
 
-def source_table_matrix(source_path: str, source_object: str) -> tuple[tuple[str, ...], ...]:
+def source_table_matrix(
+    source_path: str, source_object: str
+) -> tuple[tuple[str, ...], ...]:
     """Return one *source* native table's cell matrix, read from the source deck.
 
     The gate's table check used to build its expected matrix from the projection's
@@ -2646,13 +2679,22 @@ def source_table_matrix(source_path: str, source_object: str) -> tuple[tuple[str
     Reading the source deck is what makes the comparison able to fail: the target
     is the table the source actually contains, not a restatement of the
     projection's own output.
+
+    Raises :class:`SourceTableUnavailable` when the source matrix cannot be read,
+    so a read failure is reported as its own blocking condition instead of
+    arriving as an empty table that happens to disagree with the rebuilt one.
     """
     if not source_path or not source_object:
-        return ()
+        raise SourceTableUnavailable(
+            f"the projection recorded no source identity for {source_object!r}"
+        )
     try:
         node = _read_source_node(source_path, source_object)
-    except Exception:
-        return ()
+    except Exception as error:  # noqa: BLE001 - re-raised as a gate condition
+        raise SourceTableUnavailable(
+            f"OfficeCLI could not read {source_object} from the source deck: "
+            f"{type(error).__name__}: {error}"
+        ) from error
     rows: list[tuple[str, ...]] = []
     for row in node.get("children") or []:
         if str(row.get("type")) != "tr":
@@ -2663,7 +2705,32 @@ def source_table_matrix(source_path: str, source_object: str) -> tuple[tuple[str
             if str(cell.get("type")) == "tc"
         ]
         rows.append(tuple(values))
+    if not rows:
+        raise SourceTableUnavailable(
+            f"the source readback of {source_object} names no table row, so the "
+            "source matrix cannot be established"
+        )
+    widths = {len(row) for row in rows}
+    if len(widths) != 1:
+        # The column count cannot come from the first row alone: a ragged matrix
+        # is a source readback this check cannot trust, so it says so instead of
+        # picking one row's width as the truth.
+        raise SourceTableUnavailable(
+            f"the source readback of {source_object} is ragged: its rows report "
+            f"column counts {sorted(widths)}"
+        )
     return tuple(rows)
+
+
+class SourceTableUnavailable(RuntimeError):
+    """A source native table could not be read, so its matrix cannot be checked.
+
+    Distinct from "the rebuilt table is wrong": this says the *expectation* could
+    not be established.  It blocks, and it reports itself under its own code, so a
+    reviewer can tell a genuine empty table from a source read that failed.
+    """
+
+    code = "source_table_readback_unavailable"
 
 
 def _read_source_node(source_path: str, source_object: str) -> Mapping[str, Any]:
@@ -2694,10 +2761,6 @@ def _table_readback(
     """
     _, cell_paths = _emitted_table_cells(html_text, item.html_id)
     cells = source_table_matrix(item.source_path, item.source_object)
-    if not cells:
-        # No readable source matrix is a blocking condition, not an empty table:
-        # the check cannot be made, so it must not silently pass.
-        cells = ()
     return TableCheck(
         source_key=item.source_key,
         source_page=item.source_slide,
@@ -3044,9 +3107,10 @@ def evaluate_intake(
                             code="text_readback_mismatch",
                             message=(
                                 "the rebuilt object's text does not match the "
-                                f"source object's text under whitespace "
-                                f"normalization: expected {normalize_text(item.text)!r}, "
-                                f"rebuilt {normalize_text(rebuilt.text)!r}"
+                                "source object's text under the explicit "
+                                "structure-preserving normalization: expected "
+                                f"{structure_text(item.text)!r}, rebuilt "
+                                f"{structure_text(rebuilt.text)!r}"
                             ),
                             source_key=item.source_key,
                             source_page=item.source_slide,
@@ -3056,7 +3120,25 @@ def evaluate_intake(
                         )
                     )
             elif item.projected_kind == "table":
-                check = _table_readback(item, html_text=html_text, rebuilt=rebuilt)
+                try:
+                    check = _table_readback(item, html_text=html_text, rebuilt=rebuilt)
+                except SourceTableUnavailable as unavailable:
+                    # The expectation could not be established, which is its own
+                    # blocking condition: reporting it as a dimension mismatch
+                    # would blame the rebuilt table for a source read that failed.
+                    checks_complete = False
+                    diagnostics.append(
+                        GateDiagnostic(
+                            code=SourceTableUnavailable.code,
+                            message=str(unavailable),
+                            source_key=item.source_key,
+                            source_page=item.source_slide,
+                            source_object=item.source_object,
+                            rebuilt_slide=rebuilt.rebuilt_slide,
+                            rebuilt_object=item.emitted_name,
+                        )
+                    )
+                    continue
                 table_checks.append(check)
                 for failure in check.failures():
                     diagnostics.append(
