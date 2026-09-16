@@ -529,11 +529,23 @@ PROBE_B_HARD_BREAK_PARAGRAPH = (
 PROBE_B_HARD_BREAK_MARKER = "Hard break probe line"
 PROBE_B_HARD_BREAK_COLOR = "#1F7A3D"
 PROBE_B_RICH_LINE_SPACING = "1.4x"
-PROBE_B_RICH_SPACE_AFTER_PT = 6.0
 PROBE_B_FIXED_NUMBERS = ("2026", "9.50", "1,234,567.89")
+#: The rich block is the corpus's editable rich-text probe, so it deliberately
+#: declares only what the canonical surface can carry: a mixed-run paragraph and a
+#: hard-break paragraph, and nothing else.
+#:
+#: It used to carry two more things -- an inter-paragraph spacing and an empty
+#: paragraph -- and both are things the surface cannot express, so the object was
+#: no longer representable as an editable body at all and the projection had to
+#: classify it base-only.  That kept the page faithful and cost the corpus the only
+#: place it proved hard-break and mixed-run fidelity *as editable text*, which is
+#: coverage this probe exists to provide.  The two unrepresentable shapes are now
+#: covered where they belong instead: by the classification's own unit tests, by
+#: the gate's mutation suite, and by two real corpus objects that declare an empty
+#: paragraph and are reported base-only with the reason.
 PROBE_B_RICH_TEXT = (
     PROBE_B_RICH_PARAGRAPH_1
-    + "\n\n"
+    + "\n"
     + PROBE_B_HARD_BREAK_PARAGRAPH
 )
 
@@ -627,8 +639,8 @@ def _page_key(result: Any, page_id: str) -> str:
     pages = sorted(result.pages, key=lambda page: page.output_page)
     keys = [str(page.source_key) for page in pages]
     sequences = (
-        expected_page_sequence(baseline_present=False),
-        expected_page_sequence(baseline_present=True),
+        expected_page_sequence(real_present=False),
+        expected_page_sequence(real_present=True),
     )
     for sequence in sequences:
         if page_id in sequence and len(sequence) == len(keys):
@@ -1192,7 +1204,6 @@ def probe_b_format_commands(rich_object: Mapping[str, Any]) -> list[dict[str, An
             "props": {
                 "align": "left",
                 "lineSpacing": PROBE_B_RICH_LINE_SPACING,
-                "spaceAfter": f"{PROBE_B_RICH_SPACE_AFTER_PT:g}pt",
             },
         },
     ]

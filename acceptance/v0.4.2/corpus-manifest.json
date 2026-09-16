@@ -150,7 +150,7 @@
       "coverage_purpose": "proxy/overlay isolation: no sibling text may be embedded in any raster payload, and no wording may appear twice in the rebuilt deck",
       "scope_note": "Every object on this probe is canonical-editable and no proxy is emitted, so the rebuilt deck must contain no raster payload for this page at all. The overlay wording is asserted to appear exactly once in the rebuilt deck; if the rect, the ellipse or the arrow were ever replaced by a picture, this probe's unaccounted picture count would show it.",
       "synthetic": true,
-      "fixture_sha256": "e5e449026d18c73928e172ff37568157dc6465aa1e180faf9774ebc027030bf9"
+      "fixture_sha256": "81edd2018ce3710bf2a54dd5bbd9cfa23ffbbe90f79e4e81d394db93483eb633"
     },
     {
       "order": 10,
@@ -162,7 +162,7 @@
       "coverage_purpose": "rich text semantics and the locked container boundary: mixed runs, hard break, empty paragraph, bullet nesting, numbering, Latin/CJK fonts, theme-token evidence, fixed numeric strings, and one group with a bound connector represented exactly once",
       "scope_note": "OfficeCLI reports no inheritance source for the theme run's colour, so the gate classifies it canonical-editable and the projection emits it without a colour declaration; the theme token is preserved in the source and in the projection's evidence, and no semantic token round trip is claimed. The group is one locked container boundary whose child shape and connector are represented once inside it and never emitted again as siblings.",
       "synthetic": true,
-      "fixture_sha256": "346e170c9cd74a777ed2b6f9a16a40ffc266c8f7996c0449da9b26b9c3861815"
+      "fixture_sha256": "210981c6990abb0286534a91a2d29dac85ed6a16211a71022bb2f9fa3655312f"
     }
   ],
   "seam_selection": [
@@ -227,14 +227,14 @@
       "page_id": "probe-a",
       "source_id": "probe-a",
       "source_page": 1,
-      "source_sha256": "e5e449026d18c73928e172ff37568157dc6465aa1e180faf9774ebc027030bf9"
+      "source_sha256": "81edd2018ce3710bf2a54dd5bbd9cfa23ffbbe90f79e4e81d394db93483eb633"
     },
     {
       "order": 10,
       "page_id": "probe-b",
       "source_id": "probe-b",
       "source_page": 1,
-      "source_sha256": "346e170c9cd74a777ed2b6f9a16a40ffc266c8f7996c0449da9b26b9c3861815"
+      "source_sha256": "210981c6990abb0286534a91a2d29dac85ed6a16211a71022bb2f9fa3655312f"
     }
   ],
   "source_decks": [
@@ -288,7 +288,9 @@
   },
   "source_deck_write_operations": 0,
   "synthetic_only": false,
-  "elapsed_seconds": 376.1,
+  "elapsed_seconds": 345.6,
+  "commit": "ac0ab2eb1fe674340b4da560f8730a47038a8450 (working tree dirty)",
+  "run_id": "a6c28012656e75ec036f432f0e3d071d156b8df8c38af3890cb90157f2f8f5a3",
   "privacy": "This manifest is committed text. It records each private source deck's selection order and page numbers and the fact that every deck was hashed and verified unchanged, but it carries no private filename, no absolute path and no private hash: the source sha256 values are withheld and the verification is recorded as a per-deck verdict instead. The gate's own evidence under acceptance/v0.4.2/gate/ does carry the absolute paths; .gitignore excludes it from the repository. If page numbers themselves must not be published, the corpus has to run against decks that may be named, because a page selection cannot be reviewed without them.",
   "visual_records": [
     {
@@ -314,7 +316,7 @@
       "after": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 5169,
+        "distinct_colors": 5889,
         "background_rgb": [
           103,
           103,
@@ -347,7 +349,7 @@
       "after": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 15726,
+        "distinct_colors": 16542,
         "background_rgb": [
           103,
           103,
@@ -599,7 +601,7 @@
       "before": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 1009,
+        "distinct_colors": 1010,
         "background_rgb": [
           103,
           103,
@@ -621,7 +623,5 @@
         "non_blank": true
       }
     }
-  ],
-  "commit": "81981da1acd5017272bdf0b422500b0f5d7c8613 (working tree dirty)",
-  "run_id": "db8d512bc6cdc36ef07de9dda5c7e2700323377ceefeefcb9eaf185073569072"
+  ]
 }

@@ -145,6 +145,13 @@ REASON_ROTATION_UNSUPPORTED = "rotation_not_supported"
 REASON_FILL_NOT_SOLID = "fill_not_solid"
 REASON_LINE_NOT_SOLID = "line_not_solid"
 REASON_TEXT_BASE_ONLY = "text_base_only"
+# A body whose *paragraph layout* the canonical orthography cannot express: an
+# inter-paragraph spacing, or an empty paragraph whose line the rebuild sizes from
+# the wrong run.  Distinct from ``text_base_only``, which is about a text
+# *property* the slide does not own; this one is about the paragraph structure
+# itself, and it is why such a body is represented by its own object-local paint
+# rather than by an editable rebuild that would paint it wrong.
+REASON_TEXT_PARAGRAPH_LAYOUT_BASE_ONLY = "text_paragraph_layout_base_only"
 REASON_KIND_UNMAPPED = "kind_not_mapped"
 REASON_PROXY_ASSETS_UNAVAILABLE = "proxy_assets_unavailable"
 REASON_PROXY_ISOLATION_UNAVAILABLE = "proxy_isolation_unavailable"
@@ -174,6 +181,7 @@ REASON_CODES = frozenset(
         REASON_FILL_NOT_SOLID,
         REASON_LINE_NOT_SOLID,
         REASON_TEXT_BASE_ONLY,
+        REASON_TEXT_PARAGRAPH_LAYOUT_BASE_ONLY,
         REASON_KIND_UNMAPPED,
         REASON_PROXY_ASSETS_UNAVAILABLE,
         REASON_PROXY_ISOLATION_UNAVAILABLE,
@@ -1476,6 +1484,14 @@ def _classify(
                 (),
                 REASON_TEXT_BASE_ONLY,
             )
+        paragraph_layout = _paragraph_layout_reason(obj)
+        if paragraph_layout is not None:
+            return (
+                DISPOSITION_BASE_ONLY,
+                paragraph_layout,
+                (),
+                REASON_TEXT_PARAGRAPH_LAYOUT_BASE_ONLY,
+            )
         return DISPOSITION_CANONICAL, None, (), None
     return (
         DISPOSITION_LOCKED,
@@ -1484,6 +1500,60 @@ def _classify(
         (),
         REASON_KIND_UNMAPPED,
     )
+
+
+def _paragraph_layout_reason(obj: CapturedObject) -> str | None:
+    """Return why a body's paragraph layout is not representable, or ``None``.
+
+    The Canonical Author paragraph orthography has one separator and nothing else:
+    a projected body is one element whose paragraphs are its boundaries.  Two
+    things a real deck routinely declares cannot be expressed in it, and both were
+    silently lost before the acceptance gate could see them:
+
+    * **an inter-paragraph spacing.**  The Author Contract emits paragraph spacing
+      for a table cell's paragraphs, because a cell folds its child paragraphs into
+      one body.  A standalone body has no such surface, so a source paragraph the
+      deck spaces 6pt from the one above it is rebuilt flush -- the second
+      paragraph is painted where the source does not paint it.
+    * **an empty paragraph.**  The empty paragraph *is* projected, and OfficeCLI
+      then sizes its line from the run it associates with it, which is the
+      preceding paragraph's first run.  A blank line after a 20pt heading becomes a
+      20pt blank line where the source paints the body's 11pt one, which makes the
+      body taller than the source and can turn an overflow the source already has
+      into a materially worse one.
+
+    Both are outside what this projection can write, and neither may be answered by
+    comparing a representative value: the object is classified base-only and
+    represented by its own object-local paint, which keeps the *appearance* faithful
+    at the cost of editability, with the reason recorded in the ledger.  The cost is
+    real and is the honest one -- an editable rebuild that paints the page
+    differently is not a representation of the page.
+    """
+    if not obj.has_text or len(obj.paragraphs) < 2:
+        return None
+    for paragraph in obj.paragraphs:
+        if paragraph.space_before_pt or paragraph.space_after_pt:
+            return (
+                "The source body declares paragraph spacing ("
+                + ", ".join(
+                    f"{name} {value:g}pt"
+                    for name, value in (
+                        ("space before", paragraph.space_before_pt),
+                        ("space after", paragraph.space_after_pt),
+                    )
+                    if value
+                )
+                + "), and the canonical paragraph orthography carries paragraph "
+                "spacing only for a table cell's paragraphs."
+            )
+        if not paragraph.runs:
+            return (
+                "The source body draws an empty paragraph, whose line height the "
+                "rebuild sizes from the run OfficeCLI associates with it rather "
+                "than from the paragraph itself, so the rebuilt body would be "
+                "taller than the source's."
+            )
+    return None
 
 
 def _transform_reason(obj: CapturedObject) -> str:

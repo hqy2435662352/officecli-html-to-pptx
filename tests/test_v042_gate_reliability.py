@@ -175,10 +175,17 @@ def test_windows_access_denied_onto_an_occupied_directory_is_a_collision(
     assert (destination / "gate-report.json").read_text(encoding="utf-8") == "first"
 
 
-def test_access_denied_with_no_destination_is_a_real_refusal(
+def test_access_denied_with_no_destination_is_retried_then_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """And an access refusal where nothing published is reported as itself."""
+    """With nothing published, an access refusal is retried within the bound.
+
+    Windows reports *both* "a handle is still open in this directory" and "the
+    destination exists" as ``ERROR_ACCESS_DENIED``, so an access refusal with no
+    destination is the in-use case and is worth waiting out.  The bound still
+    applies: a refusal that never clears is raised rather than retried forever, and
+    the caller sees the error the filesystem actually produced.
+    """
     attempts: list[int] = []
 
     def access_denied(source: Any, target: Any) -> None:
@@ -189,7 +196,7 @@ def test_access_denied_with_no_destination_is_a_real_refusal(
     staging = _staging(tmp_path, "staging", "payload")
     with pytest.raises(PermissionError):
         gate._claim_destination(staging, tmp_path / "evidence")
-    assert len(attempts) == 1
+    assert len(attempts) == gate.PUBLICATION_ATTEMPTS
 
 
 def test_publishing_moves_the_whole_set_in_one_step(tmp_path: Path) -> None:

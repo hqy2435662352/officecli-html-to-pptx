@@ -9,12 +9,12 @@ Authoritative acceptance of the V0.4.2 representative-projection slice (ticket #
 
 ## 1. Verdict and its evidence basis
 
-~~**BLOCK** (gate outcome `BLOCK`, `published=True`, `accepted=False`), reached in 376.1s.~~ **withdrawn — see `ACCEPTANCE-WITHDRAWN.md`**
+~~**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 345.6s.~~ **withdrawn — see `ACCEPTANCE-WITHDRAWN.md`**
 
 | binding | value |
 |---|---|
-| commit | `81981da1acd5017272bdf0b422500b0f5d7c8613 (working tree dirty)` |
-| run id (gate report sha256) | `db8d512bc6cdc36ef07de9dda5c7e2700323377ceefeefcb9eaf185073569072` |
+| commit | `ac0ab2eb1fe674340b4da560f8730a47038a8450 (working tree dirty)` |
+| run id (gate report sha256) | `a6c28012656e75ec036f432f0e3d071d156b8df8c38af3890cb90157f2f8f5a3` |
 
 The report, the source map, the artifact manifest and the review package all belong to the run id above: it is the digest of the gate's own verdict document, so a reader can check that they describe one run without a registry to consult. The commit is the revision the verdict is about.
 
@@ -26,18 +26,18 @@ The verdict is the gate's own derived outcome. It is *not* inferred from a proce
 | projected pages | 10 |
 | blocked pages | 0 |
 | source objects with one disposition | 257 |
-| canonical-editable | 212 |
+| canonical-editable | 210 |
 | locked-visual-proxy | 28 |
-| base-only-semantic | 17 |
+| base-only-semantic | 19 |
 | unsupported | 0 |
 | unresolved | 0 |
-| material deltas | 1 |
+| material deltas | 0 |
 | retained findings | 27 |
-| scope evidence | 31 |
-| proxy isolation proofs passed | 35 |
+| scope evidence | 33 |
+| proxy isolation proofs passed | 0 |
 | proxy isolation proofs failed | 0 |
-| blocking diagnostics | 3 |
-| hashed artifacts (gate) | 83 |
+| blocking diagnostics | 0 |
+| hashed artifacts (gate) | 87 |
 | Author Contract (`author`) | PASS |
 
 The unchanged `author` Contract reports **PASS** with 0 diagnostic(s). It is corroboration, not the verdict.
@@ -92,8 +92,8 @@ Every source deck's own before/after pair is compared on its own: **3/3 identica
 
 | out | page | source page | objects | canonical | locked | base-only | unsup | unres | src issues | rebuilt issues | text readbacks | tables | proxies | failures |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | source-a:2 | 2 | 41 | 34 | 6 | 1 | 0 | 0 | 3 | 0 | 30 | 0 | 3 | — |
-| 2 | source-a:5 | 5 | 11 | 11 | 0 | 0 | 0 | 0 | 6 | 1 | 8 | 1 | 0 | — |
+| 1 | source-a:2 | 2 | 41 | 33 | 6 | 2 | 0 | 0 | 3 | 0 | 29 | 0 | 4 | — |
+| 2 | source-a:5 | 5 | 11 | 10 | 0 | 1 | 0 | 0 | 6 | 0 | 7 | 1 | 1 | — |
 | 3 | source-a:12 | 12 | 45 | 42 | 3 | 0 | 0 | 0 | 13 | 3 | 41 | 1 | 3 | — |
 | 4 | source-a:30 | 30 | 57 | 32 | 10 | 15 | 0 | 0 | 5 | 0 | 16 | 0 | 25 | — |
 | 5 | source-b:3 | 3 | 18 | 18 | 0 | 0 | 0 | 0 | 4 | 0 | 12 | 3 | 0 | — |
@@ -101,7 +101,7 @@ Every source deck's own before/after pair is compared on its own: **3/3 identica
 | 7 | source-c:2 | 2 | 26 | 26 | 0 | 0 | 0 | 0 | 0 | 0 | 20 | 3 | 0 | — |
 | 8 | source-c:21 | 21 | 12 | 12 | 0 | 0 | 0 | 0 | 0 | 0 | 11 | 1 | 0 | — |
 | 9 | probe-a | 1 | 7 | 7 | 0 | 0 | 0 | 0 | 0 | 0 | 7 | 0 | 0 | — |
-| 10 | probe-b | 1 | 12 | 8 | 3 | 1 | 0 | 0 | 2 | 1 | 8 | 0 | 2 | — |
+| 10 | probe-b | 1 | 12 | 8 | 3 | 1 | 0 | 0 | 1 | 0 | 8 | 0 | 2 | — |
 
 ### Disposition ledger summary (per page)
 
@@ -109,8 +109,8 @@ The complete ledger — one row per slide-owned source object with its source id
 
 | out | page | source objects | canonical-editable | locked-visual-proxy | base-only-semantic | container-owned | unsupported | unresolved |
 |---|---|---|---|---|---|---|---|---|
-| 1 | source-a:2 | 41 | 34 | 6 | 1 | 4 | 0 | 0 |
-| 2 | source-a:5 | 11 | 11 | 0 | 0 | 0 | 0 | 0 |
+| 1 | source-a:2 | 41 | 33 | 6 | 2 | 4 | 0 | 0 |
+| 2 | source-a:5 | 11 | 10 | 0 | 1 | 0 | 0 | 0 |
 | 3 | source-a:12 | 45 | 42 | 3 | 0 | 0 | 0 | 0 |
 | 4 | source-a:30 | 57 | 32 | 10 | 15 | 0 | 0 | 0 |
 | 5 | source-b:3 | 18 | 18 | 0 | 0 | 0 | 0 | 0 |
@@ -124,9 +124,7 @@ Every source object has exactly one disposition, and every emitted object maps t
 
 ## 5. Material deltas
 
-**1 material delta(s):**
-
-- `the same condition is materially worsened: pressure ratio 1.1301 -> 1.2231 exceeds both the absolute tolerance 0.02 and the relative tolerance 0.05` out p10 `/slide[1]/shape[@id=100000]` `text_overflow`
+**Zero material deltas.** The rebuilt-minus-source material issue set is empty, so no rebuilt-only or materially worsened condition was found on any selected page.
 
 ## 6. Retained findings (source-inherent, not repaired)
 
@@ -138,7 +136,7 @@ Every source object has exactly one disposition, and every emitted object maps t
 | `text_overflow` | 26 |
 
 - out p1 `/slide[2]/shape[@id=49]` `text_overflow` → `slide-001-textbox-014`: the source object carries this condition and the rebuilt object does not report it; it stays visible as a source-inherent finding rather than being claimed as repaired
-- out p2 `/slide[5]/shape[@id=100085]` `text_overflow` → `slide-002-textbox-011`: the source object already carries this condition and the rebuilt object reproduces it without materially worsening its measured pressure
+- out p2 `/slide[5]/shape[@id=100085]` `text_overflow` → `slide-002-picture-011`: the source object carries this condition and the rebuilt object does not report it; it stays visible as a source-inherent finding rather than being claimed as repaired
 - out p2 `/slide[5]/shape[@id=100106]` `text_overflow` → `slide-002-textbox-008`: the source object carries this condition and the rebuilt object does not report it; it stays visible as a source-inherent finding rather than being claimed as repaired
 - out p3 `/slide[12]/shape[@id=100084]` `text_overflow` → `slide-003-textbox-017`: the source object already carries this condition and the rebuilt object reproduces it without materially worsening its measured pressure
 - out p3 `/slide[12]/shape[@id=100096]` `text_overflow` → `slide-003-textbox-026`: the source object carries this condition and the rebuilt object does not report it; it stays visible as a source-inherent finding rather than being claimed as repaired
@@ -167,11 +165,11 @@ Every source object has exactly one disposition, and every emitted object maps t
 
 ## 7. Scope evidence (master/layout/inherited paint)
 
-31 scope-evidence record(s). These are findings and omissions about values the slide does not own; they are never reported as repaired slide-owned objects.
+33 scope-evidence record(s). These are findings and omissions about values the slide does not own; they are never reported as repaired slide-owned objects.
 
 | condition | count | mapped |
 |---|---|---|
-| `inherited_paint_omission` | 17 | 17 |
+| `inherited_paint_omission` | 19 | 19 |
 | `slide_field_not_evaluated` | 14 | 0 |
 
 The complete set is `gate/scope-evidence.json`. A representative record of each condition:
@@ -186,6 +184,8 @@ The complete set is `gate/scope-evidence.json`. A representative record of each 
 | `slide-001-picture-007` | `/slide[2]/group[@id=88]` | locked-visual-proxy | 121x19 | 2.00475 | 2 | 0.018116 | True |
 | `slide-001-picture-010` | `/slide[2]/group[@id=40]` | locked-visual-proxy | 121x19 | 2.00475 | 2 | 0.018116 | True |
 | `slide-001-picture-028` | `/slide[2]/shape[@id=8]` | base-only-semantic | 1705x123 | 2.00034 | 2 | 0.000000 | True |
+| `slide-001-picture-029` | `/slide[2]/shape[@id=9]` | base-only-semantic | 426x127 | 2.00047 | 2 | 0.000000 | True |
+| `slide-002-picture-011` | `/slide[5]/shape[@id=100085]` | base-only-semantic | 192x309 | 2.00066 | 2 | 0.000000 | True |
 | `slide-003-picture-004` | `/slide[12]/shape[@id=100068]` | locked-visual-proxy | 886x69 | 2.00096 | 2 | 0.000000 | True |
 | `slide-003-picture-007` | `/slide[12]/shape[@id=100071]` | locked-visual-proxy | 937x69 | 2.00086 | 2 | 0.000000 | True |
 | `slide-003-picture-010` | `/slide[12]/shape[@id=100077]` | locked-visual-proxy | 937x69 | 2.00086 | 2 | 0.000000 | True |
@@ -219,9 +219,9 @@ The complete set is `gate/scope-evidence.json`. A representative record of each 
 | `slide-010-picture-004` | `/slide[1]/shape[@id=100003]` | base-only-semantic | 244x89 | 2.00000 | 2 | 0.207692 | True |
 | `slide-010-picture-009` | `/slide[1]/group[@id=100008]` | locked-visual-proxy | 444x304 | 2.00000 | 2 | 0.000000 | True |
 
-35 proof(s), 35 passed. Every locked proxy carries the gate's five isolation facts: target survival, raster density, guard band, target bounds and contamination.
+37 proof(s), 37 passed. Every locked proxy carries the gate's five isolation facts: target survival, raster density, guard band, target bounds and contamination.
 
-**4 of 35 proof(s) are of a proxy whose raster is nothing but its own background** (`paint_fraction` 0.0, so no paint of the locked object was measured in the crop): `slide-004-picture-028`, `slide-004-picture-029`, `slide-004-picture-030`, `slide-004-picture-048`. The gate's isolation facts are satisfied for these proxies -- density, guard band, bounds and contamination are measured and correct -- but they do not establish that the locked object's own pixels survived, and this report does not claim that they did. Whether those objects are blank in the source is a Gate 3 question, not a structural one.
+**4 of 37 proof(s) are of a proxy whose raster is nothing but its own background** (`paint_fraction` 0.0, so no paint of the locked object was measured in the crop): `slide-004-picture-028`, `slide-004-picture-029`, `slide-004-picture-030`, `slide-004-picture-048`. The gate's isolation facts are satisfied for these proxies -- density, guard band, bounds and contamination are measured and correct -- but they do not establish that the locked object's own pixels survived, and this report does not claim that they did. Whether those objects are blank in the source is a Gate 3 question, not a structural one.
 
 ## 9. Native table checks
 
@@ -240,7 +240,7 @@ The complete set is `gate/scope-evidence.json`. A representative record of each 
 
 ## 10. Text and style readback
 
-174 independent OfficeCLI readback(s) of canonical-editable objects; 0 disagree with the source text.
+172 independent OfficeCLI readback(s) of canonical-editable objects; 0 disagree with the source text.
 
 
 ## 11. OfficeCLI validation and issue records
@@ -251,17 +251,17 @@ Source deck reads:
 - `src2` validate: Validation passed: no errors found.; issues: 110
 - `src3` validate: Validation passed: no errors found.; issues: 0
 - `src4` validate: Validation passed: no errors found.; issues: 0
-- `src5` validate: Validation passed: no errors found.; issues: 2
+- `src5` validate: Validation passed: no errors found.; issues: 1
 
 Rebuilt deck reads:
 
 - `rebuilt` `rebuilt.pptx`: Validation passed: no errors found.
 
-- rebuilt issues: 5
+- rebuilt issues: 3
 
 ## 12. Artifact manifest
 
-The gate published 83 hashed artifacts; `gate/gate-report.json` lists every one with its sha256 and size, and `artifact-manifest.json` lists every file in this bundle the same way. Both can be re-checked against disk independently:
+The gate published 87 hashed artifacts; `gate/gate-report.json` lists every one with its sha256 and size, and `artifact-manifest.json` lists every file in this bundle the same way. Both can be re-checked against disk independently:
 
 ```powershell
 Get-FileHash acceptance/v0.4.2/gate/rebuilt.pptx -Algorithm SHA256
@@ -273,15 +273,17 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 
 | artifact | sha256 | size |
 |---|---|---|
-| `canonical-author.html` | `72aec5c8e8ff23371c213a7e6118c2f84f65d38c86e67bc5e399980a5d22f637` | 42503414 |
-| `disposition-ledger.json` | `b4bf035c0ea872d2ecf1acc80db728747676972bc810081c877a5c5bbfa4c764` | 250681 |
-| `material-deltas.json` | `b91085126fa30af42804740afdafbbd668b4e9a386ff8ddb82a60f17cc5ff45a` | 2429 |
-| `pages.json` | `ee7500f74f52bd618992ffc10cbfc154035f749a5f2508d9ba00d0e5b2ee8d2b` | 513669 |
-| `projection/canonical-author.html` | `72aec5c8e8ff23371c213a7e6118c2f84f65d38c86e67bc5e399980a5d22f637` | 42503414 |
-| `projection/projection-report.json` | `10026c11fd8421b9082cf58432b9b4e60563a70c10b588d1b2b8459c436b931b` | 668963 |
+| `canonical-author.html` | `da8910998c446a306670ea2d8312a7ef6d41b943c01d64375124408723ff7473` | 42518838 |
+| `disposition-ledger.json` | `1224394157da1141eca2ffc7250ff2283e5e83f4ca3857e98431447621db31ac` | 251447 |
+| `material-deltas.json` | `d4990d01e9de41f6d7bce97cb1d079aff18ce0c5fc576a2117e92b9b1cfd5d3a` | 31 |
+| `pages.json` | `5c0350ca4672f87b9d614e7c405e65bd37cdaef2b6e887699d64901f7b83456e` | 509928 |
+| `projection/canonical-author.html` | `da8910998c446a306670ea2d8312a7ef6d41b943c01d64375124408723ff7473` | 42518838 |
+| `projection/projection-report.json` | `512956cb7dfb168411e11a29ac112c5c70aab1bf8ceedd2b82f03dbee029377f` | 671550 |
 | `projection/proxy-src1-slide-002-007.png` | `a46d3062d6aac0d510a4b4d9d195bf7a4252a16593a6b7aa6969258df227384d` | 426 |
 | `projection/proxy-src1-slide-002-010.png` | `a46d3062d6aac0d510a4b4d9d195bf7a4252a16593a6b7aa6969258df227384d` | 426 |
 | `projection/proxy-src1-slide-002-028.png` | `1ffcd35808112b4cc26a51e24e5d3680be918843ac2ee2cd6dd1d1e7e7c008d0` | 13212 |
+| `projection/proxy-src1-slide-002-029.png` | `67761c28c414ac2c4c27f4fa76478f184f19b671dd3042fc4ec122a16427c39e` | 3709 |
+| `projection/proxy-src1-slide-005-011.png` | `22c344431a4d185847df06279860daf2a7ff477d995d030bf34382518ed16494` | 7731 |
 | `projection/proxy-src1-slide-012-004.png` | `aaf745a4f113a4f8eca3e2ccecef0af028e7062c83d11d6d0c26adcf47baf852` | 437 |
 | `projection/proxy-src1-slide-012-007.png` | `da76ef444fc31185b8859169be85dd8f656168a6ad4a5a5197d105235af6d9aa` | 447 |
 | `projection/proxy-src1-slide-012-010.png` | `f861b7b48052b510a5803f37125352ea330fb14449ec40aed510babfaf2e0077` | 465 |
@@ -314,11 +316,13 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `projection/proxy-src2-slide-009-024.png` | `1955f0a4566644ad752027813a39c0a217aa513c33aeee668da435fc7e839852` | 18475 |
 | `projection/proxy-src5-slide-001-004.png` | `49c4fa98d502e99fc0920a31d5862fabbb5a9c0732e7918f85d0d4be8f53fa90` | 7905 |
 | `projection/proxy-src5-slide-001-009.png` | `992fee4860fa846f6cbeaf7e4df07e13b5953222625577936c3915f1ffb7d29a` | 2278 |
-| `projection/source-map.json` | `0108e12d6d952e278719f170ca96fbed6bc396437738f564f457527b31f63233` | 610627 |
-| `projection-report.json` | `10026c11fd8421b9082cf58432b9b4e60563a70c10b588d1b2b8459c436b931b` | 668963 |
+| `projection/source-map.json` | `bc1c0aec86f6dc29004cd096d2bb58536623a7b4f514f9db13906ee2aba71d6d` | 611997 |
+| `projection-report.json` | `512956cb7dfb168411e11a29ac112c5c70aab1bf8ceedd2b82f03dbee029377f` | 671550 |
 | `proxies/proxy-src1-slide-002-007.png` | `a46d3062d6aac0d510a4b4d9d195bf7a4252a16593a6b7aa6969258df227384d` | 426 |
 | `proxies/proxy-src1-slide-002-010.png` | `a46d3062d6aac0d510a4b4d9d195bf7a4252a16593a6b7aa6969258df227384d` | 426 |
 | `proxies/proxy-src1-slide-002-028.png` | `1ffcd35808112b4cc26a51e24e5d3680be918843ac2ee2cd6dd1d1e7e7c008d0` | 13212 |
+| `proxies/proxy-src1-slide-002-029.png` | `67761c28c414ac2c4c27f4fa76478f184f19b671dd3042fc4ec122a16427c39e` | 3709 |
+| `proxies/proxy-src1-slide-005-011.png` | `22c344431a4d185847df06279860daf2a7ff477d995d030bf34382518ed16494` | 7731 |
 | `proxies/proxy-src1-slide-012-004.png` | `aaf745a4f113a4f8eca3e2ccecef0af028e7062c83d11d6d0c26adcf47baf852` | 437 |
 | `proxies/proxy-src1-slide-012-007.png` | `da76ef444fc31185b8859169be85dd8f656168a6ad4a5a5197d105235af6d9aa` | 447 |
 | `proxies/proxy-src1-slide-012-010.png` | `f861b7b48052b510a5803f37125352ea330fb14449ec40aed510babfaf2e0077` | 465 |
@@ -351,11 +355,11 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `proxies/proxy-src2-slide-009-024.png` | `1955f0a4566644ad752027813a39c0a217aa513c33aeee668da435fc7e839852` | 18475 |
 | `proxies/proxy-src5-slide-001-004.png` | `49c4fa98d502e99fc0920a31d5862fabbb5a9c0732e7918f85d0d4be8f53fa90` | 7905 |
 | `proxies/proxy-src5-slide-001-009.png` | `992fee4860fa846f6cbeaf7e4df07e13b5953222625577936c3915f1ffb7d29a` | 2278 |
-| `proxy-isolation.json` | `fc7800d82b6cf21584759ab5a1bbd8d95109d8263c5c9af37cb325f3b9d7045e` | 52322 |
-| `rebuilt.pptx` | `fd8dffe0a5594cb3d05f92cead7c4aec016ef929c8fe4975494b8003837bc68f` | 31253634 |
-| `retained-findings.json` | `9c20a42cae602e78d181863080433f4694a98336c2fd5b1e3ab6894c1fc98a0e` | 42109 |
-| `scope-evidence.json` | `643a366a5bd789edb1e78cbb1c2f3bbd7a8369d14926bcb1db3e4964d99b29b0` | 20857 |
-| `source-map.json` | `0108e12d6d952e278719f170ca96fbed6bc396437738f564f457527b31f63233` | 610627 |
+| `proxy-isolation.json` | `2ee06d0e85f5e9b671bef721191254c6db5bb363feed5d9fc576a1979be7e478` | 55314 |
+| `rebuilt.pptx` | `0421feff3aac7838012e4e80eb84066ea1e2035c1f334ca4d16551e9dd23fbb9` | 31264185 |
+| `retained-findings.json` | `3ab74f6274f2fa0382c999e55811d1493872a461da3e24b0e17a0cccc33d9b69` | 41174 |
+| `scope-evidence.json` | `73586ba9de0a57672f271fc9fe84f25637c6248ea6177d2cbd5e818c3c4266e1` | 22398 |
+| `source-map.json` | `bc1c0aec86f6dc29004cd096d2bb58536623a7b4f514f9db13906ee2aba71d6d` | 611997 |
 
 `gate/gate-report.json` and `gate/gate-report.md` are excluded from that list because a document cannot contain its own hash; the bundle's `artifact-manifest.json` covers them instead, except for itself.
 
@@ -394,12 +398,12 @@ These are mechanical facts about the images (size, distinct colours, non-backgro
 
 1. **Master/layout/header/footer omissions are scope evidence, not slide-owned loss.** 14 inherited cached-field finding(s) name the slide (master|layout) rather than a slide-owned object and carry no `source_object`; they are never mapped onto a rebuilt object. Inherited branding is not reconstructed, so a rebuilt page is painted on a blank layout.
 2. **Source-inherent overlap/overflow is retained, not repaired.** 27 retained finding(s); the projection does not rewrite private source layout to reach an artificial zero-issue count, and none of them enters the material delta set.
-3. **Locked proxies are excluded from native-equivalence claims.** 212 of 257 source object(s) are canonical-editable; 28 are locked visual proxies and 17 are base-only, and they are reported separately rather than folded into a native round-trip count.
+3. **Locked proxies are excluded from native-equivalence claims.** 210 of 257 source object(s) are canonical-editable; 28 are locked visual proxies and 19 are base-only, and they are reported separately rather than folded into a native round-trip count.
 4. **The gate's material-delta comparison is a text comparison.** It compares canonical characters and supported style declarations read back from the rebuilt deck; it does not compare per-run paragraph formatting, so a run-level formatting difference that preserves every character and every declared style is not a material delta. The synthetic rich-text probe records one such difference explicitly (see the pytest module's `test_the_probe_b_run_declarations_are_not_the_source_run_declarations`).
 5. **A hard break inside a projected paragraph is not rebuilt as a break.** The projection emits it as a `<br>` in the Canonical Author document, and `br` is not part of the declared inline-element surface, so the New Deck path rebuilds the two sides as one paragraph with no character lost. Recorded by the pytest module's `test_the_probe_b_hard_break_is_emitted_and_the_rebuild_merges_it`.
 6. **A source list's native marker is not reconstructed.** OfficeCLI reads the synthetic probe's list block back with `list=bullet` and a native `a:buChar` marker; the rebuilt deck's object is plain paragraphs, because the Canonical Author surface has no list element. The item text round-trips; the marker does not. Recorded by the pytest module's `test_the_probe_b_list_declaration_is_present_in_the_source_and_absent_from_the_rebuilt_deck`.
 7. **A theme expression on a directly-declared run is not classified base-only by this projection.** The synthetic probe's theme run declares `accent1` in the source slide part and OfficeCLI reads the token back as `color: accent1`, but OfficeCLI reports no `effective.color.src` for a directly-declared scheme colour, so the gate's base-only rule never fires for it and no base-only entry is produced. The token is preserved in the source and in the projection's evidence; the projection does not claim a semantic token round trip, and this report does not either.
-8. **Proxy target survival is asserted from the rebuilt deck, not measured from the proxy's pixels.** The isolation proof establishes that a picture object with the proxy's own name exists in the rebuilt deck and that its raster has the right density, bounds, guard band and contamination; it does not establish that the locked object's own paint is in that raster. 4 of 35 proof(s) here are of a raster that is nothing but its own background. Section 8 names them. This is the same limitation the independent verification report records for the gate.
+8. **Proxy target survival is asserted from the rebuilt deck, not measured from the proxy's pixels.** The isolation proof establishes that a picture object with the proxy's own name exists in the rebuilt deck and that its raster has the right density, bounds, guard band and contamination; it does not establish that the locked object's own paint is in that raster. 4 of 37 proof(s) here are of a raster that is nothing but its own background. Section 8 names them. This is the same limitation the independent verification report records for the gate.
 9. **A manifest cannot contain its own hash.** `artifact-manifest.json` is excluded from its own inventory and records `acceptance-report.md`'s hash in `report_sha256` instead; the manifest's own hash is printed by the driver that wrote it and is not part of the bundle.
 
 ## 16. How to reproduce

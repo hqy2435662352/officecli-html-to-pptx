@@ -1103,12 +1103,28 @@ def test_no_readback_of_a_canonical_object_disagrees_with_its_source_text(
         assert item.matched is True, item.as_dict()
     # The style-declaration surface is populated where the projection declares a
     # style, and the mechanism is exercised (not merely absent).
+    #
+    # The declarations live in the source object's *runs*, not under a
+    # ``font-size`` key: the expectation used to be parsed out of the generated
+    # HTML's inline style, and a check that reads the artifact under test is the
+    # comparison-with-itself this readback replaced.  So the assertion is on the
+    # surface that actually exists -- each run that states a size states its face
+    # with it.
     styled = [
-        item for item in readbacks if item.style_declarations.get("font-size")
+        (item, run)
+        for item in readbacks
+        for run in (item.style_declarations.get("runs") or [])
+        if "size=" in run
     ]
-    assert styled, "no readback carried a font-size declaration"
-    for item in styled:
-        assert item.style_declarations.get("font-family"), item.as_dict()
+    assert styled, "no readback run carried a font-size declaration"
+    for item, run in styled:
+        assert "font=" in run, (item.source_object, run)
+    # And every readback states the paragraph facts this round added, so the rules
+    # that judge them cannot be silently comparing nothing.
+    for item in readbacks:
+        declarations = item.style_declarations
+        assert declarations.get("paragraph-spacing") is not None, item.source_object
+        assert declarations.get("authored-lines"), item.source_object
 
 
 def test_the_synthetic_run_reports_native_and_proxy_counts_separately(

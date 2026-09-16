@@ -4920,20 +4920,27 @@ def _is_collision(error: OSError) -> bool:
 def _is_sharing_violation(error: OSError) -> bool:
     """Whether this rename failure is a handle, not an occupied destination.
 
-    Only a Windows sharing or lock violation is retried.  Nothing else is: an
-    access refusal, a missing parent, a full disk and a cross-device move are all
-    real answers, and waiting on them would only delay the report.  POSIX has no
-    case here at all -- there, renaming onto a destination that does not exist is
-    atomic, and an open handle on the source is not a reason to refuse it.
+    Only the Windows errors a move raises when something still holds the directory
+    or a file in it are retried.  Nothing else is: a missing parent, a full disk
+    and a cross-device move are all real answers, and waiting on them would only
+    delay the report.  POSIX has no case here at all -- there, renaming onto a
+    destination that does not exist is atomic, and an open handle on the source is
+    not a reason to refuse it.
     """
     if isinstance(error, FileExistsError):
         return False
     return getattr(error, "winerror", None) in _SHARING_VIOLATION_WINERRORS
 
 
-#: Windows ``ERROR_SHARING_VIOLATION`` and ``ERROR_LOCK_VIOLATION``: a handle is
-#: still open on the artifact, which is a matter of timing rather than of state.
-_SHARING_VIOLATION_WINERRORS = frozenset({32, 33})
+#: The Windows errors that mean "a handle is still open on this directory or one of
+#: its files", which is a matter of timing rather than of state.
+#:
+#: ``ERROR_SHARING_VIOLATION`` and ``ERROR_LOCK_VIOLATION`` say it directly.
+#: ``ERROR_ACCESS_DENIED`` is the one Windows actually reports for a *directory*
+#: move whose contents are still open -- and also for a move onto an existing
+#: directory, which is why the destination's own existence is checked first and a
+#: destination that is there is never retried.
+_SHARING_VIOLATION_WINERRORS = frozenset({5, 32, 33})
 
 
 def _close_residents(paths: Iterable[str | Path]) -> tuple[str, ...]:
@@ -5296,6 +5303,14 @@ def gate_projected_author_html(
         raise
 
     proxy_paths = [Path(item.proxy_asset) for item in projected.objects if item.proxy_asset]
+    # The run that opened a document closes it -- and it closes it *before* it
+    # publishes.  On Windows a directory move fails with ``ERROR_ACCESS_DENIED``
+    # while any file inside it is still open, and every read of the rebuilt deck
+    # goes through OfficeCLI, which keeps documents resident.  Closing afterwards
+    # was closing too late: the publication step was the thing that needed the
+    # handles gone.
+    sources_opened = [record.source_path for record in projected.sources]
+    _close_residents([*sources_opened, rebuilt_path])
     try:
         (
             artifacts,
@@ -5311,13 +5326,10 @@ def gate_projected_author_html(
             officecli_calls=tuple(call_log),
         )
     finally:
-        # The run that opened a document closes it, on every path out: a resident
-        # handle left open is what makes the next run's read fail for no visible
-        # reason, and on Windows what makes a published artifact un-replaceable.
-        sources_opened = [record.source_path for record in projected.sources]
-        _close_residents(
-            [*sources_opened, rebuilt_path, destination / REBUILT_PPTX_NAME]
-        )
+        # And again on the way out, because the published copy is a document a
+        # later read in this same process could have opened, and because a failure
+        # between here and the return must not leave one resident either.
+        _close_residents([destination / REBUILT_PPTX_NAME])
         _ACTIVE_CALLS.reset(calls_token)
         shutil.rmtree(staging, ignore_errors=True)
     return ProjectionGateResult(

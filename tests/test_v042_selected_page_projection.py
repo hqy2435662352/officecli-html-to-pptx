@@ -69,6 +69,13 @@ from officecli_html_to_pptx.application import PUBLIC_COMMANDS
 from officecli_html_to_pptx.contract import check_contract
 from officecli_html_to_pptx.protocol import PRODUCT_VERSION
 
+from officecli_html_to_pptx._internal import author_projector as projector
+from officecli_html_to_pptx._internal.pptx_reader import (
+    CapturedObject,
+    CapturedParagraph,
+    CapturedRun,
+)
+
 pytestmark = pytest.mark.skipif(
     shutil.which("officecli") is None,
     reason="OfficeCLI is required for the V0.4.2 selected-page projection tests",
@@ -1564,3 +1571,129 @@ def test_the_projection_reports_that_it_is_not_a_whole_slide_screenshot_fallback
         assert [slide.output_slide for slide in result.slides] == list(
             range(1, len(result.slides) + 1)
         )
+
+
+# ---------------------------------------------------------------------------
+# The paragraph layouts the canonical orthography cannot carry
+# ---------------------------------------------------------------------------
+
+
+def _captured_body(*paragraphs: CapturedParagraph) -> CapturedObject:
+    """Return a captured text body holding these paragraphs, and nothing else."""
+    text = "\n".join(paragraph.text for paragraph in paragraphs)
+    return CapturedObject(
+        source_slide=1,
+        source_object="/slide[1]/shape[@id=1]",
+        source_kind="textbox",
+        name="body",
+        officecli_id=1,
+        z_order=1,
+        bounds_pt=(0.0, 0.0, 100.0, 50.0),
+        geometry="rect",
+        fill=None,
+        line_color=None,
+        line_width_pt=0.0,
+        rotation_deg=0.0,
+        explicit_properties=frozenset(),
+        base_only=(),
+        opaque_properties={},
+        raw_format={},
+        text=text,
+        paragraphs=tuple(paragraphs),
+    )
+
+
+def _paragraph(
+    text: str, *, before: float = 0.0, after: float = 0.0, runs: int = 1
+) -> CapturedParagraph:
+    return CapturedParagraph(
+        text=text,
+        align="left",
+        line_spacing=None,
+        space_before_pt=before,
+        space_after_pt=after,
+        direction="ltr",
+        bullet="none",
+        level=0,
+        runs=tuple(
+            CapturedRun(
+                text=text,
+                font_family="Arial",
+                font_size_pt=11.0,
+                bold=False,
+                italic=False,
+                underline="none",
+                color="#000000",
+            )
+            for _ in range(runs)
+        ),
+    )
+
+
+def test_a_body_that_declares_paragraph_spacing_is_not_canonical() -> None:
+    """The canonical orthography carries no inter-paragraph spacing.
+
+    A source paragraph the deck spaces 6pt from the one above it is painted lower
+    than the same paragraph drawn flush, and the projection has no surface to carry
+    the gap: the Author Contract emits paragraph spacing for a table cell's
+    paragraphs, because a cell folds its child paragraphs into one body.  So the
+    object is classified base-only and represented by its own object-local paint,
+    which keeps the page faithful at the cost of editability -- and never by
+    comparing a representative value that hides the difference.
+    """
+    body = _captured_body(
+        _paragraph("first", after=6.0),
+        _paragraph("second"),
+    )
+    reason = projector._paragraph_layout_reason(body)
+    assert reason is not None
+    assert "paragraph spacing" in reason
+    assert "space after 6pt" in reason
+    disposition, message, _, code = projector._classify(body)
+    assert disposition == DISPOSITION_BASE_ONLY
+    assert code == "text_paragraph_layout_base_only"
+    assert code in REASON_CODES
+    assert message == reason
+
+
+def test_a_body_with_an_empty_paragraph_is_not_canonical() -> None:
+    """An empty paragraph is a line, and the rebuild sizes it from the wrong run.
+
+    OfficeCLI gives the rebuilt blank line the *preceding* paragraph's first run
+    formatting -- a 20pt blank line after a 20pt heading where the source paints
+    its body's 11pt one -- which makes the rebuilt body taller than the source and
+    can materially worsen an overflow the source already has.  The compiler writes
+    no per-paragraph size, so the height is not writable either.
+    """
+    body = _captured_body(
+        _paragraph("first"),
+        _paragraph("", runs=0),
+        _paragraph("third"),
+    )
+    reason = projector._paragraph_layout_reason(body)
+    assert reason is not None
+    assert "empty paragraph" in reason
+    assert projector._classify(body)[3] == "text_paragraph_layout_base_only"
+
+
+def test_a_body_whose_paragraph_layout_is_writable_stays_canonical() -> None:
+    """And the negative direction, so the rule is a rule and not a blanket refusal.
+
+    Three paragraphs, one run each, no spacing and no empty line: everything the
+    surface carries, so the object is canonical.  The rule keys on the two shapes
+    that cannot be written and on nothing else.
+    """
+    body = _captured_body(
+        _paragraph("first"),
+        _paragraph("second"),
+        _paragraph("third"),
+    )
+    assert projector._paragraph_layout_reason(body) is None
+    assert projector._classify(body)[0] == DISPOSITION_CANONICAL
+
+
+def test_a_single_paragraph_body_is_never_affected_by_the_rule() -> None:
+    """One paragraph is not a paragraph *layout*, whatever it declares."""
+    body = _captured_body(_paragraph("only", after=12.0))
+    assert projector._paragraph_layout_reason(body) is None
+    assert projector._classify(body)[0] == DISPOSITION_CANONICAL
