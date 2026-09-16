@@ -447,11 +447,29 @@ def _paragraph_line_spacing(
     legacy_css_pixel_projection: bool = False,
     preserve_table_projection: bool = False,
 ) -> str | None:
+    """Return one paragraph's leading as a ratio of its own font size.
+
+    The font size a *pixel* line height is divided by is the **element's**, not the
+    paragraph's first run's, and that is not a detail: a used ``lineHeight`` in px is
+    the element's own ``font-size`` multiplied by the declared ratio, so the element
+    is the only basis it can be attributed to.
+
+    Dividing it by a run instead inflated a paragraph whose first run is smaller than
+    the block's own font -- which is what a **re-partitioned** paragraph is: the
+    independent review found the synthetic probe's hard-break body compiled at
+    ``lnSpc 254500`` (the block's 40px-based 56px leading divided by the fragment's
+    22px run), so the rebuilt page painted a blank line where the source paints two
+    adjacent ones.  A unitless ``lineHeight`` needs no font size at all: the ratio is
+    the value itself.
+    """
     raw_line_height = paragraph.get("lineHeight") or element.get("lineHeight")
     if not raw_line_height:
         return None
     first_run = (paragraph.get("runs") or [{}])[0]
-    font_size = _number(first_run.get("fontSize"), _number(element.get("fontSize")))
+    run_size = _number(first_run.get("fontSize"))
+    element_size = _number(element.get("fontSize"))
+    pixels = re.search(r"(?:px|pt)\s*$", str(raw_line_height).strip(), re.IGNORECASE)
+    font_size = element_size if pixels else (run_size or element_size)
     return _line_spacing(
         {"fontSize": font_size, "lineHeight": str(raw_line_height)},
         legacy_css_pixel_projection=(

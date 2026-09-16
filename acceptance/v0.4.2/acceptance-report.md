@@ -14,12 +14,12 @@ Authoritative acceptance of the V0.4.2 representative-projection slice (ticket #
 
 ## 1. Verdict and its evidence basis
 
-~~**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 373.5s.~~ **withdrawn — see `ACCEPTANCE-WITHDRAWN.md`**
+~~**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 372.4s.~~ **withdrawn — see `ACCEPTANCE-WITHDRAWN.md`**
 
 | binding | value |
 |---|---|
-| commit | `60cb3e57d7fa038b80fa4e33cdb1e54331607aa2 (working tree dirty)` |
-| run id (gate report sha256) | `c8ad0a68f0b50436c1f0b8303fbf45d01f738fe406cffb190d132cb8df475021` |
+| commit | `b2c652c1ed4ac93d69fadec8a4ead9bf0f0ea332 (working tree dirty)` |
+| run id (gate report sha256) | `c8ef00fa0443b317b5eb75952cf705e97865d1c7090868d16811acc241a46a8a` |
 
 The report, the source map, the artifact manifest and the review package all belong to the run id above: it is the digest of the gate's own verdict document, so a reader can check that they describe one run without a registry to consult. The commit is the revision the verdict is about.
 
@@ -39,7 +39,7 @@ The verdict is the gate's own derived outcome. It is *not* inferred from a proce
 | material deltas | 0 |
 | retained findings | 27 |
 | scope evidence | 33 |
-| proxy isolation proofs passed | 37 |
+| proxy isolation proofs passed | 0 |
 | proxy isolation proofs failed | 0 |
 | blocking diagnostics | 0 |
 | hashed artifacts (gate) | 87 |
@@ -278,12 +278,12 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 
 | artifact | sha256 | size |
 |---|---|---|
-| `canonical-author.html` | `6de52e1273091e7519e5e530f82a9c8e9265044313897e71c775eb754d234c7e` | 42639867 |
-| `disposition-ledger.json` | `df14b806a400ece69d4199ee5be2dd6d1a3c3116381df6adda9c2ec53bcb3f19` | 251424 |
+| `canonical-author.html` | `a859be08c5c746a0a274cc1b32691589824f7ac086b2b5d0287bb36acabd841f` | 42639867 |
+| `disposition-ledger.json` | `27328bd0c16df9b7c0147c01f0efa67de5f4cdeb52560732dc4c864d56144fc7` | 251447 |
 | `material-deltas.json` | `d4990d01e9de41f6d7bce97cb1d079aff18ce0c5fc576a2117e92b9b1cfd5d3a` | 31 |
-| `pages.json` | `fd3ed60ad8b06313419ecc2e969f5e1eed6b235ba8c919764d8c07e2d25a58ab` | 509810 |
-| `projection/canonical-author.html` | `6de52e1273091e7519e5e530f82a9c8e9265044313897e71c775eb754d234c7e` | 42639867 |
-| `projection/projection-report.json` | `27171b50dffe56e61385dcc73a185f52b6f0a0eb4460d5dd40a5fd37ee736b75` | 671483 |
+| `pages.json` | `8d6230af8965e79e20b91b1544749c35adea0d99776c8a4f7361b0c39882ca6f` | 509849 |
+| `projection/canonical-author.html` | `a859be08c5c746a0a274cc1b32691589824f7ac086b2b5d0287bb36acabd841f` | 42639867 |
+| `projection/projection-report.json` | `052ff1099e482039ea081ccb75574f28ed1ec3b24da745f9892450e43dd72ce0` | 671566 |
 | `projection/proxy-src1-slide-002-007.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
 | `projection/proxy-src1-slide-002-010.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
 | `projection/proxy-src1-slide-002-028.png` | `90da3b87ff2ffc129d81d7e725731c353e2c6bfdf2087d6831fbd09eabfb53a5` | 21259 |
@@ -321,8 +321,8 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `projection/proxy-src2-slide-009-024.png` | `8f1b189665eecf0061d556edc09e2566f36522a45ca07c5d01cc55f3dbbfa3c8` | 18586 |
 | `projection/proxy-src5-slide-001-004.png` | `bcea1a3055b82a799a06ded6c66db21b0311f2715ce59c553b9c24f9d2a82a01` | 8881 |
 | `projection/proxy-src5-slide-001-009.png` | `0c1eeb7f5a662e4a421203c92d4341596326618fd0e6e13c63de7ddd0378c3c7` | 2420 |
-| `projection/source-map.json` | `54995db1b84f089ed445b71d2dba6f35dbd6f830976b7c90345f6638e178bf52` | 612027 |
-| `projection-report.json` | `27171b50dffe56e61385dcc73a185f52b6f0a0eb4460d5dd40a5fd37ee736b75` | 671483 |
+| `projection/source-map.json` | `3fcf2f59de9f5c6fa33879951b1797f286e9fa6f16da978f58a64cb0e06150f8` | 612106 |
+| `projection-report.json` | `052ff1099e482039ea081ccb75574f28ed1ec3b24da745f9892450e43dd72ce0` | 671566 |
 | `proxies/proxy-src1-slide-002-007.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
 | `proxies/proxy-src1-slide-002-010.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
 | `proxies/proxy-src1-slide-002-028.png` | `90da3b87ff2ffc129d81d7e725731c353e2c6bfdf2087d6831fbd09eabfb53a5` | 21259 |
@@ -360,11 +360,11 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `proxies/proxy-src2-slide-009-024.png` | `8f1b189665eecf0061d556edc09e2566f36522a45ca07c5d01cc55f3dbbfa3c8` | 18586 |
 | `proxies/proxy-src5-slide-001-004.png` | `bcea1a3055b82a799a06ded6c66db21b0311f2715ce59c553b9c24f9d2a82a01` | 8881 |
 | `proxies/proxy-src5-slide-001-009.png` | `0c1eeb7f5a662e4a421203c92d4341596326618fd0e6e13c63de7ddd0378c3c7` | 2420 |
-| `proxy-isolation.json` | `fcf35ce3b8cb00bd5f3ea1030bf2d80362f1904d0d2faf7700b2bf8d02a00eec` | 55272 |
-| `rebuilt.pptx` | `0a1d08e446d083ab7ab03d3ae3e020795ba3810bc665167d8e08fe70ddc58905` | 31352217 |
+| `proxy-isolation.json` | `147ebca4a57963a2b0ace476d295007dd506905e0de674146839da8965a5dea6` | 55309 |
+| `rebuilt.pptx` | `e96f723723e5484048371c5b8fc3479a789e8c90f93fe642f441d3b8b24c1c34` | 31352175 |
 | `retained-findings.json` | `3ab74f6274f2fa0382c999e55811d1493872a461da3e24b0e17a0cccc33d9b69` | 41174 |
 | `scope-evidence.json` | `73586ba9de0a57672f271fc9fe84f25637c6248ea6177d2cbd5e818c3c4266e1` | 22398 |
-| `source-map.json` | `54995db1b84f089ed445b71d2dba6f35dbd6f830976b7c90345f6638e178bf52` | 612027 |
+| `source-map.json` | `3fcf2f59de9f5c6fa33879951b1797f286e9fa6f16da978f58a64cb0e06150f8` | 612106 |
 
 `gate/gate-report.json` and `gate/gate-report.md` are excluded from that list because a document cannot contain its own hash; the bundle's `artifact-manifest.json` covers them instead, except for itself.
 

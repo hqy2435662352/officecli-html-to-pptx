@@ -823,3 +823,37 @@ async def test_undecodable_picture_has_source_diagnostic_and_no_output(
     assert "undecodable_picture" in error.value.diagnostics[0].code
     assert error.value.diagnostics[0].source_object
     assert not output_path.exists()
+
+
+def test_a_paragraphs_pixel_leading_is_attributed_to_the_elements_font_size() -> None:
+    """A px line height belongs to the element's font size, not to a run's.
+
+    The measured HTML reports a *used* ``lineHeight`` in px, and a used value is the
+    element's own ``font-size`` multiplied by the declared ratio, so the element is
+    the only basis it can be divided by.  Dividing it by the paragraph's first run
+    inflated every paragraph whose first run is smaller than the block's own font --
+    which is what a paragraph re-partitioned out of a hard break is: the independent
+    review found the synthetic probe's hard-break body compiled at ``lnSpc 254500``
+    (the block's 40px-based 56px leading over the fragment's 22px run), and the
+    rebuilt page painted a blank line where the source paints two adjacent lines.
+    """
+    from officecli_html_to_pptx._internal.officecli_compiler import (
+        _paragraph_line_spacing,
+    )
+
+    block = {"fontSize": 40.0, "lineHeight": "56px"}
+    fragment = {"runs": [{"fontSize": 22.0}], "lineHeight": "56px", "text": "broken"}
+    assert _paragraph_line_spacing(fragment, block) == "1.400x"
+
+    # The paragraph the element's own size belongs to is unchanged.
+    first = {"runs": [{"fontSize": 40.0}], "lineHeight": "56px", "text": "first"}
+    assert _paragraph_line_spacing(first, block) == "1.400x"
+
+    # A unitless line height needs no font size at all: the ratio is the value.
+    unitless = {"runs": [{"fontSize": 22.0}], "lineHeight": "1.4"}
+    assert _paragraph_line_spacing(unitless, {"fontSize": 40.0}) == "1.400x"
+
+    # And a paragraph that states its own pixel leading is still measured against
+    # the element it was computed from.
+    own = {"runs": [{"fontSize": 22.0}], "lineHeight": "44px"}
+    assert _paragraph_line_spacing(own, block) == "1.100x"
