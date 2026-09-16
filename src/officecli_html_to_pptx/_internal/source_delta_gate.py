@@ -608,13 +608,34 @@ class TextReadback:
 
     @property
     def compact_equal(self) -> bool:
-        """Whether the characters match with whitespace taken out of the compare."""
+        """Whether the characters match with whitespace taken out of the compare.
+
+        Reported for a reviewer; not the acceptance rule.  Two spellings that
+        agree here but not under :meth:`matched` differ in structure -- a lost
+        hard break, a lost paragraph boundary, or two words run together.
+        """
         return compact_text(self.expected_text) == compact_text(self.rebuilt_text)
 
     @property
     def matched(self) -> bool:
-        """Whether the readback is faithful enough to accept as this object's text."""
-        return self.compact_equal
+        """Whether the readback is faithful enough to accept as this object's text.
+
+        Compared under :func:`structure_text`: every character must survive in
+        order and the paragraph and hard-break structure must survive with it.
+        A whitespace-blind comparison used to stand here and could not see a
+        dropped hard break at all.
+        """
+        return structure_text(self.expected_text) == structure_text(self.rebuilt_text)
+
+    @property
+    def structure_lost(self) -> bool:
+        """Whether the structure differs while the characters do not.
+
+        This is a blocking difference, not a cosmetic one: the words are still
+        there but a line boundary the source painted is gone, so ``line one`` and
+        ``line two`` read as one line whose words abut.
+        """
+        return not self.matched and self.compact_equal
 
     @property
     def whitespace_only_difference(self) -> bool:
@@ -635,7 +656,10 @@ class TextReadback:
             "rebuilt_text": self.rebuilt_text,
             "expected_compact_text": compact_text(self.expected_text),
             "rebuilt_compact_text": compact_text(self.rebuilt_text),
+            "expected_structure_text": structure_text(self.expected_text),
+            "rebuilt_structure_text": structure_text(self.rebuilt_text),
             "matched": self.matched,
+            "structure_lost": self.structure_lost,
             "whitespace_only_difference": self.whitespace_only_difference,
             "style_declarations": dict(self.style_declarations),
         }
@@ -1326,16 +1350,63 @@ def normalize_text(value: Any) -> str:
 def compact_text(value: Any) -> str:
     """Return text with every whitespace character removed.
 
-    This is how the gate *compares* text.  A source cell's runs and a rebuilt
-    cell's runs can disagree about where a space falls -- a run boundary in the
-    source can be a wrapped native paragraph in the rebuilt deck, and a merged
-    run can restore a space the source's runs did not carry -- without either
-    side losing, reordering, or inventing a character.  Taking whitespace out of
-    the fidelity comparison keeps that distinction visible in the report without
-    letting it block an otherwise faithful projection; a dropped, changed, or
-    invented character still fails, because the character sequences differ.
+    This is *not* how the gate compares text any more -- see
+    :func:`structure_text` for why -- but it stays as the report's
+    whitespace-blind rendering, so a reviewer can still see that two spellings
+    carry the same characters.
     """
     return "".join(str(value or "").split())
+
+
+#: Characters that separate content in a way the comparison must preserve.  A
+#: paragraph boundary and a hard break are not the same thing as a space, and
+#: ``line one\\nline two`` collapsing into ``line oneline two`` is a text
+#: corruption that a whitespace-blind comparison cannot see.
+_STRUCTURE_BREAKS = {"\n": "\n", "\r": "\n", "\x0b": "\n", "\x0c": "\n"}
+_STRUCTURE_SPACE = {" ", "\t"}
+
+
+def structure_text(value: Any) -> str:
+    """Return text normalized for comparison with its structure preserved.
+
+    The gate compares text under an explicit, enumerated normalization:
+
+    * a paragraph boundary, a hard break and a page break all normalize to one
+      ``\\n`` -- they are different PowerPoint constructs that a projection may
+      legitimately interchange, and all three mean "a new line starts here";
+    * a non-breaking space normalizes to an ordinary space, which is the one
+      display-only normalization the product already documents;
+    * a run of spaces and tabs becomes one space, so a run boundary cannot
+      invent a difference;
+    * whitespace touching a line boundary is dropped, so a space before a
+      paragraph break is not a lost character.
+
+    Everything else is compared exactly.  That is what makes the comparison able
+    to fail: ``Hard break probe line\\nsecond visual line`` and
+    ``Hard break probe linesecond visual line`` differ under this rule while
+    ``A B`` and ``A B`` do not, and no character can be dropped, reordered or
+    invented without changing the result.
+
+    The earlier rule removed *all* whitespace, which meant a lost hard break, a
+    lost paragraph boundary and two words run together were all invisible to the
+    gate -- and were in fact found by visual review instead.
+    """
+    text = str(value or "")
+    for source, replacement in _STRUCTURE_BREAKS.items():
+        text = text.replace(source, replacement)
+    text = text.replace("\u00a0", " ").replace("\u202f", " ")
+
+    pieces: list[str] = []
+    for line in text.split("\n"):
+        # Collapse runs of horizontal whitespace inside the line, and drop the
+        # whitespace that touches either end: it cannot be a lost character
+        # because it is not adjacent to any content.
+        collapsed = " ".join(line.split())
+        pieces.append(collapsed.strip())
+    # Trailing empty lines carry no content and are not a structural difference.
+    while pieces and not pieces[-1]:
+        pieces.pop()
+    return "\n".join(pieces)
 
 
 def normalize_issue_condition(message: Any) -> str:
