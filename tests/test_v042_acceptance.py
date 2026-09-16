@@ -1492,6 +1492,13 @@ def test_the_published_acceptance_manifest_agrees_with_disk() -> None:
     Skipped when the bundle has not been published in this workspace; the full
     ten-page run is `.scratch/tools/run_v042_acceptance.py`, which writes it and
     performs this same check as part of publishing.
+
+    Only the entries the repository carries are required to be on disk.  The rest
+    of the inventory -- the gate's own evidence directory and the page renders --
+    is gitignored and stays on the machine that produced the run, and a manifest
+    that demanded it in every checkout could not be verified anywhere else.  That
+    is not a hypothetical: a clean checkout failed on this, twice over -- once on
+    LF-versus-CRLF bytes and once on files a clone is never given.
     """
     manifest_path = BUNDLE / "artifact-manifest.json"
     if not manifest_path.is_file():
@@ -1502,11 +1509,29 @@ def test_the_published_acceptance_manifest_agrees_with_disk() -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["algorithm"] == "sha256"
     assert manifest["artifacts"], "the manifest lists no artifact"
-    for item in manifest["artifacts"]:
+
+    published = [item for item in manifest["artifacts"] if item["in_repository"]]
+    local_only = [item for item in manifest["artifacts"] if not item["in_repository"]]
+    assert published, "the manifest marks nothing as published"
+    assert len(published) == manifest["published_count"]
+    assert len(local_only) == manifest["local_only_count"]
+    # The inventory is a partition: every entry says which of the two it is.
+    assert len(published) + len(local_only) == manifest["artifact_count"]
+
+    for item in published:
         path = BUNDLE / item["name"]
         assert path.is_file(), item["name"]
-        assert _sha256(path) == item["sha256"], item["name"]
+        assert _sha256(path) == item["sha256"], (
+            f"{item['name']}: the checkout's bytes are not the bytes the manifest "
+            "hashed -- a line-ending conversion would do exactly this"
+        )
         assert path.stat().st_size == item["size_bytes"], item["name"]
+
+    # The local-only entries are the gitignored ones, and they are named as such:
+    # the manifest cannot quietly stop describing half the run.
+    for item in local_only:
+        assert item["name"].split("/")[0] in {"gate", "visual", "local"}, item["name"]
+
     report = BUNDLE / manifest["report_name"]
     assert report.is_file()
     assert _sha256(report) == manifest["report_sha256"]

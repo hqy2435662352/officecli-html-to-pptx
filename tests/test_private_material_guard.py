@@ -218,6 +218,12 @@ def test_the_hooks_are_installed_and_executable() -> None:
     every hook as non-executable on the development machine while a Linux clone
     got the right bit from git -- the test would be measuring the wrong thing and
     would fail for the wrong reason.
+
+    ``core.hooksPath`` lives in ``.git/config``, which is not cloned, so this
+    assertion is about the clone it runs in: a fresh checkout fails it until
+    ``python scripts/install-hooks.py`` has been run once.  That is deliberate --
+    the failure is loud and it names the command -- and it is the same check that
+    caught a clean checkout with no guard wired in at all.
     """
     configured = subprocess.run(
         ["git", "config", "--get", "core.hooksPath"],
@@ -227,7 +233,10 @@ def test_the_hooks_are_installed_and_executable() -> None:
         check=False,
     )
     hooks_path = configured.stdout.strip()
-    assert hooks_path, "core.hooksPath is not set, so no hook runs"
+    assert hooks_path, (
+        "core.hooksPath is not set, so no hook runs in this clone; run "
+        "`python scripts/install-hooks.py`"
+    )
 
     staged = subprocess.run(
         ["git", "ls-files", "-s", hooks_path],
@@ -255,3 +264,45 @@ def test_the_hooks_are_installed_and_executable() -> None:
         # POSIX shell scripts must not be CRLF: a shebang ending in CR does not
         # run, so a hook that works here would fail on a Linux clone.
         assert b"\r\n" not in hook.read_bytes(), f"{path} has CRLF line endings"
+
+
+def test_the_hooks_installer_is_tracked_and_reports_the_wiring() -> None:
+    """The wiring step is a command in the repository, not a paragraph in a doc.
+
+    A fresh clone has no hooks until something sets ``core.hooksPath``, so the
+    repository has to ship the something.  This asserts the installer exists, that
+    git tracks it, and that its ``--check`` mode agrees with the clone it runs in
+    -- so the setup step cannot rot into a stale instruction.
+    """
+    installer = REPO_ROOT / "scripts" / "install_hooks.py"
+    assert installer.is_file(), "scripts/install_hooks.py is missing"
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "scripts/install_hooks.py"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert tracked.returncode == 0, "scripts/install_hooks.py is not tracked by git"
+
+    checked = subprocess.run(
+        [sys.executable, str(installer), "--check"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    configured = subprocess.run(
+        ["git", "config", "--get", "core.hooksPath"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if configured:
+        assert checked.returncode == 0, checked.stdout + checked.stderr
+        assert "installed" in checked.stdout
+    else:
+        # Nothing is wired, and the installer must say so rather than claim health.
+        assert checked.returncode == 1, checked.stdout
+        assert "not installed" in checked.stdout

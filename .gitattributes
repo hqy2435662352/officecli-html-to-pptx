@@ -9,3 +9,13 @@
 
 .githooks/* text eol=lf
 *.sh text eol=lf
+
+# The published acceptance bundle is hashed, and the hashes are the point: the
+# artifact manifest lists a sha256 per document, so a checkout that rewrote line
+# endings would produce a bundle whose own manifest disagrees with it.  A clean
+# checkout failed on exactly that before this rule existed -- the manifest was
+# written from LF bytes on the development machine and then verified against CRLF
+# bytes in the clone.  These documents are written with LF and checked out with LF,
+# so their digests are the same in every checkout.
+acceptance/v0.4.2/*.md text eol=lf
+acceptance/v0.4.2/*.json text eol=lf
