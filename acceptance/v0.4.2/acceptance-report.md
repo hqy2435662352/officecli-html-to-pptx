@@ -1,8 +1,8 @@
-# V0.4.2 representative acceptance — BLOCK (independent review)
+# V0.4.2 representative acceptance — PASS_WITH_FINDINGS (independent review)
 
-> **The independent Gate 3 review reached `BLOCK`.** See `GATE3-REVIEW.md`: it names every difference it found against the source page, located by `(source slot, source page, source object)`.
+> **The independent Gate 3 review reached `PASS_WITH_FINDINGS`** and it is the bundle's verdict; the machine verdict is struck below. See `GATE3-REVIEW-2.md` and the reviews beside it: they name every difference against the source page, located by `(source slot, source page, source object)`.
 >
-> The machine evidence below is the evidence of the run that was measured and is unchanged. It is not an acceptance, and the machine verdict it carries is not the bundle's verdict.
+> The machine evidence below is the evidence of the run that was measured and is unchanged.
 
 
 > **The acceptance claim in this report is withdrawn.** See `ACCEPTANCE-WITHDRAWN.md` for the review that rejected it and for what has to happen before the claim can be restated.
