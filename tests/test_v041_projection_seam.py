@@ -46,6 +46,7 @@ from officecli_html_to_pptx import (
     ProjectionError,
     project_pptx_to_author_html,
 )
+from officecli_html_to_pptx._internal import author_projector as projector
 from officecli_html_to_pptx._internal.pptx_reader import (
     MissingSlideError,
     _drop_render_background,
@@ -443,10 +444,27 @@ def test_supported_run_formatting_is_an_inline_semantic_element(
 
 
 def test_object_bounds_are_normalized_at_the_canvas_factor(projected: Any) -> None:
-    """Every emitted rectangle is the source rectangle at 2 px/pt."""
+    """Every emitted rectangle is the source rectangle at 2 px/pt.
+
+    With one deliberate addition: an *extent* carries one Chromium layout unit more
+    than the measurement.  Blink snaps layout to a 1/64 px grid, so a box declared
+    at exactly its measured width is laid out a unit narrower, and a box whose text
+    fills it then wraps where the source does not -- which is what happened to a
+    page number on src3 pages 2 and 21.  Position is not biased, and the bias is
+    bounded by that one unit, so this test still fails on a wrong scale or a moved
+    object.
+    """
+    bias = projector._LAYOUT_UNIT_PX
+    assert 0 < bias <= 0.02, "the extent bias is one layout unit, not a fudge factor"
     for item in projected.objects:
-        for source_value, emitted_value in zip(item.bounds_pt, item.bounds_px):
-            assert emitted_value == pytest.approx(source_value * 2.0, abs=0.01)
+        # x and y are positions: unbiased.
+        assert item.bounds_px[0] == pytest.approx(item.bounds_pt[0] * 2.0, abs=0.01)
+        assert item.bounds_px[1] == pytest.approx(item.bounds_pt[1] * 2.0, abs=0.01)
+        # width and height are extents: measured, plus one layout unit.
+        for source_value, emitted_value in zip(item.bounds_pt[2:], item.bounds_px[2:]):
+            assert emitted_value == pytest.approx(
+                source_value * 2.0 + bias, abs=0.01
+            ), (item.source_object, source_value, emitted_value)
 
 
 def test_objects_are_emitted_in_source_paint_order(projected: Any) -> None:

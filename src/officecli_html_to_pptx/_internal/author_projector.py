@@ -871,6 +871,36 @@ def _px(points: float, pixels_per_point: float) -> float:
     return round(points * pixels_per_point, 4)
 
 
+#: One Chromium layout unit: Blink snaps layout to a 1/64 px grid.
+_LAYOUT_UNIT_PX = 1.0 / 64.0
+
+
+def _px_extent(points: float, pixels_per_point: float) -> float:
+    """Return an emitted *width* or *height* in px, biased up by one layout unit.
+
+    A box's own size is re-measured by the browser when the emitted HTML is laid
+    out, and Blink snaps that layout to a 1/64 px grid: a box declared 19.4061px
+    wide is measured at 19.3906px, one unit narrower.  For almost every object that
+    is invisible -- 0.008pt -- but it is not always harmless, and the case that
+    proved it is on src3 pages 2 and 21: a page number's box is 9.7031pt wide, the
+    text fills it exactly, and the rebuilt box came out one layout unit narrower
+    (123,130 EMU against the source's 123,229).  PowerPoint's shrink-to-fit then
+    stopped shrinking and *wrapped* the two digits onto two lines, where the source
+    paints "02" on one.
+
+    So an extent is emitted half a pixel-unit larger than measured, which is enough
+    to survive one snap in either direction and cannot re-wrap anything: a box that
+    is a hair wider than its source is the direction that preserves the source's own
+    line breaks, which is what this projection exists to do.  Position is not
+    biased -- a box that is 0.008pt wider to the right moves nothing.
+
+    The two sides of a box that callers *compare* (a proxy's target rectangle, a
+    table's bounds) keep the unbiased figure in ``bounds_pt``; this only changes the
+    extent written into the emitted CSS and the numbers derived from it.
+    """
+    return round(points * pixels_per_point + _LAYOUT_UNIT_PX, 4)
+
+
 def _style(pairs: Iterable[tuple[str, str]]) -> str:
     return "; ".join(f"{name}: {value}" for name, value in pairs if value)
 
@@ -2750,8 +2780,8 @@ def _build_projection(
             bounds_px = (
                 _px(obj.bounds_pt[0], pixels_per_point),
                 _px(obj.bounds_pt[1], pixels_per_point),
-                _px(obj.bounds_pt[2], pixels_per_point),
-                _px(obj.bounds_pt[3], pixels_per_point),
+                _px_extent(obj.bounds_pt[2], pixels_per_point),
+                _px_extent(obj.bounds_pt[3], pixels_per_point),
             )
             projected = ProjectedObject(
                 source_slide=obj.source_slide,

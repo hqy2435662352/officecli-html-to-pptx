@@ -54,6 +54,7 @@ from officecli_html_to_pptx import (
     build_author_html,
     project_pptx_to_author_html,
 )
+from officecli_html_to_pptx._internal import author_projector as projector
 from officecli_html_to_pptx.contract import check_contract
 
 pytestmark = pytest.mark.skipif(
@@ -906,10 +907,17 @@ def test_the_emitted_preset_declares_its_native_geometry(
 def test_an_ellipse_is_drawn_as_an_ellipse_on_the_author_canvas(
     preset_run: ProjectionResult,
 ) -> None:
-    """The canvas draws what the deck will contain, at the canvas factor."""
+    """The canvas draws what the deck will contain, at the canvas factor.
+
+    The width carries one Chromium layout unit more than the measurement, because
+    Blink snaps layout to a 1/64 px grid and a box declared at exactly its measured
+    size is laid out a unit narrower -- see
+    ``test_object_bounds_are_normalized_at_the_canvas_factor``.
+    """
     element = _element(_html(preset_run), _projected(preset_run, SOLID_ELLIPSE).html_id)
     assert "border-radius: 50%" in element
-    assert f"width: {SOLID_ELLIPSE_BOX[2] * PIXELS_PER_POINT:g}px" in element
+    expected = SOLID_ELLIPSE_BOX[2] * PIXELS_PER_POINT + projector._LAYOUT_UNIT_PX
+    assert f"width: {expected:g}px" in element
 
 
 # ---------------------------------------------------------------------------
@@ -1007,11 +1015,21 @@ def test_bounds_round_trip_within_the_contract_tolerance(
 def test_the_emitted_geometry_is_the_source_rectangle_at_the_canvas_factor(
     preset_run: ProjectionResult,
 ) -> None:
+    """Position is the source rectangle at the canvas factor; extent adds one unit.
+
+    The one unit is Chromium's: Blink snaps layout to a 1/64 px grid, so a box
+    declared at exactly its measured width is laid out a unit narrower and a box
+    whose text fills it then wraps where the source does not.  Position is not
+    biased.
+    """
+    bias = projector._LAYOUT_UNIT_PX
     for item in preset_run.objects:
-        for source_value, emitted_value in zip(item.bounds_pt, item.bounds_px):
+        assert item.bounds_px[0] == pytest.approx(item.bounds_pt[0] * PIXELS_PER_POINT, abs=0.01)
+        assert item.bounds_px[1] == pytest.approx(item.bounds_pt[1] * PIXELS_PER_POINT, abs=0.01)
+        for source_value, emitted_value in zip(item.bounds_pt[2:], item.bounds_px[2:]):
             assert emitted_value == pytest.approx(
-                source_value * PIXELS_PER_POINT, abs=0.01
-            )
+                source_value * PIXELS_PER_POINT + bias, abs=0.01
+            ), (item.source_object, source_value, emitted_value)
     assert preset_run.canvas_px == CANVAS_PX
     assert preset_run.pixels_per_point == pytest.approx(PIXELS_PER_POINT)
 

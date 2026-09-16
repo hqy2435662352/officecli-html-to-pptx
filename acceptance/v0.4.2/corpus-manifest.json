@@ -150,7 +150,7 @@
       "coverage_purpose": "proxy/overlay isolation: no sibling text may be embedded in any raster payload, and no wording may appear twice in the rebuilt deck",
       "scope_note": "Every object on this probe is canonical-editable and no proxy is emitted, so the rebuilt deck must contain no raster payload for this page at all. The overlay wording is asserted to appear exactly once in the rebuilt deck; if the rect, the ellipse or the arrow were ever replaced by a picture, this probe's unaccounted picture count would show it.",
       "synthetic": true,
-      "fixture_sha256": "ce4da64075dc9ad521a3bba6669ed73151ec5f0a20bb1872c6563b17592e83d4"
+      "fixture_sha256": "9eb3ca774bb236b00df1a5952e30f479c80a5f6e29e3e0e1251390601936e29d"
     },
     {
       "order": 10,
@@ -162,7 +162,7 @@
       "coverage_purpose": "rich text semantics and the locked container boundary: mixed runs, hard break, empty paragraph, bullet nesting, numbering, Latin/CJK fonts, theme-token evidence, fixed numeric strings, and one group with a bound connector represented exactly once",
       "scope_note": "OfficeCLI reports no inheritance source for the theme run's colour, so the gate classifies it canonical-editable and the projection emits it without a colour declaration; the theme token is preserved in the source and in the projection's evidence, and no semantic token round trip is claimed. The group is one locked container boundary whose child shape and connector are represented once inside it and never emitted again as siblings.",
       "synthetic": true,
-      "fixture_sha256": "b19cedccdc3f7478a8fa678bf5bc33fe2ee5be505e0efa4b8d5b29677dad8f80"
+      "fixture_sha256": "825a5d4d26c98cc7ef0fd397b4d2965c81413d799389f9e55f9541398aa67e6a"
     }
   ],
   "seam_selection": [
@@ -227,14 +227,14 @@
       "page_id": "probe-a",
       "source_id": "probe-a",
       "source_page": 1,
-      "source_sha256": "ce4da64075dc9ad521a3bba6669ed73151ec5f0a20bb1872c6563b17592e83d4"
+      "source_sha256": "9eb3ca774bb236b00df1a5952e30f479c80a5f6e29e3e0e1251390601936e29d"
     },
     {
       "order": 10,
       "page_id": "probe-b",
       "source_id": "probe-b",
       "source_page": 1,
-      "source_sha256": "b19cedccdc3f7478a8fa678bf5bc33fe2ee5be505e0efa4b8d5b29677dad8f80"
+      "source_sha256": "825a5d4d26c98cc7ef0fd397b4d2965c81413d799389f9e55f9541398aa67e6a"
     }
   ],
   "source_decks": [
@@ -288,9 +288,9 @@
   },
   "source_deck_write_operations": 0,
   "synthetic_only": false,
-  "elapsed_seconds": 374.3,
-  "commit": "3f2b9679c181d0c8ddfc0cb85e61c2614dfa1367 (working tree dirty)",
-  "run_id": "162c239d38c8c4bbb9493348a85f860488087b46069afdc6d84f9a81fee62c42",
+  "elapsed_seconds": 373.5,
+  "commit": "60cb3e57d7fa038b80fa4e33cdb1e54331607aa2 (working tree dirty)",
+  "run_id": "c8ad0a68f0b50436c1f0b8303fbf45d01f738fe406cffb190d132cb8df475021",
   "privacy": "This manifest is committed text. It records each private source deck's selection order and page numbers and the fact that every deck was hashed and verified unchanged, but it carries no private filename, no absolute path and no private hash: the source sha256 values are withheld and the verification is recorded as a per-deck verdict instead. The gate's own evidence under acceptance/v0.4.2/gate/ does carry the absolute paths; .gitignore excludes it from the repository. If page numbers themselves must not be published, the corpus has to run against decks that may be named, because a page selection cannot be reviewed without them.",
   "visual_records": [
     {
@@ -316,13 +316,13 @@
       "after": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 8162,
+        "distinct_colors": 8159,
         "background_rgb": [
           255,
           255,
           255
         ],
-        "non_background_fraction": 0.112871,
+        "non_background_fraction": 0.112818,
         "non_blank": true
       }
     },
@@ -355,7 +355,7 @@
           255,
           255
         ],
-        "non_background_fraction": 0.531109,
+        "non_background_fraction": 0.531112,
         "non_blank": true
       }
     },
@@ -382,13 +382,13 @@
       "after": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 4388,
+        "distinct_colors": 4404,
         "background_rgb": [
           255,
           255,
           255
         ],
-        "non_background_fraction": 0.316209,
+        "non_background_fraction": 0.316314,
         "non_blank": true
       }
     },
@@ -415,13 +415,13 @@
       "after": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 38924,
+        "distinct_colors": 39319,
         "background_rgb": [
           192,
           0,
           0
         ],
-        "non_background_fraction": 0.931578,
+        "non_background_fraction": 0.931587,
         "non_blank": true
       }
     },
@@ -454,7 +454,7 @@
           255,
           255
         ],
-        "non_background_fraction": 0.378256,
+        "non_background_fraction": 0.37826,
         "non_blank": true
       }
     },
@@ -487,7 +487,7 @@
           255,
           255
         ],
-        "non_background_fraction": 0.309737,
+        "non_background_fraction": 0.309733,
         "non_blank": true
       }
     },
@@ -520,7 +520,7 @@
           255,
           255
         ],
-        "non_background_fraction": 0.359515,
+        "non_background_fraction": 0.359512,
         "non_blank": true
       }
     },
@@ -547,13 +547,13 @@
       "after": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 1370,
+        "distinct_colors": 1372,
         "background_rgb": [
           255,
           255,
           255
         ],
-        "non_background_fraction": 0.411585,
+        "non_background_fraction": 0.411622,
         "non_blank": true
       }
     },
@@ -586,7 +586,7 @@
           255,
           255
         ],
-        "non_background_fraction": 0.094492,
+        "non_background_fraction": 0.094494,
         "non_blank": true
       }
     },
@@ -619,7 +619,7 @@
           255,
           255
         ],
-        "non_background_fraction": 0.069477,
+        "non_background_fraction": 0.06948,
         "non_blank": true
       }
     }

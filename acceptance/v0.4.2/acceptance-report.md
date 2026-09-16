@@ -14,12 +14,12 @@ Authoritative acceptance of the V0.4.2 representative-projection slice (ticket #
 
 ## 1. Verdict and its evidence basis
 
-~~**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 374.3s.~~ **withdrawn — see `ACCEPTANCE-WITHDRAWN.md`**
+~~**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 373.5s.~~ **withdrawn — see `ACCEPTANCE-WITHDRAWN.md`**
 
 | binding | value |
 |---|---|
-| commit | `3f2b9679c181d0c8ddfc0cb85e61c2614dfa1367 (working tree dirty)` |
-| run id (gate report sha256) | `162c239d38c8c4bbb9493348a85f860488087b46069afdc6d84f9a81fee62c42` |
+| commit | `60cb3e57d7fa038b80fa4e33cdb1e54331607aa2 (working tree dirty)` |
+| run id (gate report sha256) | `c8ad0a68f0b50436c1f0b8303fbf45d01f738fe406cffb190d132cb8df475021` |
 
 The report, the source map, the artifact manifest and the review package all belong to the run id above: it is the digest of the gate's own verdict document, so a reader can check that they describe one run without a registry to consult. The commit is the revision the verdict is about.
 
@@ -200,14 +200,14 @@ The complete set is `gate/scope-evidence.json`. A representative record of each 
 | `slide-004-picture-018` | `/slide[30]/shape[@id=100125]` | base-only-semantic | 320x207 | 2.00317 | 2 | 0.000000 | True |
 | `slide-004-picture-022` | `/slide[30]/shape[@id=100132]` | base-only-semantic | 308x207 | 2.00000 | 2 | 0.000000 | True |
 | `slide-004-picture-024` | `/slide[30]/shape[@id=100024]` | base-only-semantic | 1177x36 | 2.00017 | 2 | 0.000000 | True |
-| `slide-004-picture-027` | `/slide[30]/shape[@id=9]` | base-only-semantic | 270x207 | 1.99625 | 2 | 0.000000 | True |
+| `slide-004-picture-027` | `/slide[30]/shape[@id=9]` | base-only-semantic | 270x207 | 2.00375 | 2 | 0.000000 | True |
 | `slide-004-picture-028` | `/slide[30]/connector[@id=10]` | locked-visual-proxy | 4x710 | 1.99972 | 2 | 0.000000 | True |
 | `slide-004-picture-029` | `/slide[30]/connector[@id=11]` | locked-visual-proxy | 4x681 | 1.99911 | 2 | 0.000000 | True |
 | `slide-004-picture-030` | `/slide[30]/connector[@id=15]` | locked-visual-proxy | 4x683 | 2.00088 | 2 | 0.000000 | True |
 | `slide-004-picture-032` | `/slide[30]/shape[@id=22]` | base-only-semantic | 276x207 | 1.99926 | 2 | 0.000000 | True |
 | `slide-004-picture-034` | `/slide[30]/shape[@id=24]` | base-only-semantic | 293x207 | 2.00277 | 2 | 0.000000 | True |
 | `slide-004-picture-037` | `/slide[30]/shape[@id=28]` | base-only-semantic | 211x207 | 2.00097 | 2 | 0.000000 | True |
-| `slide-004-picture-040` | `/slide[30]/shape[@id=38]` | base-only-semantic | 270x207 | 1.99625 | 2 | 0.000000 | True |
+| `slide-004-picture-040` | `/slide[30]/shape[@id=38]` | base-only-semantic | 270x207 | 2.00375 | 2 | 0.000000 | True |
 | `slide-004-picture-042` | `/slide[30]/shape[@id=39]` | base-only-semantic | 118x62 | 1.99825 | 2 | 0.000000 | True |
 | `slide-004-picture-043` | `/slide[30]/shape[@id=40]` | base-only-semantic | 118x62 | 1.99825 | 2 | 0.000000 | True |
 | `slide-004-picture-044` | `/slide[30]/shape[@id=41]` | base-only-semantic | 276x207 | 1.99926 | 2 | 0.000000 | True |
@@ -278,12 +278,12 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 
 | artifact | sha256 | size |
 |---|---|---|
-| `canonical-author.html` | `7536179715a55e1c0d71d539885d52967ec7a540144cf0261f783a851911607b` | 42633665 |
-| `disposition-ledger.json` | `8b57ce95f35d06fc2ee90293c1149b56da853f9b6422e4149023ae1491512eb3` | 251424 |
+| `canonical-author.html` | `6de52e1273091e7519e5e530f82a9c8e9265044313897e71c775eb754d234c7e` | 42639867 |
+| `disposition-ledger.json` | `df14b806a400ece69d4199ee5be2dd6d1a3c3116381df6adda9c2ec53bcb3f19` | 251424 |
 | `material-deltas.json` | `d4990d01e9de41f6d7bce97cb1d079aff18ce0c5fc576a2117e92b9b1cfd5d3a` | 31 |
-| `pages.json` | `bd4de7f4a8d470d61ea703b5ea2a6d5b6460b6c8e83283c09edd2f4a196f21df` | 509810 |
-| `projection/canonical-author.html` | `7536179715a55e1c0d71d539885d52967ec7a540144cf0261f783a851911607b` | 42633665 |
-| `projection/projection-report.json` | `adf89a9815d49c5ffa45d22e7007db013c1a693dddab1f51228c8b079b8f2e7c` | 671454 |
+| `pages.json` | `fd3ed60ad8b06313419ecc2e969f5e1eed6b235ba8c919764d8c07e2d25a58ab` | 509810 |
+| `projection/canonical-author.html` | `6de52e1273091e7519e5e530f82a9c8e9265044313897e71c775eb754d234c7e` | 42639867 |
+| `projection/projection-report.json` | `27171b50dffe56e61385dcc73a185f52b6f0a0eb4460d5dd40a5fd37ee736b75` | 671483 |
 | `projection/proxy-src1-slide-002-007.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
 | `projection/proxy-src1-slide-002-010.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
 | `projection/proxy-src1-slide-002-028.png` | `90da3b87ff2ffc129d81d7e725731c353e2c6bfdf2087d6831fbd09eabfb53a5` | 21259 |
@@ -295,20 +295,20 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `projection/proxy-src1-slide-030-011.png` | `fa42c3b14e6629a34b84425bbc3b1781156e6a7d5d639f00f716f7ca096850eb` | 1356 |
 | `projection/proxy-src1-slide-030-012.png` | `dccbd0aea3935032d56b2f6989905842c38c403b372fa37492ae3339dca1a318` | 1671 |
 | `projection/proxy-src1-slide-030-013.png` | `04a64039d9773baee6076dc52ab5101911fdf2ba0f18bce1aa36e462da3ec0bc` | 1612 |
-| `projection/proxy-src1-slide-030-018.png` | `31e487f931ffcef7e89dfc9308f93c4a6bddc5cf6e957d16df0e2d9f2956fc8b` | 11720 |
-| `projection/proxy-src1-slide-030-022.png` | `1e12303c8ffbd5f25ea36cbd0ae8a6adebe44682d2045070ab3c178b8b6836aa` | 13838 |
+| `projection/proxy-src1-slide-030-018.png` | `6446926cd0193ce17eb5d38e751e4b31d452efecf425f3e22b9bddba35c7f6c2` | 12652 |
+| `projection/proxy-src1-slide-030-022.png` | `c816f1ae9aabc0816abd897e9f88990180259a78e7fca9b915ae134763dcf698` | 14789 |
 | `projection/proxy-src1-slide-030-024.png` | `6201c30542dd1e70d7a09a62d20d21114a60b11aa6f4525c863b853fcb4a7404` | 8128 |
 | `projection/proxy-src1-slide-030-027.png` | `98483daf6f2970640fa4120ae792aa1447ee53155a35e541228ce0a75228755b` | 11283 |
 | `projection/proxy-src1-slide-030-028.png` | `1b776c5266d61294d8af5b0a61908e66c94ac5d051e1c405c68ba2464e5f6dae` | 290 |
 | `projection/proxy-src1-slide-030-029.png` | `1e049c004091d93d7c7b07c320a625d49a026635553233e308938ea4f6092c38` | 319 |
 | `projection/proxy-src1-slide-030-030.png` | `75336da6e353a2dfd599db783a8e9b19a69bbdf965f1ac52ddcad67797b9f26d` | 284 |
-| `projection/proxy-src1-slide-030-032.png` | `04cbef14f537f9ed388acb5128b7bb527fd8afee205e97d7673363fa58cffecc` | 13108 |
+| `projection/proxy-src1-slide-030-032.png` | `c8c76ebf78152b46258e1379d6df4b041300604d94d2035b5510a5d1ce145b9c` | 14781 |
 | `projection/proxy-src1-slide-030-034.png` | `53bcb33e4258ac0587abc975711985b37ab4103ae1768428e3f5803900171d22` | 5688 |
 | `projection/proxy-src1-slide-030-037.png` | `4d167bdb2f3478179aa045ef4be6419ea092aa2924c512bc657409b5f20d6bb7` | 6166 |
 | `projection/proxy-src1-slide-030-040.png` | `026a8a0ca27de2b0cb8a208710249c7aa5251d4131d2f3fa2d7590552b44df3c` | 6649 |
 | `projection/proxy-src1-slide-030-042.png` | `0c121e40b2e805d76b5f2b1f4000a3d6c4419a2dd563b43e81ea68dfde39ba19` | 576 |
 | `projection/proxy-src1-slide-030-043.png` | `ec451dfed1ffa2ee82434977ba393d26e411b609955e1f4cf0640227ef019d2a` | 573 |
-| `projection/proxy-src1-slide-030-044.png` | `b14545d84741f364cb6cb6881024e248e7c517b929ba071edabb5824bc43d5cb` | 9397 |
+| `projection/proxy-src1-slide-030-044.png` | `2e8e2e82fc097430aaa880949f0657985796c24ca30cdf752e33e47fbf51558c` | 10064 |
 | `projection/proxy-src1-slide-030-045.png` | `55b9c07892fd278b374b5eaa8056b56374920be7aae5acac42f386d72e65f141` | 6334 |
 | `projection/proxy-src1-slide-030-048.png` | `da7fdd38735b92809955f9fe38c7f7e331666c0680283cb9d574dba39fad005c` | 293 |
 | `projection/proxy-src1-slide-030-050.png` | `68b77f24656b52978eb5d5e007daa3f10ee1d243e4a4a234c13ea5bb4c193713` | 19572 |
@@ -321,8 +321,8 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `projection/proxy-src2-slide-009-024.png` | `8f1b189665eecf0061d556edc09e2566f36522a45ca07c5d01cc55f3dbbfa3c8` | 18586 |
 | `projection/proxy-src5-slide-001-004.png` | `bcea1a3055b82a799a06ded6c66db21b0311f2715ce59c553b9c24f9d2a82a01` | 8881 |
 | `projection/proxy-src5-slide-001-009.png` | `0c1eeb7f5a662e4a421203c92d4341596326618fd0e6e13c63de7ddd0378c3c7` | 2420 |
-| `projection/source-map.json` | `39ca0b7cf539256b0affbed95fbcbb1fa9b1f626db6f6c3c6514152fff3d29ea` | 611918 |
-| `projection-report.json` | `adf89a9815d49c5ffa45d22e7007db013c1a693dddab1f51228c8b079b8f2e7c` | 671454 |
+| `projection/source-map.json` | `54995db1b84f089ed445b71d2dba6f35dbd6f830976b7c90345f6638e178bf52` | 612027 |
+| `projection-report.json` | `27171b50dffe56e61385dcc73a185f52b6f0a0eb4460d5dd40a5fd37ee736b75` | 671483 |
 | `proxies/proxy-src1-slide-002-007.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
 | `proxies/proxy-src1-slide-002-010.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
 | `proxies/proxy-src1-slide-002-028.png` | `90da3b87ff2ffc129d81d7e725731c353e2c6bfdf2087d6831fbd09eabfb53a5` | 21259 |
@@ -334,20 +334,20 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `proxies/proxy-src1-slide-030-011.png` | `fa42c3b14e6629a34b84425bbc3b1781156e6a7d5d639f00f716f7ca096850eb` | 1356 |
 | `proxies/proxy-src1-slide-030-012.png` | `dccbd0aea3935032d56b2f6989905842c38c403b372fa37492ae3339dca1a318` | 1671 |
 | `proxies/proxy-src1-slide-030-013.png` | `04a64039d9773baee6076dc52ab5101911fdf2ba0f18bce1aa36e462da3ec0bc` | 1612 |
-| `proxies/proxy-src1-slide-030-018.png` | `31e487f931ffcef7e89dfc9308f93c4a6bddc5cf6e957d16df0e2d9f2956fc8b` | 11720 |
-| `proxies/proxy-src1-slide-030-022.png` | `1e12303c8ffbd5f25ea36cbd0ae8a6adebe44682d2045070ab3c178b8b6836aa` | 13838 |
+| `proxies/proxy-src1-slide-030-018.png` | `6446926cd0193ce17eb5d38e751e4b31d452efecf425f3e22b9bddba35c7f6c2` | 12652 |
+| `proxies/proxy-src1-slide-030-022.png` | `c816f1ae9aabc0816abd897e9f88990180259a78e7fca9b915ae134763dcf698` | 14789 |
 | `proxies/proxy-src1-slide-030-024.png` | `6201c30542dd1e70d7a09a62d20d21114a60b11aa6f4525c863b853fcb4a7404` | 8128 |
 | `proxies/proxy-src1-slide-030-027.png` | `98483daf6f2970640fa4120ae792aa1447ee53155a35e541228ce0a75228755b` | 11283 |
 | `proxies/proxy-src1-slide-030-028.png` | `1b776c5266d61294d8af5b0a61908e66c94ac5d051e1c405c68ba2464e5f6dae` | 290 |
 | `proxies/proxy-src1-slide-030-029.png` | `1e049c004091d93d7c7b07c320a625d49a026635553233e308938ea4f6092c38` | 319 |
 | `proxies/proxy-src1-slide-030-030.png` | `75336da6e353a2dfd599db783a8e9b19a69bbdf965f1ac52ddcad67797b9f26d` | 284 |
-| `proxies/proxy-src1-slide-030-032.png` | `04cbef14f537f9ed388acb5128b7bb527fd8afee205e97d7673363fa58cffecc` | 13108 |
+| `proxies/proxy-src1-slide-030-032.png` | `c8c76ebf78152b46258e1379d6df4b041300604d94d2035b5510a5d1ce145b9c` | 14781 |
 | `proxies/proxy-src1-slide-030-034.png` | `53bcb33e4258ac0587abc975711985b37ab4103ae1768428e3f5803900171d22` | 5688 |
 | `proxies/proxy-src1-slide-030-037.png` | `4d167bdb2f3478179aa045ef4be6419ea092aa2924c512bc657409b5f20d6bb7` | 6166 |
 | `proxies/proxy-src1-slide-030-040.png` | `026a8a0ca27de2b0cb8a208710249c7aa5251d4131d2f3fa2d7590552b44df3c` | 6649 |
 | `proxies/proxy-src1-slide-030-042.png` | `0c121e40b2e805d76b5f2b1f4000a3d6c4419a2dd563b43e81ea68dfde39ba19` | 576 |
 | `proxies/proxy-src1-slide-030-043.png` | `ec451dfed1ffa2ee82434977ba393d26e411b609955e1f4cf0640227ef019d2a` | 573 |
-| `proxies/proxy-src1-slide-030-044.png` | `b14545d84741f364cb6cb6881024e248e7c517b929ba071edabb5824bc43d5cb` | 9397 |
+| `proxies/proxy-src1-slide-030-044.png` | `2e8e2e82fc097430aaa880949f0657985796c24ca30cdf752e33e47fbf51558c` | 10064 |
 | `proxies/proxy-src1-slide-030-045.png` | `55b9c07892fd278b374b5eaa8056b56374920be7aae5acac42f386d72e65f141` | 6334 |
 | `proxies/proxy-src1-slide-030-048.png` | `da7fdd38735b92809955f9fe38c7f7e331666c0680283cb9d574dba39fad005c` | 293 |
 | `proxies/proxy-src1-slide-030-050.png` | `68b77f24656b52978eb5d5e007daa3f10ee1d243e4a4a234c13ea5bb4c193713` | 19572 |
@@ -360,11 +360,11 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 | `proxies/proxy-src2-slide-009-024.png` | `8f1b189665eecf0061d556edc09e2566f36522a45ca07c5d01cc55f3dbbfa3c8` | 18586 |
 | `proxies/proxy-src5-slide-001-004.png` | `bcea1a3055b82a799a06ded6c66db21b0311f2715ce59c553b9c24f9d2a82a01` | 8881 |
 | `proxies/proxy-src5-slide-001-009.png` | `0c1eeb7f5a662e4a421203c92d4341596326618fd0e6e13c63de7ddd0378c3c7` | 2420 |
-| `proxy-isolation.json` | `8f68cb5ce7e305b9c225afe35535239aef63974249668048f987a4921e97a388` | 55272 |
-| `rebuilt.pptx` | `1fb9c0db08e3b62d7cb25979a6724dc8f9eaf17a5856ce6e6c1e13178e0f45c5` | 31348011 |
+| `proxy-isolation.json` | `fcf35ce3b8cb00bd5f3ea1030bf2d80362f1904d0d2faf7700b2bf8d02a00eec` | 55272 |
+| `rebuilt.pptx` | `0a1d08e446d083ab7ab03d3ae3e020795ba3810bc665167d8e08fe70ddc58905` | 31352217 |
 | `retained-findings.json` | `3ab74f6274f2fa0382c999e55811d1493872a461da3e24b0e17a0cccc33d9b69` | 41174 |
 | `scope-evidence.json` | `73586ba9de0a57672f271fc9fe84f25637c6248ea6177d2cbd5e818c3c4266e1` | 22398 |
-| `source-map.json` | `39ca0b7cf539256b0affbed95fbcbb1fa9b1f626db6f6c3c6514152fff3d29ea` | 611918 |
+| `source-map.json` | `54995db1b84f089ed445b71d2dba6f35dbd6f830976b7c90345f6638e178bf52` | 612027 |
 
 `gate/gate-report.json` and `gate/gate-report.md` are excluded from that list because a document cannot contain its own hash; the bundle's `artifact-manifest.json` covers them instead, except for itself.
 
@@ -374,9 +374,9 @@ Every page has three records: the source page render, the rebuilt page render (b
 
 | # | page | source page | before | after | author html | before px | after px | before non-background | after non-background |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | source-a:2 | 2 | `visual/p01-before.png` | `visual/p01-after.png` | `visual/p01-author.html` | 1280x720 | 1280x720 | 0.1108 | 0.1129 |
+| 1 | source-a:2 | 2 | `visual/p01-before.png` | `visual/p01-after.png` | `visual/p01-author.html` | 1280x720 | 1280x720 | 0.1108 | 0.1128 |
 | 2 | source-a:5 | 5 | `visual/p02-before.png` | `visual/p02-after.png` | `visual/p02-author.html` | 1280x720 | 1280x720 | 0.5587 | 0.5311 |
-| 3 | source-a:12 | 12 | `visual/p03-before.png` | `visual/p03-after.png` | `visual/p03-author.html` | 1280x720 | 1280x720 | 0.3247 | 0.3162 |
+| 3 | source-a:12 | 12 | `visual/p03-before.png` | `visual/p03-after.png` | `visual/p03-author.html` | 1280x720 | 1280x720 | 0.3247 | 0.3163 |
 | 4 | source-a:30 | 30 | `visual/p04-before.png` | `visual/p04-after.png` | `visual/p04-author.html` | 1280x720 | 1280x720 | 0.9253 | 0.9316 |
 | 5 | source-b:3 | 3 | `visual/p05-before.png` | `visual/p05-after.png` | `visual/p05-author.html` | 1280x720 | 1280x720 | 0.3845 | 0.3783 |
 | 6 | source-b:9 | 9 | `visual/p06-before.png` | `visual/p06-after.png` | `visual/p06-author.html` | 1280x720 | 1280x720 | 0.3156 | 0.3097 |
