@@ -1500,10 +1500,13 @@ def test_a_changed_rebuilt_colour_blocks(clean_result: Any, tmp_path: Path) -> N
 
 
 def test_a_flattened_run_list_blocks(clean_result: Any, tmp_path: Path) -> None:
-    """A body whose runs were collapsed into one style is not faithful.
+    """Losing the boundary between two DIFFERENT runs is not faithful.
 
-    The readback is compared run for run, so losing a run boundary fails even when
-    the surviving style is a correct representative of the body.
+    The mutation gives the object two runs that genuinely differ, then reports only
+    one -- the shape of a body whose mixed formatting was collapsed into a single
+    representative style.  Comparing a body whose runs were already identical would
+    prove nothing, because the Canonical Run rule merges those whether or not the
+    projection did.
     """
     target = _object_named(clean_result, "clean-text")
     result = _run_gate(
@@ -1511,11 +1514,44 @@ def test_a_flattened_run_list_blocks(clean_result: Any, tmp_path: Path) -> None:
         tmp_path / "gate",
         intake_mutation=_style_mutation(
             target.emitted_name,
-            lambda style: replace(style, runs=style.runs[:1]),
+            lambda style: replace(
+                style,
+                runs=tuple(style.runs) + ("font=arial|size=99pt|color=#ff0000|bold=true|italic=|underline=",),
+            ),
         ),
     )
     assert result.outcome is GateOutcome.BLOCK
     assert "style_readback_mismatch" in {item.code for item in result.diagnostics}
+
+
+def test_the_run_comparison_uses_the_products_own_run_rule() -> None:
+    """Runs are compared as the Canonical Run rule defines them, not as reported.
+
+    The first run of the style check reported seven objects as having lost a run
+    boundary, and every one of them was a false positive: the source's runs were
+    identical in every declaration the comparison reads, and differed only in
+    whether an off-state was spelled ``-`` or ``false``.  The rule merges adjacent
+    runs whose resolved formatting is identical, so those were one run to this
+    product and the merge was permitted.
+
+    A check that calls a permitted merge lost formatting sends the fix to the
+    wrong component, so this pins both directions: off-state spellings merge, and
+    a real formatting difference does not.
+    """
+    merged = gate_module._normalized_runs
+    # Same run, two spellings of "not stated".
+    assert len(merged(["italic=-|size=12.25pt", "italic=false|size=12.25pt"])) == 1
+    assert len(merged(["bold=none|size=12pt", "size=12pt"])) == 1
+    # Three identical runs are one run.
+    assert len(merged(["size=12pt", "size=12pt", "size=12pt"])) == 1
+    # A real difference is still a boundary.
+    assert len(merged(["bold=true|size=12pt", "bold=-|size=12pt"])) == 2
+    assert len(merged(["italic=-|size=12.25pt", "italic=-|size=14pt"])) == 2
+    # Non-adjacent runs are never merged, even when identical.
+    assert len(merged(["size=12pt", "size=14pt", "size=12pt"])) == 3
+    # An unknown declaration is not part of a run's identity, so a run whose only
+    # difference is in one is the same run.
+    assert len(merged(["size=12pt", "exotic=1|size=12pt"])) == 1
 
 
 def test_an_unreadable_rebuilt_style_blocks_rather_than_passing(

@@ -614,11 +614,18 @@ class RebuiltStyle:
 
 
 def _style_token(value: Any) -> str | None:
-    """Return a normalized declaration value, or ``None`` when it is not stated."""
+    """Return a normalized declaration value, or ``None`` when it is not stated.
+
+    ``-`` is the placeholder a run declaration uses for "not stated", so it means
+    the same as an absent key; ``none`` and ``false`` are the off-states the
+    different spellings use for the same thing.  All of them normalize to
+    ``None``, because two runs that differ only in which of those spellings they
+    use are the same run.
+    """
     if value is None:
         return None
     text = str(value).strip()
-    if not text or text.lower() in {"none", "false"}:
+    if not text or text.lower() in {"none", "false", "-"}:
         return None
     return text.lower()
 
@@ -818,31 +825,68 @@ def _leading_points(value: Any) -> float | None:
 
 def _run_matches(expected: Any, actual: Any) -> bool:
     """Whether one run's resolved formatting survived the rebuild."""
-    left = str(expected)
-    right = str(actual)
-    if left == right:
-        return True
-    left_fields = dict(part.split("=", 1) for part in left.split("|") if "=" in part)
-    right_fields = dict(part.split("=", 1) for part in right.split("|") if "=" in part)
-    for field, expected_value in left_fields.items():
-        actual_value = right_fields.get(field)
-        if actual_value is None:
-            return False
+    left = _run_fields(expected)
+    right = _run_fields(actual)
+    for field, expected_value in left.items():
+        actual_value = right.get(field)
         if field in {"size", "lineSpacing"}:
             if not _numbers_agree(expected_value, actual_value, tolerance=0.05):
                 return False
             continue
         if field == "color":
-            if expected_value.lstrip("#") != actual_value.lstrip("#"):
-                return False
-            continue
-        if field in {"bold", "italic", "underline"}:
-            if _style_token(expected_value) != _style_token(actual_value):
+            if str(expected_value).lstrip("#") != str(actual_value).lstrip("#"):
                 return False
             continue
         if expected_value != actual_value:
             return False
     return True
+
+
+#: The declarations a run's identity is made of.  Fixed, so that "the field is
+#: absent" and "the field is an off-state" produce the same identity instead of
+#: two identities that differ only by which keys are present.
+_RUN_FIELDS = ("font", "size", "color", "bold", "italic", "underline")
+
+
+def _run_fields(value: Any) -> dict[str, str]:
+    """Return a run's declarations, normalized and with every field present.
+
+    ``bold=False``, ``bold=-``, ``bold=none`` and an absent ``bold`` all mean the
+    same thing, and two runs that differ only in which of those spellings
+    OfficeCLI happened to report are the *same* run.  Comparing the raw spellings
+    reported identical runs as different, which is how a permitted merge came to
+    be counted as lost formatting.
+
+    Every field in :data:`_RUN_FIELDS` is emitted, as ``""`` when it is not
+    stated, so two runs with the same formatting always produce the same identity.
+    """
+    fields: dict[str, str] = {}
+    for part in str(value).split("|"):
+        if "=" not in part:
+            continue
+        name, _, raw = part.partition("=")
+        fields[name] = _style_token(raw) or ""
+    return {name: fields.get(name, "") for name in _RUN_FIELDS}
+
+
+def _normalized_runs(runs: Sequence[Any]) -> tuple[str, ...]:
+    """Return the run list with adjacent identical runs merged.
+
+    The Canonical Run rule merges adjacent runs whose resolved formatting and
+    supported semantics are identical, so a body that OfficeCLI reports as two
+    runs differing only in the spelling of an off-state is *one* run to this
+    product.  Both sides of the comparison are put through this, so the check
+    compares the runs the product defines rather than the runs a reader happened
+    to enumerate.
+    """
+    merged: list[str] = []
+    for run in runs:
+        fields = _run_fields(run)
+        token = "|".join(f"{name}={fields[name]}" for name in sorted(fields))
+        if merged and merged[-1] == token:
+            continue
+        merged.append(token)
+    return tuple(merged)
 
 
 def _numbers_agree(left: Any, right: Any, *, tolerance: float) -> bool:
@@ -1024,15 +1068,20 @@ class TextReadback:
         # point: a representative value is not a faithful readback.
         expected_runs = self.style_declarations.get("runs")
         if expected_runs:
-            expected_list = list(expected_runs)
-            if len(expected_list) != len(built.runs):
+            # Both sides go through the product's own run merging first, so the
+            # comparison is between the runs the Canonical Run rule defines and
+            # not between whatever boundaries a reader happened to enumerate.
+            expected_list = list(_normalized_runs(expected_runs))
+            actual_list = list(_normalized_runs(built.runs))
+            if len(expected_list) != len(actual_list):
                 found.append(
-                    f"run count: the source declares {len(expected_list)} styled "
-                    f"run(s) and the rebuilt object reports {len(built.runs)}"
+                    f"run count: the source declares {len(expected_list)} "
+                    f"distinct styled run(s) and the rebuilt object reports "
+                    f"{len(actual_list)}"
                 )
             else:
                 for index, (expected_run, actual_run) in enumerate(
-                    zip(expected_list, built.runs)
+                    zip(expected_list, actual_list)
                 ):
                     if not _run_matches(expected_run, actual_run):
                         found.append(
