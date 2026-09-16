@@ -567,6 +567,102 @@ def parse_color(value: Any) -> str | None:
     return f"#{raw[:6]}"
 
 
+#: The drawingml namespace, for reading a deck's own colour scheme.
+_A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+#: A colour-scheme entry's name to the slot it fills.  PowerPoint names the two
+#: text and two background slots by their light/dark pair as well as by their
+#: semantic role, and a run may declare either spelling.
+_SCHEME_ALIASES: Mapping[str, str] = {
+    "tx1": "dk1",
+    "bg1": "lt1",
+    "tx2": "dk2",
+    "bg2": "lt2",
+}
+
+
+def theme_color_scheme(pptx_path: str | Path) -> dict[str, str]:
+    """Return a deck's own colour scheme as ``{token: "#RRGGBB"}``.
+
+    A run whose colour is a *theme token* rather than a colour is not a colour the
+    projection can write: OfficeCLI reports ``color = accent1`` and does not
+    resolve it, so the projection used to emit no colour at all and the rebuilt
+    deck painted the token's slot with OfficeCLI's default instead.  On the
+    synthetic probe deck that turned an accent-coloured body black, and inside a
+    mixed body it made one run inherit the previous run's colour -- two silent
+    colour losses, found by the acceptance gate's style readback.
+
+    The scheme lives in the deck itself, so it is read from the deck: the theme
+    part's ``a:clrScheme``, where each slot holds either an ``a:srgbClr/@val`` or a
+    ``a:sysClr/@lastClr``.  A token carrying a modifier (``text1+lumMod65``) is not
+    resolvable this way and is deliberately absent from the result, so the caller
+    records it as a base-only claim rather than inventing a value for it.
+    """
+    path = Path(pptx_path)
+    if not path.is_file():
+        return {}
+    scheme: dict[str, str] = {}
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = sorted(
+                name
+                for name in archive.namelist()
+                if re.fullmatch(r"ppt/theme/theme\d+\.xml", name)
+            )
+            if not names:
+                return {}
+            root = ElementTree.fromstring(archive.read(names[0]))
+    except (OSError, KeyError, ValueError, ElementTree.ParseError):
+        return {}
+    for scheme_node in root.iter(f"{{{_A_NS}}}clrScheme"):
+        for slot in scheme_node:
+            tag = str(slot.tag).rsplit("}", 1)[-1]
+            for child in slot:
+                child_tag = str(child.tag).rsplit("}", 1)[-1]
+                value = (
+                    child.attrib.get("val")
+                    if child_tag == "srgbClr"
+                    else child.attrib.get("lastClr")
+                    if child_tag == "sysClr"
+                    else None
+                )
+                parsed = parse_color(value)
+                if parsed:
+                    scheme[tag] = parsed
+                    break
+    for alias, slot in _SCHEME_ALIASES.items():
+        if slot in scheme:
+            scheme.setdefault(alias, scheme[slot])
+    return scheme
+
+
+def _resolve_run_colors(
+    paragraphs: Sequence[CapturedParagraph], scheme: Mapping[str, str]
+) -> tuple[CapturedParagraph, ...]:
+    """Resolve every run's theme-token colour against the deck's own scheme.
+
+    A run whose colour is already a plain colour is untouched, and a token the
+    scheme does not hold is left unresolved so it still reports as a base-only
+    claim rather than as a colour nobody measured.
+    """
+    if not scheme:
+        return tuple(paragraphs)
+    resolved: list[CapturedParagraph] = []
+    for paragraph in paragraphs:
+        runs = tuple(
+            dataclasses.replace(run, color=scheme[str(run.properties.get("color")).strip()])
+            if run.color is None
+            and run.properties.get("color") is not None
+            and str(run.properties.get("color")).strip() in scheme
+            else run
+            for run in paragraph.runs
+        )
+        resolved.append(
+            paragraph if runs == paragraph.runs else dataclasses.replace(paragraph, runs=runs)
+        )
+    return tuple(resolved)
+
+
 def alpha_of(value: Any) -> float:
     """Return the opacity a colour token itself carries, or ``1.0``.
 
@@ -1140,6 +1236,7 @@ def _base_only_claims(
     fmt: Mapping[str, Any],
     *,
     has_text: bool,
+    paragraphs: Sequence[CapturedParagraph] = (),
 ) -> tuple[BaseOnlyClaim, ...]:
     """Return the resolved properties the slide object does not own.
 
@@ -1153,6 +1250,14 @@ def _base_only_claims(
     * an alignment equal to the canonical default changes nothing;
     * a plain text property the projection writes explicitly is preserved, not
       reconstructed, so it is not a base-only claim.
+
+    A run whose *declared* colour is a theme token is the same class of claim and
+    OfficeCLI does not mark it: it reports ``color = accent1`` with no
+    ``effective.color.src``, so the marker loop above sees nothing.  A token the
+    deck's own colour scheme does not hold cannot be written by this projection,
+    and the colour used to be dropped outright -- the rebuilt body was painted
+    OfficeCLI's default, or, inside a mixed body, inherited the preceding run's
+    colour.  Both were silent losses; this records the claim instead.
     """
     claims: list[BaseOnlyClaim] = []
     for key, value in fmt.items():
@@ -1174,6 +1279,17 @@ def _base_only_claims(
         claims.append(
             BaseOnlyClaim(property=prop, value=str(resolved), source=str(value))
         )
+    if has_text:
+        unresolved = {
+            str(run.properties.get("color")).strip()
+            for paragraph in paragraphs
+            for run in paragraph.runs
+            if run.color is None and run.properties.get("color") is not None
+        }
+        for token in sorted(unresolved):
+            claims.append(
+                BaseOnlyClaim(property="color", value=token, source=token)
+            )
     claims.sort(key=lambda item: item.property)
     return tuple(claims)
 
@@ -1540,6 +1656,10 @@ def _captured_object(
     paragraphs = _split_intra_paragraph_breaks(
         _paragraphs(node, breaks=line_breaks)
     )
+    # A themed colour is a colour the deck paints, so it is resolved from the
+    # deck's own scheme before anything is emitted: a token left unresolved is
+    # then a real base-only claim rather than a silent loss of colour.
+    paragraphs = _resolve_run_colors(paragraphs, theme_color_scheme(pptx_path))
     text = _text_of(node)
     if not text or "\x0b" in text or _carries_hard_break(paragraphs):
         # The paragraph list is the authority for the projected text: the
@@ -1596,7 +1716,7 @@ def _captured_object(
         line_width_pt=length_to_points(fmt.get("lineWidth")),
         rotation_deg=_rotation_degrees(fmt),
         explicit_properties=frozenset(fmt),
-        base_only=_base_only_claims(fmt, has_text=has_text),
+        base_only=_base_only_claims(fmt, has_text=has_text, paragraphs=paragraphs),
         opaque_properties=fmt,
         raw_format=fmt,
         text=text,

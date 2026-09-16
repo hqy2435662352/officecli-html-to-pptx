@@ -928,13 +928,22 @@ def _leading_matches_two_sided(
     regression.  That is what happened to every one of the line-spacing findings on
     the three-deck corpus.
 
-    Both sides are put into points before comparison, and a side that cannot be
-    resolved declines rather than guessing.
+    Two *multiples* need no font size at all: ``1.4x`` and ``1.4000x`` are the same
+    leading whatever the size is, so the factors are compared directly.  Resolving
+    both against a size first is what made this check report a faithful rebuild as a
+    regression whenever the source's runs stated no size of their own -- the
+    comparison declined, and a decline was then reported as a failure.  A font size
+    is only needed when exactly one side states a distance.
     """
     left_text = _style_token(expected)
     right_text = _style_token(actual)
     if left_text is None or right_text is None:
         return left_text == right_text
+
+    left_is_multiple = left_text.endswith("x")
+    right_is_multiple = right_text.endswith("x")
+    if left_is_multiple and right_is_multiple:
+        return _numbers_agree(left_text, right_text, tolerance=0.02)
 
     left_points = _leading_points(left_text)
     if left_points is None:
