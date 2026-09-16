@@ -1,6 +1,6 @@
 # V0.4.2 representative acceptance — PASS_WITH_FINDINGS (independent review)
 
-> **The independent Gate 3 review reached `PASS_WITH_FINDINGS`** and it is the bundle's verdict; the machine verdict is struck below. See `GATE3-REVIEW-2.md` and the reviews beside it: they name every difference against the source page, located by `(source slot, source page, source object)`.
+> **The independent Gate 3 review reached `PASS_WITH_FINDINGS`** and it is the bundle's verdict; the machine verdict is struck below. See `GATE3-REVIEW-3.md` and the reviews beside it: they name every difference against the source page, located by `(source slot, source page, source object)`.
 >
 > The machine evidence below is the evidence of the run that was measured and is unchanged.
 

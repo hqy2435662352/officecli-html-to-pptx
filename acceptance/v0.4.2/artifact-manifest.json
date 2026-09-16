@@ -4,13 +4,13 @@
   "commit": "60cb3e57d7fa038b80fa4e33cdb1e54331607aa2 (working tree dirty)",
   "run_id": "c8ad0a68f0b50436c1f0b8303fbf45d01f738fe406cffb190d132cb8df475021",
   "note": "artifact-manifest.json is excluded from its own inventory: a document cannot contain its own hash. Every other file in the bundle is listed, and this manifest records acceptance-report.md's own hash in report_sha256.  `in_repository` says which entries a clone of the repository carries: the rest are the run's local evidence -- the gate directory and the page renders -- which `.gitignore` excludes and which therefore cannot be verified anywhere but on the machine that produced them.  All published documents are written with LF endings and `.gitattributes` keeps them that way, so their digests are the same in every checkout, and their digests are taken over the text without carriage returns -- the form the repository stores -- so they verify in a checkout whatever its line-ending configuration.",
-  "artifact_count": 126,
-  "published_count": 5,
+  "artifact_count": 127,
+  "published_count": 6,
   "local_only_count": 121,
   "artifacts": [
     {
       "name": "acceptance-report.md",
-      "sha256": "bd2c13f10f14c9b3b0f7407b74ba9342ca2b88275573f52cc764ee7895bea775",
+      "sha256": "6efc61b76a6cb9ff76fb6c38afd6ce608587e3f15e1ee173dfa12d7c76510b51",
       "size_bytes": 44972,
       "in_repository": true
     },
@@ -573,6 +573,12 @@
       "in_repository": true
     },
     {
+      "name": "GATE3-REVIEW-3.md",
+      "sha256": "bf6f79705b57d3b3711b4f16d34228d33c911a84e5818799e9ba92aa65a37ad4",
+      "size_bytes": 25671,
+      "in_repository": true
+    },
+    {
       "name": "GATE3-REVIEW.md",
       "sha256": "4797e5374cead73164754bcf94820ddef5dd0e3b5ba302a5b3aae031aa0418f6",
       "size_bytes": 31954,
@@ -765,6 +771,6 @@
       "in_repository": false
     }
   ],
-  "report_sha256": "bd2c13f10f14c9b3b0f7407b74ba9342ca2b88275573f52cc764ee7895bea775",
+  "report_sha256": "6efc61b76a6cb9ff76fb6c38afd6ce608587e3f15e1ee173dfa12d7c76510b51",
   "report_name": "acceptance-report.md"
 }
