@@ -623,6 +623,19 @@ def _style_token(value: Any) -> str | None:
     return text.lower()
 
 
+def _font_size_pt(declarations: Mapping[str, Any]) -> float | None:
+    """Return the source's font size in points, from its run declarations."""
+    first: float | None = None
+    for run in declarations.get("runs") or ():
+        match = re.search(r"size=(-?\d+(?:\.\d+)?)pt", str(run))
+        if match is None:
+            continue
+        size = float(match.group(1))
+        if size > 0:
+            first = size if first is None else min(first, size)
+    return first
+
+
 def rebuilt_style(detailed: Mapping[str, Any]) -> RebuiltStyle:
     """Read one rebuilt object's supported text formatting from its readback."""
     fmt = dict(detailed.get("format") or {})
@@ -718,22 +731,89 @@ class RebuiltObject:
         return payload
 
 
-def _declaration_matches(expected: Any, actual: Any, *, name: str) -> bool:
+def _declaration_matches(
+    expected: Any, actual: Any, *, name: str, font_size_pt: float | None = None
+) -> bool:
     """Whether one object-level declaration survived the rebuild.
 
     Lengths are compared with a tolerance because a point value round-trips
     through pixels and back; a colour is compared by its digits, because a
     rebuild may spell the same colour with or without the leading hash.
+
+    Line spacing is compared *by measurement*, not as a string.  PowerPoint states
+    the same leading either as a multiple of the font size (``1.5x``) or as an
+    absolute distance (``26pt``), and a rebuild may legitimately choose the other
+    spelling.  Comparing the two spellings literally reports a faithful rebuild as
+    a regression -- which is what the first run of this check did, on ``26pt``
+    against ``0.597x`` for the same leading.
+
+    When the two spellings are not comparable at all -- one a multiple, the other
+    a distance, with no font size in hand -- the comparison declines to call it a
+    regression.  Refusing to compare is honest here; inventing a conversion from a
+    font size this function does not have would be a guess dressed as a check.
     """
     left = _style_token(expected)
     right = _style_token(actual)
     if left is None or right is None:
         return left == right
     if name == "lineSpacing":
-        return _numbers_agree(left, right, tolerance=0.02)
+        return _leading_matches(left, right, font_size_pt=font_size_pt)
     if name == "align":
         return left == right
     return left.lstrip("#") == right.lstrip("#")
+
+
+def _leading_matches(left: Any, right: Any, *, font_size_pt: float | None) -> bool:
+    """Whether two line-spacing spellings name the same leading.
+
+    A multiple (``1.5x``) and a distance (``26pt``) are the same measurement once
+    the font size is known, and PowerPoint states either one.  With the source's
+    font size in hand the multiple is resolved and the two are compared as
+    distances; without it the comparison declines rather than guessing.
+
+    Declining matters as much as comparing: a check that reports a faithful
+    rebuild as a regression gets switched off, and then it protects nothing.
+    """
+    left_points = _leading_points(left)
+    right_points = _leading_points(right)
+    if left_points is None and right_points is None:
+        # Both are multiples; comparing the factors is exact.
+        return _numbers_agree(left, right, tolerance=0.02)
+    if font_size_pt and font_size_pt > 0:
+        left_points = left_points if left_points is not None else _multiple_points(
+            left, font_size_pt
+        )
+        right_points = right_points if right_points is not None else _multiple_points(
+            right, font_size_pt
+        )
+    if left_points is None or right_points is None:
+        return False
+    return abs(left_points - right_points) <= max(0.5, 0.02 * left_points)
+
+
+def _multiple_points(value: Any, font_size_pt: float) -> float | None:
+    """Return a multiple of the font size as a distance in points."""
+    text = _style_token(value)
+    if text is None or not text.endswith("x"):
+        return None
+    try:
+        return float(text[:-1]) * font_size_pt
+    except ValueError:
+        return None
+
+
+def _leading_points(value: Any) -> float | None:
+    """Return a leading stated as a distance, in points; ``None`` for a multiple."""
+    text = _style_token(value)
+    if text is None or text.endswith("x"):
+        return None
+    match = re.search(r"(-?\d+(?:\.\d+)?)\s*(pt|px|cm|mm|in)?", text)
+    if match is None:
+        return None
+    amount = float(match.group(1))
+    unit = (match.group(2) or "pt").lower()
+    factors = {"pt": 1.0, "px": 0.5, "cm": 72.0 / 2.54, "mm": 72.0 / 25.4, "in": 72.0}
+    return amount * factors.get(unit, 1.0)
 
 
 def _run_matches(expected: Any, actual: Any) -> bool:
@@ -917,6 +997,9 @@ class TextReadback:
         """Name every supported declaration that did not survive, with both sides."""
         built = self.rebuilt_style
         found: list[str] = []
+        # The source's own font size, so a leading stated as a multiple and one
+        # stated as a distance can be compared as the same measurement.
+        font_size_pt = _font_size_pt(self.style_declarations)
         for name, expected in (
             ("align", self.style_declarations.get("text-align")),
             ("lineSpacing", self.style_declarations.get("line-height")),
@@ -929,7 +1012,9 @@ class TextReadback:
                     f"{name}: the source declares {expected!r} and the rebuilt "
                     "object reports none"
                 )
-            elif not _declaration_matches(expected, actual, name=name):
+            elif not _declaration_matches(
+                expected, actual, name=name, font_size_pt=font_size_pt
+            ):
                 found.append(
                     f"{name}: expected {expected!r} from the source, rebuilt "
                     f"reports {actual!r}"
