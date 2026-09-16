@@ -792,6 +792,27 @@ def _run_officecli(*args: str, check: bool = True, attempts: int = 6) -> str:
     raise PptxReadError(f"{' '.join(command)} failed: {last}")
 
 
+def _close_resident(document: str | Path) -> None:
+    """Ask OfficeCLI to drop its resident handle on one document.
+
+    A deck this process created is kept open by OfficeCLI's resident process, and a
+    handle that outlives the step that needed it is what makes the *next* step fail
+    for no visible reason -- on Windows, a directory the run then wants to remove
+    cannot be removed at all.  Failures are ignored: the caller is finishing with
+    the document either way, and a close that cannot run is not an error the caller
+    can act on.
+    """
+    try:
+        subprocess.run(
+            [_officecli_executable(), "close", str(document)],
+            capture_output=True,
+            timeout=OFFICECLI_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+
+
 def _run_officecli_json(*args: str) -> Any:
     text = _run_officecli(*args, "--json")
     try:
@@ -1891,6 +1912,60 @@ def _render_background(
     return None
 
 
+def _drop_render_background(
+    cropped: Any,
+    blank_reference: Path | None,
+    box: tuple[int, int, int, int],
+) -> Any:
+    """Make the reconstruction's own background transparent in one cropped proxy.
+
+    ``cropped`` is a crop of a render of a blank slide carrying exactly one
+    object; ``blank_reference`` is a render of the same blank slide carrying
+    nothing.  A pixel the two agree on is a pixel the *object* did not paint, so it
+    becomes transparent and the proxy composites over whatever the source object
+    really sat on.  Everything else -- every glyph, stroke, fill and antialiased
+    edge -- is kept exactly as rendered.
+
+    The test is exact equality on the RGB triple.  A tolerance would erase paint
+    that merely resembles the background, and the case that matters most is a white
+    glyph on a coloured panel: a proxy that keeps an opaque white box over a pink
+    band destroys the band, and a proxy that drops a white glyph destroys the text.
+    Only pixels *identical* to the empty render are safely called background.
+
+    Returns the crop unchanged when there is no usable reference, so a run without
+    one behaves exactly as every earlier run did.
+    """
+    from PIL import Image, ImageChops
+
+    if blank_reference is None or not Path(blank_reference).is_file():
+        return cropped
+    try:
+        with Image.open(blank_reference) as reference:
+            blank = reference.convert("RGB")
+            if blank.width < box[2] or blank.height < box[3]:
+                return cropped
+            blank_crop = blank.crop(box)
+    except (OSError, ValueError):
+        return cropped
+    if blank_crop.size != cropped.size:
+        return cropped
+
+    painted = Image.new("L", cropped.size, 0)
+    for band in ImageChops.difference(cropped.convert("RGB"), blank_crop).split():
+        painted = ImageChops.lighter(painted, band.point(_NONZERO_LUT))
+    if painted.getbbox() is None:
+        # The object painted nothing at all.  The proxy is entirely background,
+        # and the blank-proxy gate is the thing that decides what that means.
+        return cropped
+    rgba = cropped.convert("RGBA")
+    rgba.putalpha(ImageChops.multiply(rgba.split()[-1], painted))
+    return rgba
+
+
+#: Maps a channel difference to "differs" (255) or "identical" (0).
+_NONZERO_LUT = [0] + [255] * 255
+
+
 def _rgb_triple(pixel: Any) -> tuple[int, int, int]:
     return (int(pixel[0]), int(pixel[1]), int(pixel[2]))
 
@@ -1901,10 +1976,23 @@ def _raster_rgb(raster: Path) -> Any:
     The raster is a screenshot the caller has already written and validated; the
     returned image owns its pixels independently of the file handle, so callers
     may hold it while the file is closed.
+
+    A published proxy is an RGBA image in which the pixels the *reconstruction*
+    contributed nothing to are transparent, so that a proxy composites over the
+    paint it really sits on.  Every measurement below is a comparison against the
+    render's bare background, and a transparent pixel *is* that background, so it
+    is flattened onto white -- the colour a fresh reconstruction renders -- before
+    anything is measured.  Without this, transparent pixels would be read as black
+    and every blank proxy would measure as fully painted.
     """
     from PIL import Image
 
     with Image.open(raster) as image:
+        if "A" in image.getbands():
+            rgba = image.convert("RGBA")
+            flattened = Image.new("RGB", rgba.size, (255, 255, 255))
+            flattened.paste(rgba, mask=rgba.split()[-1])
+            return flattened
         return image.convert("RGB")
 
 
@@ -2536,6 +2624,11 @@ class IsolatedRenderer:
         self.source_path = Path(source_path).expanduser().resolve()
         self.work_dir = Path(work_dir).expanduser().resolve()
         self.work_dir.mkdir(parents=True, exist_ok=True)
+        # The reference render of an *empty* reconstruction deck, made once per
+        # renderer.  Every proxy is a crop of a render of the same blank slide
+        # plus one object, so the difference between the two is exactly what that
+        # object painted -- which is what a proxy should carry and nothing else.
+        self._blank_reference_path: Path | None = None
         node = _run_officecli_json("get", str(self.source_path), "/", "--depth", "0")
         root_format = dict(node.get("format") or {})
         self.slide_width_pt = length_to_points(root_format.get("slideWidth"))
@@ -2683,6 +2776,7 @@ class IsolatedRenderer:
                         guard_px=guard_px,
                         destination=target,
                         background=background,
+                        blank_reference=self._blank_reference(),
                     )
                     if object_kind in _RECONSTRUCTED_PAINT_KINDS:
                         self._assert_visible_paint(
@@ -3054,6 +3148,74 @@ class IsolatedRenderer:
             f"{last_error or 'no image was produced'}"
         )
 
+    def _blank_reference(self) -> Path | None:
+        """Render an empty reconstruction deck once, and cache it.
+
+        Every proxy is a crop of a render of the same blank slide plus exactly one
+        object, so the *difference* between the two renders is what that object
+        painted.  That difference is what a proxy has to carry: a proxy that also
+        carries the render's white background is composited over whatever the
+        source object sat on, and an opaque white box appears where the source
+        paints a coloured panel.  Two live examples were found by the independent
+        visual review -- a callout band reduced to a sliver, and two product
+        photos on white boxes over a lavender panel.
+
+        The comparison is exact, pixel for pixel, against a render made by the same
+        renderer at the same viewport width of the same kind of deck.  It has to be
+        exact: a tolerance would eventually erase paint that merely resembles the
+        background, and a white glyph on a coloured panel is exactly that case.
+
+        Returns ``None`` when the reference cannot be rendered, in which case the
+        proxy keeps its opaque background -- the behaviour every earlier run had --
+        rather than failing the object outright.
+        """
+        if self._blank_reference_path is not None:
+            return self._blank_reference_path
+        deck = self.work_dir / "blank-reference.pptx"
+        raster = deck.with_suffix(".png")
+        try:
+            deck.unlink(missing_ok=True)
+            raster.unlink(missing_ok=True)
+            # The same construction the reconstructions use, so the reference is the
+            # same slide with the same size and the same viewport width: the blank
+            # deck has to be comparable pixel for pixel or the comparison is
+            # meaningless.
+            _run_officecli("create", str(deck))
+            _run_officecli(
+                "batch",
+                str(deck),
+                "--commands",
+                json.dumps(
+                    [
+                        {
+                            "command": "set",
+                            "path": "/",
+                            "props": {
+                                "slideWidth": f"{self.slide_width_pt:g}pt",
+                                "slideHeight": f"{self.slide_height_pt:g}pt",
+                            },
+                        },
+                        {
+                            "command": "add",
+                            "parent": "/",
+                            "type": "slide",
+                            "props": {"name": "blank-reference"},
+                        },
+                    ],
+                    ensure_ascii=False,
+                ),
+            )
+            self._screenshot(deck, 1, raster)
+        except Exception:  # noqa: BLE001 - an optimisation, never a failure
+            return None
+        finally:
+            # OfficeCLI keeps the deck resident, and a resident handle on a file
+            # this run then wants to remove is what makes a later step fail for no
+            # visible reason.
+            _close_resident(deck)
+        self._blank_reference_path = raster if raster.is_file() else None
+        return self._blank_reference_path
+
     @staticmethod
     def _crop(
         raster: Path,
@@ -3064,6 +3226,7 @@ class IsolatedRenderer:
         guard_px: int,
         destination: Path,
         background: tuple[int, int, int] | None = None,
+        blank_reference: Path | None = None,
     ) -> ProxyGeometry:
         """Crop the target's painted rectangle out of an isolated slide render.
 
@@ -3165,6 +3328,9 @@ class IsolatedRenderer:
                     f"{cropped.width}x{cropped.height}px; the object's rectangle "
                     "is not fully inside the rendered slide."
                 )
+            cropped = _drop_render_background(
+                cropped, blank_reference, (crop_left, crop_top, crop_right, crop_bottom)
+            )
             cropped.save(destination, format="PNG")
         return ProxyGeometry(
             rect_px=(

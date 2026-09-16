@@ -46,7 +46,11 @@ from officecli_html_to_pptx import (
     ProjectionError,
     project_pptx_to_author_html,
 )
-from officecli_html_to_pptx._internal.pptx_reader import MissingSlideError
+from officecli_html_to_pptx._internal.pptx_reader import (
+    MissingSlideError,
+    _drop_render_background,
+    _raster_rgb,
+)
 from officecli_html_to_pptx.contract import check_contract
 
 pytestmark = pytest.mark.skipif(
@@ -977,3 +981,134 @@ def test_font_resolution_keeps_a_declared_face_but_never_a_non_face() -> None:
     # Degenerate inputs still produce a usable typeface.
     assert resolve_pptx_font("") == "Calibri"
     assert resolve_pptx_font("   ") == "Calibri"
+
+
+# ---------------------------------------------------------------------------
+# A proxy carries the object's paint, not the reconstruction's background
+# ---------------------------------------------------------------------------
+
+
+def _png(path: Path, size: tuple[int, int], colour: tuple[int, int, int]) -> Path:
+    from PIL import Image
+
+    Image.new("RGB", size, colour).save(path, format="PNG")
+    return path
+
+
+def test_a_proxy_drops_the_reconstruction_background_and_keeps_the_paint(
+    tmp_path: Path,
+) -> None:
+    """The object's own pixels stay; the blank slide's pixels become transparent.
+
+    An object-local proxy is a crop of a render of a blank slide carrying one
+    object, so the background in that crop belongs to the slide the object was
+    reconstructed on, not to the object.  Keeping it made the proxy an opaque box:
+    the independent visual review found a callout band reduced to a sliver and two
+    product photos sitting on white rectangles over a lavender panel, both because
+    the proxy painted the reconstruction's white over paint the source really has.
+    """
+    from PIL import Image
+
+    blank = _png(tmp_path / "blank.png", (20, 10), (255, 255, 255))
+    painted = _png(tmp_path / "object.png", (20, 10), (255, 255, 255))
+    with Image.open(painted) as image:
+        canvas = image.convert("RGB")
+    for x in range(4, 8):
+        for y in range(3, 6):
+            canvas.putpixel((x, y), (200, 30, 30))
+    canvas.save(painted, format="PNG")
+
+    with Image.open(painted) as image:
+        result = _drop_render_background(
+            image.convert("RGB"), blank, (0, 0, 20, 10)
+        )
+    assert result.mode == "RGBA"
+    assert result.getpixel((5, 4))[3] == 255, "the object's own paint stays opaque"
+    assert result.getpixel((5, 4))[:3] == (200, 30, 30)
+    assert result.getpixel((15, 8))[3] == 0, "the blank slide's pixels are dropped"
+    assert result.getpixel((0, 0))[3] == 0
+
+
+def test_the_background_key_is_exact_so_a_white_glyph_survives(
+    tmp_path: Path,
+) -> None:
+    """White text on a white-rendered object is the case a tolerance would break.
+
+    A run whose fill is the same colour as the reconstruction's background is
+    genuinely ambiguous at one pixel, and both answers are wrong in one direction:
+    keep it and an opaque white box covers the source's coloured panel, drop it and
+    the text disappears.  The rule is that only pixels *identical* to the empty
+    render are background, so a glyph that differs by even one unit in one channel
+    is kept -- and the review's own finding shows the price of getting it wrong: on
+    that page the source file's run is white with no outline, so nothing about it is
+    painted at all and the proxy has nothing to keep.
+    """
+    from PIL import Image
+
+    blank = _png(tmp_path / "blank.png", (12, 6), (255, 255, 255))
+    faint = _png(tmp_path / "faint.png", (12, 6), (255, 255, 255))
+    with Image.open(faint) as image:
+        canvas = image.convert("RGB")
+    canvas.putpixel((3, 3), (254, 255, 255))
+    canvas.save(faint, format="PNG")
+
+    with Image.open(faint) as image:
+        result = _drop_render_background(
+            image.convert("RGB"), blank, (0, 0, 12, 6)
+        )
+    assert result.getpixel((3, 3))[3] == 255, "a one-unit difference is still paint"
+    assert result.getpixel((9, 3))[3] == 0
+
+
+def test_an_unusable_reference_leaves_the_crop_alone(tmp_path: Path) -> None:
+    """No reference, or one of the wrong size, means the old behaviour exactly."""
+    from PIL import Image
+
+    painted = _png(tmp_path / "object.png", (20, 10), (10, 20, 30))
+    small = _png(tmp_path / "small.png", (4, 4), (255, 255, 255))
+    missing = tmp_path / "not-there.png"
+    with Image.open(painted) as image:
+        for reference in (None, missing, small):
+            result = _drop_render_background(
+                image.convert("RGB"), reference, (0, 0, 20, 10)
+            )
+            assert result.mode == "RGB", reference
+            assert result.getpixel((2, 2))[:3] == (10, 20, 30)
+
+
+def test_a_flat_crop_is_left_alone_rather_than_emptied(tmp_path: Path) -> None:
+    """An object that painted nothing keeps its raster for the gate to refuse.
+
+    A fully transparent proxy would be indistinguishable from a decoding failure,
+    and the blank-proxy gate is the thing that has to decide what an object with no
+    paint means.  Handing it an empty alpha channel would take that decision away
+    from the rule that owns it.
+    """
+    from PIL import Image
+
+    blank = _png(tmp_path / "blank.png", (8, 8), (255, 255, 255))
+    same = _png(tmp_path / "same.png", (8, 8), (255, 255, 255))
+    with Image.open(same) as image:
+        result = _drop_render_background(image.convert("RGB"), blank, (0, 0, 8, 8))
+    assert result.mode == "RGB"
+
+
+def test_a_transparent_raster_measures_as_unpainted(tmp_path: Path) -> None:
+    """Every paint measurement flattens alpha onto the render's own background.
+
+    The proofs compare a proxy's pixels against its sampled background, and a
+    transparent pixel *is* that background.  Read as black it would make every
+    blank proxy measure as fully painted, which is how a proxy that shows nothing
+    would pass the gate that exists to refuse it.
+    """
+    from PIL import Image
+
+    path = tmp_path / "transparent.png"
+    image = Image.new("RGBA", (6, 6), (255, 255, 255, 0))
+    image.putpixel((2, 2), (10, 20, 30, 255))
+    image.save(path, format="PNG")
+
+    flattened = _raster_rgb(path)
+    assert flattened.mode == "RGB"
+    assert flattened.getpixel((0, 0)) == (255, 255, 255)
+    assert flattened.getpixel((2, 2)) == (10, 20, 30)
