@@ -3022,6 +3022,7 @@ def _isolated_proxy(
             placements=placements,
             text=obj.text,
             painted_size_pt=painted_run_size_pt(obj.paragraphs),
+            paragraphs=obj.paragraphs,
         )
     finally:
         if media_path is not None:

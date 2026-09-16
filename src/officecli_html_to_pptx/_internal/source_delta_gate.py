@@ -3388,6 +3388,24 @@ def _proxy_proof(
             "content did not survive its reconstruction and the image is not a "
             "representation of it"
         )
+    elif raster_pixels and background is None:
+        # A zero-extent object -- a vertical connector, whose declared width
+        # OfficeCLI reports as 0pt -- has a raster that is *entirely* guard band,
+        # so there is no "outside the rectangle" to sample the background from and
+        # the check above could not run at all.  That is how a separator whose
+        # proxy showed nothing was reported as a passed proof: `paint=0/2840,
+        # carries_paint=False, passed=True`.  The reconstruction renders on a fresh
+        # deck, whose background is white, so a raster that is uniformly that white
+        # is a proxy of nothing -- while a solid line, which is a legitimate raster
+        # for this shape, is a colour and passes.
+        if _painted_pixels(rgb, _RECONSTRUCTION_BACKGROUND) == 0:
+            failures.append(
+                "target survival: the proxy's raster carries no paint at all -- "
+                f"all {raster_pixels} pixel(s) of the {width}x{height} proxy are "
+                "the reconstruction's own background, and the object's declared "
+                "rectangle has no extent on either axis to sample a different one "
+                "from"
+            )
     if rebuilt is None:
         failures.append(
             "target survival: the rebuilt PPTX holds no object with the emitted "
@@ -3464,6 +3482,13 @@ def _raster_density(
         if extent > 0:
             return max(0.0, (raster - guard_px * 2) / extent)
     return None
+
+
+#: The colour a reconstruction renders on: a fresh deck with one blank slide, which
+#: is what an object-local proxy is cropped out of.  Used as the background a
+#: zero-extent proxy can be judged against, because such a raster is entirely its
+#: own guard band and has no other sample point.
+_RECONSTRUCTION_BACKGROUND = (255, 255, 255)
 
 
 def _guard_band_paint(

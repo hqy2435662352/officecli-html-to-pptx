@@ -3697,3 +3697,58 @@ def _record(
         issue_id="O1",
         measured=gate_module.issue_measurements(message),
     )
+
+
+def test_a_zero_extent_proxy_that_shows_nothing_blocks(
+    clean_result: Any, tmp_path: Path
+) -> None:
+    """A proxy whose raster is *only* guard band is still judged on its paint.
+
+    A vertical connector's declared width is 0pt, so its published raster is the
+    2px guard band, the 0pt rectangle and another 2px of band: there is no point
+    inside the crop that is outside the rectangle, so the usual background sample
+    does not exist and the blank-proxy check used to be skipped entirely.  That is
+    how a separator whose proxy showed nothing was reported as a *passed* proof --
+    ``paint=0/2840, carries_paint=False, passed=True`` -- and a proof that passes on
+    an object it measured no paint in is not evidence about that object.
+
+    The raster is judged against the colour a reconstruction renders on instead:
+    a uniformly white raster is a proxy of nothing, while a solid line -- the
+    legitimate raster for this shape -- is a colour and passes.
+    """
+    from PIL import Image
+
+    target = next(
+        item for item in clean_result.projected.objects if item.proxy_asset
+    )
+    blank = tmp_path / "blank-zero-extent.png"
+    Image.new("RGB", (4, 160), (255, 255, 255)).save(blank, format="PNG")
+    # `_proxy_proof` measures the object's own `proxy_asset`; the published
+    # path it records is where the evidence directory will hold it.
+    zero_extent = replace(
+        target, bounds_pt=(0.0, 0.0, 0.0, 90.0), proxy_asset=str(blank)
+    )
+
+    proof = gate_module._proxy_proof(
+        zero_extent,
+        pixels_per_point=clean_result.projected.pixels_per_point,
+        rebuilt=None,
+        published_asset=str(blank),
+    )
+    assert proof.passed is False
+    assert any("carries no paint" in failure for failure in proof.failures), proof.failures
+    assert proof.paint_pixels == 0
+
+    # The same shape drawn as a line is a raster of the object, not of nothing.
+    solid = tmp_path / "solid-zero-extent.png"
+    Image.new("RGB", (4, 160), (192, 0, 0)).save(solid, format="PNG")
+    drawn_probe = replace(zero_extent, proxy_asset=str(solid))
+    drawn = gate_module._proxy_proof(
+        drawn_probe,
+        pixels_per_point=clean_result.projected.pixels_per_point,
+        rebuilt=None,
+        published_asset=str(solid),
+    )
+    assert not any(
+        "carries no paint" in failure for failure in drawn.failures
+    ), drawn.failures

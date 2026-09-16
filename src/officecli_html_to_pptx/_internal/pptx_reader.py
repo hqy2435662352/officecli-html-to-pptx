@@ -2684,6 +2684,71 @@ def _shift_luminance(colour: str, luma_mod: float, luma_off: float) -> str:
     )
 
 
+def run_range_sets(
+    name: str, paragraphs: Sequence[CapturedParagraph]
+) -> list[dict[str, str]]:
+    """Return the ``set`` props that give every run of a rebuilt body its own format.
+
+    An ``add`` states one formatting for the whole body, so a body whose runs differ
+    -- one red word in a black sentence, a bold lead-in, an orange feature line --
+    could only ever be rebuilt in one of those formats.  OfficeCLI addresses a run
+    by character range, the same way the New Deck compiler writes every run it
+    emits, so the reconstruction now does the same after the body exists.  Without
+    it the six feature-line cells on src1 page 30 and the two-line subtitle on src1
+    page 2 were rebuilt black where the source paints them red and orange.
+
+    The offsets mirror the compiler's own arithmetic exactly, because the same
+    OfficeCLI has to accept both: a run contributes its length in **UTF-16 code
+    units**, and a paragraph break is part of the body's text rather than part of
+    the addressable range -- so it advances nothing.  A property is written for
+    every run, including the off-states, so a run can reset a value it inherited
+    from the body or from the run before it; omitting one silently flattens mixed
+    formatting.
+
+    Returns an empty list for a body with nothing to say: no runs, or one run whose
+    format the body already carries.
+    """
+    commands: list[dict[str, str]] = []
+    offset = 0
+    for paragraph in paragraphs:
+        for run in paragraph.runs:
+            text = str(run.text or "")
+            if not text:
+                continue
+            length = _officecli_range_length(text)
+            if not length:
+                continue
+            props: dict[str, str] = {
+                "range": f"{offset}:{offset + length}",
+            }
+            if run.font_family:
+                props["font"] = str(run.font_family)
+            if run.font_size_pt and run.font_size_pt > 0:
+                props["size"] = f"{run.font_size_pt:g}pt"
+            if run.color:
+                props["color"] = str(run.color)
+            props["bold"] = "true" if run.bold else "false"
+            props["italic"] = "true" if run.italic else "false"
+            props["underline"] = str(run.underline or "none")
+            commands.append(props)
+            offset += length
+    if len(commands) <= 1:
+        # One run is the body's own formatting, which the ``add`` already carries.
+        return []
+    return commands
+
+
+def _officecli_range_length(text: str) -> int:
+    """Return the character count OfficeCLI's range setter addresses.
+
+    UTF-16 code units, with a paragraph break excluded: OfficeCLI carries the break
+    in the body's text rather than in the addressable scope.  This is the same
+    arithmetic the New Deck compiler uses, so both writers agree.
+    """
+    visible = text.replace("\r", "").replace("\n", "")
+    return len(visible.encode("utf-16-le")) // 2
+
+
 def connector_stroke(properties: Mapping[str, Any]) -> str | None:
     """Return a connector's stroke value under either OfficeCLI spelling."""
     for key in ("line", "color"):
@@ -2756,6 +2821,7 @@ class IsolatedRenderer:
         placements: Sequence[ContainerPlacement] = (),
         text: str = "",
         painted_size_pt: float = 0.0,
+        paragraphs: Sequence[CapturedParagraph] = (),
     ) -> tuple[Path, ProxyGeometry]:
         """Rebuild ``source_object`` alone and crop it to what it paints.
 
@@ -2854,7 +2920,15 @@ class IsolatedRenderer:
                         ]
                     )
                     self._rebuild_isolated(
-                        deck, additions, source_object=source_object
+                        deck,
+                        additions,
+                        source_object=source_object,
+                        run_sets={
+                            str(rebuild.get("name") or ""): run_range_sets(
+                                str(rebuild.get("name") or ""), paragraphs
+                            )
+                            for _, rebuild in additions
+                        },
                     )
                     self._screenshot(deck, 1, raster)
                     if is_container:
@@ -2931,8 +3005,18 @@ class IsolatedRenderer:
         additions: Sequence[tuple[str, Mapping[str, str]]],
         *,
         source_object: str,
+        run_sets: Mapping[str, Sequence[Mapping[str, str]]] | None = None,
     ) -> None:
-        """Rebuild one placement as the only content of a fresh deck."""
+        """Rebuild one placement as the only content of a fresh deck.
+
+        ``run_sets`` carries per-run formatting to apply *after* the body exists:
+        an ``add`` can state one formatting for the whole body, and a body whose
+        runs differ needs a range per run.  The reconstruction used to carry only
+        the object-level properties, so a cell whose feature line is red or orange
+        was rebuilt black -- the independent review found six such cells on src1
+        page 30 and the subtitle on src1 page 2, and the audit confirmed the loss in
+        both files.
+        """
         deck.unlink(missing_ok=True)
         _run_officecli("create", str(deck))
         commands: list[dict[str, Any]] = [
@@ -2966,6 +3050,15 @@ class IsolatedRenderer:
                     "props": dict(rebuild),
                 }
             )
+            name = str(rebuild.get("name") or "")
+            for props in (run_sets or {}).get(name, ()):
+                commands.append(
+                    {
+                        "command": "set",
+                        "path": f"/slide[1]/shape[@name={name}]",
+                        "props": dict(props),
+                    }
+                )
         _run_officecli("batch", str(deck), "--commands", json.dumps(commands))
         _run_officecli("close", str(deck))
 

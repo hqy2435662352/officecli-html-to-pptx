@@ -1112,3 +1112,112 @@ def test_a_transparent_raster_measures_as_unpainted(tmp_path: Path) -> None:
     assert flattened.mode == "RGB"
     assert flattened.getpixel((0, 0)) == (255, 255, 255)
     assert flattened.getpixel((2, 2)) == (10, 20, 30)
+
+
+# ---------------------------------------------------------------------------
+# Per-run formatting in a reconstruction
+# ---------------------------------------------------------------------------
+
+
+def _captured_run(
+    text: str,
+    *,
+    color: str | None = "#000000",
+    bold: bool = False,
+    size: float = 11.0,
+) -> Any:
+    from officecli_html_to_pptx._internal.pptx_reader import CapturedRun
+
+    return CapturedRun(
+        text=text,
+        font_family="Arial",
+        font_size_pt=size,
+        bold=bold,
+        italic=False,
+        underline="none",
+        color=color,
+    )
+
+
+def _captured_paragraph(*runs: Any) -> Any:
+    from officecli_html_to_pptx._internal.pptx_reader import CapturedParagraph
+
+    return CapturedParagraph(
+        text="".join(run.text for run in runs),
+        align="left",
+        line_spacing=None,
+        space_before_pt=0.0,
+        space_after_pt=0.0,
+        direction="ltr",
+        bullet="none",
+        level=0,
+        runs=tuple(runs),
+    )
+
+
+def test_a_reconstruction_writes_every_run_its_own_format() -> None:
+    """An ``add`` states one format for a body; a range states one per run.
+
+    A cell whose feature line is red inside black text cannot be rebuilt from the
+    object-level colour alone -- the reconstruction painted it black, which the
+    independent review found on six cells of src1 page 30 and on the two-line
+    subtitle of src1 page 2.  Each run now gets the range the New Deck compiler
+    would give it, with every property stated so a run can reset what it inherited.
+    """
+    from officecli_html_to_pptx._internal.pptx_reader import run_range_sets
+
+    paragraphs = [
+        _captured_paragraph(
+            _captured_run("Lead-in", color="#C00000", bold=True),
+            _captured_run(" rest"),
+        ),
+        _captured_paragraph(_captured_run("second 中文 line")),
+    ]
+    sets = run_range_sets("isolated-object", paragraphs)
+    assert [item["range"] for item in sets] == ["0:7", "7:12", "12:26"]
+    assert sets[0]["color"] == "#C00000"
+    assert sets[0]["bold"] == "true"
+    assert sets[1]["color"] == "#000000"
+    assert sets[1]["bold"] == "false"
+    # A paragraph break is part of the body's text, not of the addressable range,
+    # so the second paragraph's run starts where the first one's text ended.
+    assert sets[2]["range"] == "12:26"
+    # Every property is stated on every run, so a run can reset an inherited value.
+    for item in sets:
+        assert set(item) == {"range", "font", "size", "color", "bold", "italic", "underline"}
+
+
+def test_one_run_is_left_to_the_body_it_is_added_with() -> None:
+    """A single run needs no range: the ``add`` already states its formatting."""
+    from officecli_html_to_pptx._internal.pptx_reader import run_range_sets
+
+    assert run_range_sets("x", [_captured_paragraph(_captured_run("only"))]) == []
+    assert run_range_sets("x", []) == []
+
+
+def test_the_range_arithmetic_counts_utf16_units_not_characters() -> None:
+    """The count OfficeCLI addresses is UTF-16 code units, as its own writer uses.
+
+    An emoji outside the basic plane is two units, and getting this wrong shifts
+    every following range -- which would paint part of one run in the next run's
+    colour rather than failing.
+    """
+    from officecli_html_to_pptx._internal.pptx_reader import (
+        _officecli_range_length,
+        run_range_sets,
+    )
+
+    assert _officecli_range_length("abc") == 3
+    assert _officecli_range_length("🚀") == 2
+    assert _officecli_range_length("a\nb") == 2, "a paragraph break is not addressed"
+    assert _officecli_range_length("a\r\nb") == 2
+
+    sets = run_range_sets(
+        "x",
+        [
+            _captured_paragraph(
+                _captured_run("🚀", color="#C00000"), _captured_run("tail")
+            )
+        ],
+    )
+    assert [item["range"] for item in sets] == ["0:2", "2:6"]
