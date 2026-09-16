@@ -101,17 +101,19 @@ def test_a_deleted_leak_still_blocks_the_push(repo: Path) -> None:
     (repo / "leak.txt").write_text(f"token={SECRET}\n", encoding="utf-8")
     _git(repo, "add", "leak.txt")
     _git(repo, "commit", "-q", "-m", "introduce a leak")
-    leak_commit = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    # The base the remote already holds is the state *before* the leak, so the
+    # range is exactly the leak and its removal.
+    base = _git(repo, "rev-parse", "HEAD~1").stdout.strip()
     _git(repo, "rm", "-q", "leak.txt")
     _git(repo, "commit", "-q", "-m", "remove the leak")
     tip = _git(repo, "rev-parse", "HEAD").stdout.strip()
 
     # The tip is clean by every other measure.
-    assert SECRET not in (repo / "keep.txt").read_text(encoding="utf-8")
+    assert not (repo / "leak.txt").exists()
     assert _guard(repo, "--mode", "worktree").returncode == 0
 
     # And the range still refuses.
-    result = _guard(repo, "--mode", "range", "--base", leak_commit, "--tip", tip)
+    result = _guard(repo, "--mode", "range", "--base", base, "--tip", tip)
     assert result.returncode == 1, result.stdout
     assert SECRET in result.stderr
 
@@ -123,6 +125,29 @@ def test_a_range_that_does_not_contain_the_leak_passes(repo: Path) -> None:
     _git(repo, "commit", "-q", "-m", "ordinary change")
     base = _git(repo, "rev-parse", "HEAD~1").stdout.strip()
     tip = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    result = _guard(repo, "--mode", "range", "--base", base, "--tip", tip)
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_leak_the_base_already_publishes_is_not_this_pushs_finding(repo: Path) -> None:
+    """Blobs the remote already holds are excluded, so a clean push is not refused.
+
+    A guard that refuses every push gets bypassed, which is worse than no guard.
+    This pins the exclusion: the leak is committed *before* the base, so the base
+    already publishes it and this range introduces nothing.  The exclusion set used
+    to hold ``(sha, path)`` pairs rather than shas, which made every membership test
+    false and turned the range scan into a whole-history scan.
+    """
+    (repo / "old.txt").write_text(f"token={SECRET}\n", encoding="utf-8")
+    _git(repo, "add", "old.txt")
+    _git(repo, "commit", "-q", "-m", "an inherited leak")
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    (repo / "new.txt").write_text("ordinary content\n", encoding="utf-8")
+    _git(repo, "add", "new.txt")
+    _git(repo, "commit", "-q", "-m", "an ordinary change")
+    tip = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
     result = _guard(repo, "--mode", "range", "--base", base, "--tip", tip)
     assert result.returncode == 0, result.stderr
 

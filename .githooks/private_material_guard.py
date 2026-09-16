@@ -133,7 +133,16 @@ def scan_range(root: Path, patterns: list[str], base: str, tip: str) -> list[str
     later rewritten.
     """
     reachable = _objects(root, tip)
-    already = set() if not base or set(base) == {"0"} else set(_objects(root, base))
+    # ``_objects`` returns ``(sha, path)`` pairs, so the exclusion set must be the
+    # shas alone.  Storing the pairs made every membership test false, and the
+    # range scan degenerated into scanning the whole history -- which flags blobs
+    # the remote already holds and refuses every push, including clean ones.  A
+    # guard that refuses everything gets bypassed, which is worse than no guard.
+    already = (
+        set()
+        if not base or set(base) == {"0"}
+        else {sha for sha, _ in _objects(root, base)}
+    )
     findings: list[str] = []
     for sha, path in reachable:
         if sha in already:
