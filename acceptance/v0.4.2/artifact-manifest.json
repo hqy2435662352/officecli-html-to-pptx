@@ -6,13 +6,13 @@
   "artifacts": [
     {
       "name": "acceptance-report.md",
-      "sha256": "f2e4984df5954ad705bd15e874ce52ce5c69893750507c390ae2a068254d03b9",
-      "size_bytes": 44538
+      "sha256": "e89e619d4bf01eaf8a974954f2e7c96af86443aec512f8b137f23e4ff5e25be8",
+      "size_bytes": 44539
     },
     {
       "name": "ACCEPTANCE-WITHDRAWN.md",
-      "sha256": "f2ee8e518232c94da5a9ea049487c520ea1a0ab8c50844bef9484e8ec99dfbe7",
-      "size_bytes": 2798
+      "sha256": "92344119081eea409141df8c68f49930113e045bd637353a7667bb9da0536cde",
+      "size_bytes": 3898
     },
     {
       "name": "canonical-author.html",
@@ -625,6 +625,6 @@
       "size_bytes": 30046
     }
   ],
-  "report_sha256": "f2e4984df5954ad705bd15e874ce52ce5c69893750507c390ae2a068254d03b9",
+  "report_sha256": "e89e619d4bf01eaf8a974954f2e7c96af86443aec512f8b137f23e4ff5e25be8",
   "report_name": "acceptance-report.md"
 }
