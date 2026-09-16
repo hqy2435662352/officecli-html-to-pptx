@@ -10,14 +10,8 @@
   "artifacts": [
     {
       "name": "acceptance-report.md",
-      "sha256": "e6ae72ef31b2fea400aad030a0ce457ce72f3c43127fa50ba1a0a625bf8d9076",
-      "size_bytes": 44965,
-      "in_repository": true
-    },
-    {
-      "name": "ACCEPTANCE-WITHDRAWN.md",
-      "sha256": "92344119081eea409141df8c68f49930113e045bd637353a7667bb9da0536cde",
-      "size_bytes": 3898,
+      "sha256": "ff8cbbebea1ebd8d80358d4c76b7a09c1f4ad20330e5ff71265f9c3dd8f09a0f",
+      "size_bytes": 46109,
       "in_repository": true
     },
     {
@@ -579,6 +573,12 @@
       "in_repository": true
     },
     {
+      "name": "GATE3-REVIEW-4.md",
+      "sha256": "3cf00c90f587c9737b20d90a88770cbde80aec8693ca017158d79a9350f3f2f0",
+      "size_bytes": 15944,
+      "in_repository": true
+    },
+    {
       "name": "GATE3-REVIEW.md",
       "sha256": "4797e5374cead73164754bcf94820ddef5dd0e3b5ba302a5b3aae031aa0418f6",
       "size_bytes": 31954,
@@ -771,6 +771,6 @@
       "in_repository": false
     }
   ],
-  "report_sha256": "e6ae72ef31b2fea400aad030a0ce457ce72f3c43127fa50ba1a0a625bf8d9076",
+  "report_sha256": "ff8cbbebea1ebd8d80358d4c76b7a09c1f4ad20330e5ff71265f9c3dd8f09a0f",
   "report_name": "acceptance-report.md"
 }
