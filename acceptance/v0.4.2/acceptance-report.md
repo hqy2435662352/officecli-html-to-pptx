@@ -14,12 +14,12 @@ Authoritative acceptance of the V0.4.2 representative-projection slice (ticket #
 
 ## 1. Verdict and its evidence basis
 
-~~**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 345.6s.~~ **withdrawn — see `ACCEPTANCE-WITHDRAWN.md`**
+~~**PASS_WITH_FINDINGS** (gate outcome `PASS_WITH_FINDINGS`, `published=True`, `accepted=True`), reached in 412.0s.~~ **withdrawn — see `ACCEPTANCE-WITHDRAWN.md`**
 
 | binding | value |
 |---|---|
-| commit | `ac0ab2eb1fe674340b4da560f8730a47038a8450 (working tree dirty)` |
-| run id (gate report sha256) | `a6c28012656e75ec036f432f0e3d071d156b8df8c38af3890cb90157f2f8f5a3` |
+| commit | `8a98823c61ab49c1ff317d6653d932d0ab7d2886 (working tree dirty)` |
+| run id (gate report sha256) | `a0c541fba5207d68d4a3506f1139b37c18ec64dd6ae1ef2cfa1f73dcca2f1be2` |
 
 The report, the source map, the artifact manifest and the review package all belong to the run id above: it is the digest of the gate's own verdict document, so a reader can check that they describe one run without a registry to consult. The commit is the revision the verdict is about.
 
@@ -39,7 +39,7 @@ The verdict is the gate's own derived outcome. It is *not* inferred from a proce
 | material deltas | 0 |
 | retained findings | 27 |
 | scope evidence | 33 |
-| proxy isolation proofs passed | 37 |
+| proxy isolation proofs passed | 0 |
 | proxy isolation proofs failed | 0 |
 | blocking diagnostics | 0 |
 | hashed artifacts (gate) | 87 |
@@ -216,8 +216,8 @@ The complete set is `gate/scope-evidence.json`. A representative record of each 
 | `slide-004-picture-050` | `/slide[30]/shape[@id=48]` | base-only-semantic | 316x267 | 2.00321 | 2 | 0.000000 | True |
 | `slide-004-picture-052` | `/slide[30]/shape[@id=50]` | base-only-semantic | 118x62 | 1.99825 | 2 | 0.000000 | True |
 | `slide-004-picture-053` | `/slide[30]/connector[@id=52]` | locked-visual-proxy | 1389x5 | 2.00014 | 2 | 0.000718 | True |
-| `slide-004-picture-054` | `/slide[30]/connector[@id=53]` | locked-visual-proxy | 1371x5 | 2.00029 | 2 | 0.378093 | True |
-| `slide-004-picture-055` | `/slide[30]/connector[@id=54]` | locked-visual-proxy | 1372x6 | 1.99971 | 2 | 0.286701 | True |
+| `slide-004-picture-054` | `/slide[30]/connector[@id=53]` | locked-visual-proxy | 1371x5 | 2.00029 | 2 | 0.196143 | True |
+| `slide-004-picture-055` | `/slide[30]/connector[@id=54]` | locked-visual-proxy | 1372x6 | 1.99971 | 2 | 0.153706 | True |
 | `slide-004-picture-056` | `/slide[30]/shape[@id=55]` | base-only-semantic | 316x267 | 2.00321 | 2 | 0.000000 | True |
 | `slide-006-picture-023` | `/slide[9]/group[@id=100381]` | locked-visual-proxy | 296x180 | 2.00233 | 2 | 0.000000 | True |
 | `slide-006-picture-024` | `/slide[9]/group[@id=100383]` | locked-visual-proxy | 296x180 | 2.00233 | 2 | 0.000000 | True |
@@ -278,93 +278,93 @@ The gate's artifact list, with the hash recorded in its own report (`gate/gate-r
 
 | artifact | sha256 | size |
 |---|---|---|
-| `canonical-author.html` | `da8910998c446a306670ea2d8312a7ef6d41b943c01d64375124408723ff7473` | 42518838 |
-| `disposition-ledger.json` | `1224394157da1141eca2ffc7250ff2283e5e83f4ca3857e98431447621db31ac` | 251447 |
+| `canonical-author.html` | `52e4c49130f52ce98c226268ffc6b9a37bea0ff28b6a0937f5d9e97f62fc972a` | 42561353 |
+| `disposition-ledger.json` | `b80a2664d046009b955f2615822420154cdd1717dea34096f79ff053d7df0c80` | 251447 |
 | `material-deltas.json` | `d4990d01e9de41f6d7bce97cb1d079aff18ce0c5fc576a2117e92b9b1cfd5d3a` | 31 |
-| `pages.json` | `5c0350ca4672f87b9d614e7c405e65bd37cdaef2b6e887699d64901f7b83456e` | 509928 |
-| `projection/canonical-author.html` | `da8910998c446a306670ea2d8312a7ef6d41b943c01d64375124408723ff7473` | 42518838 |
-| `projection/projection-report.json` | `512956cb7dfb168411e11a29ac112c5c70aab1bf8ceedd2b82f03dbee029377f` | 671550 |
-| `projection/proxy-src1-slide-002-007.png` | `a46d3062d6aac0d510a4b4d9d195bf7a4252a16593a6b7aa6969258df227384d` | 426 |
-| `projection/proxy-src1-slide-002-010.png` | `a46d3062d6aac0d510a4b4d9d195bf7a4252a16593a6b7aa6969258df227384d` | 426 |
-| `projection/proxy-src1-slide-002-028.png` | `1ffcd35808112b4cc26a51e24e5d3680be918843ac2ee2cd6dd1d1e7e7c008d0` | 13212 |
-| `projection/proxy-src1-slide-002-029.png` | `67761c28c414ac2c4c27f4fa76478f184f19b671dd3042fc4ec122a16427c39e` | 3709 |
-| `projection/proxy-src1-slide-005-011.png` | `22c344431a4d185847df06279860daf2a7ff477d995d030bf34382518ed16494` | 7731 |
-| `projection/proxy-src1-slide-012-004.png` | `aaf745a4f113a4f8eca3e2ccecef0af028e7062c83d11d6d0c26adcf47baf852` | 437 |
-| `projection/proxy-src1-slide-012-007.png` | `da76ef444fc31185b8859169be85dd8f656168a6ad4a5a5197d105235af6d9aa` | 447 |
-| `projection/proxy-src1-slide-012-010.png` | `f861b7b48052b510a5803f37125352ea330fb14449ec40aed510babfaf2e0077` | 465 |
-| `projection/proxy-src1-slide-030-011.png` | `398cc0ba8a4898080f55cc0f11c963270e0714419cda6afd3c97d119594175f2` | 1036 |
-| `projection/proxy-src1-slide-030-012.png` | `1d62bf44a02b13eb02edf3b139383e1ffcbf7db1930a794261b9b555c592405c` | 1238 |
-| `projection/proxy-src1-slide-030-013.png` | `8c23f0cd3cfbea17a387cfcba83c4755179d36e1638a4365c364f91c68e92604` | 1168 |
-| `projection/proxy-src1-slide-030-018.png` | `584c9ea1a1f64484a927463eb79ddd08d1f6be0a3e5eeb2d5540895ab52beae2` | 4973 |
-| `projection/proxy-src1-slide-030-022.png` | `38e9cc8c7b760e73a0a2e8d6300a1703c7753c895abce8a7e6708a45035c71cc` | 4592 |
-| `projection/proxy-src1-slide-030-024.png` | `39cc36e7e8b75d1cb9d4bc6d6d3a856c080b1d27e87abe58f0a880db817b041a` | 6006 |
-| `projection/proxy-src1-slide-030-027.png` | `41b5fd1e238eec442412b3de58ed86732fac22c97431a277f2d6e33a41429a07` | 4849 |
-| `projection/proxy-src1-slide-030-028.png` | `9444c4806e916d63676318d8ae5af403e594f07e6bae8e49cd9f51368ccc8235` | 200 |
-| `projection/proxy-src1-slide-030-029.png` | `134a8c24f521660915a1f2f0ccfb90871ecdf7b1b8056b78d89a548de94e5b3b` | 213 |
-| `projection/proxy-src1-slide-030-030.png` | `2bb676834cab308c9b3c7d49f92bf875386a8b051564401e87cadac8e007a6d7` | 205 |
-| `projection/proxy-src1-slide-030-032.png` | `9230ac0d5de0a5289eb4a96bf580768c787b07f276d09c35dd3fffb222d8caa0` | 4835 |
-| `projection/proxy-src1-slide-030-034.png` | `3e1ef9301eb569ab4cc023c1532e6fc0540bf4e932d2bab88312ce2eb5546e06` | 3285 |
-| `projection/proxy-src1-slide-030-037.png` | `8aa5e908e23a1799633a7249e7530157f0d27007f1621547d5786ab9319018d6` | 3506 |
-| `projection/proxy-src1-slide-030-040.png` | `02d6116c4456194244eb0519cf5295c836a91807db65276c0a96e7b552050ac4` | 3540 |
-| `projection/proxy-src1-slide-030-042.png` | `2c2d21d20957a75c2f109de59ad57d3f1ba715ef47a473c61387d3a4258df9a8` | 494 |
-| `projection/proxy-src1-slide-030-043.png` | `6de1dd533a0dab08f00e199f523c88e61d7fa0afad23bdc0d87dfee162399c68` | 497 |
-| `projection/proxy-src1-slide-030-044.png` | `55624e4086c97ce2774b0ff7c8c2fa7e39e1b156da17e9b55df1f78d2fed6f99` | 3596 |
-| `projection/proxy-src1-slide-030-045.png` | `b9caf06d23dcbcbba17a7e29dc87335df6355021b78b62cc64039582cd069635` | 3548 |
-| `projection/proxy-src1-slide-030-048.png` | `b3c23ec655d91cb1ab1e1769d86f1740073a8ac4bf7c59eb4bee9482a58d94f2` | 205 |
-| `projection/proxy-src1-slide-030-050.png` | `be1c7802b035dccd24e6a84a20ce84371c2ab829a94625db02eafafd02f40016` | 6600 |
-| `projection/proxy-src1-slide-030-052.png` | `95db3ef2b5551f4a564c2725b997e96a675df2519569b9a02fe9b7873c395a2e` | 494 |
-| `projection/proxy-src1-slide-030-053.png` | `af0c6035da0bc5eeaea187f30b78daa6f9ec903acd50a1ab76bd08ad14835708` | 261 |
-| `projection/proxy-src1-slide-030-054.png` | `3cc5a273124636cb27ad705bbfcca2a0c9338ebdfda71ba605d6f34db2b9723c` | 297 |
-| `projection/proxy-src1-slide-030-055.png` | `48720bcbebb1e488b21bbef6c9afed424a5f8a9dbe773185ab75e0b229365b2a` | 297 |
-| `projection/proxy-src1-slide-030-056.png` | `53140e20c9407e985c070276d1d9cf726aeffc1714681d49ac6537511552ca01` | 4624 |
-| `projection/proxy-src2-slide-009-023.png` | `0b7f3688557e9d597006379103f48c95f383f7cc2e130cb1851f68aa451a4b60` | 13116 |
-| `projection/proxy-src2-slide-009-024.png` | `1955f0a4566644ad752027813a39c0a217aa513c33aeee668da435fc7e839852` | 18475 |
-| `projection/proxy-src5-slide-001-004.png` | `49c4fa98d502e99fc0920a31d5862fabbb5a9c0732e7918f85d0d4be8f53fa90` | 7905 |
-| `projection/proxy-src5-slide-001-009.png` | `992fee4860fa846f6cbeaf7e4df07e13b5953222625577936c3915f1ffb7d29a` | 2278 |
-| `projection/source-map.json` | `bc1c0aec86f6dc29004cd096d2bb58536623a7b4f514f9db13906ee2aba71d6d` | 611997 |
-| `projection-report.json` | `512956cb7dfb168411e11a29ac112c5c70aab1bf8ceedd2b82f03dbee029377f` | 671550 |
-| `proxies/proxy-src1-slide-002-007.png` | `a46d3062d6aac0d510a4b4d9d195bf7a4252a16593a6b7aa6969258df227384d` | 426 |
-| `proxies/proxy-src1-slide-002-010.png` | `a46d3062d6aac0d510a4b4d9d195bf7a4252a16593a6b7aa6969258df227384d` | 426 |
-| `proxies/proxy-src1-slide-002-028.png` | `1ffcd35808112b4cc26a51e24e5d3680be918843ac2ee2cd6dd1d1e7e7c008d0` | 13212 |
-| `proxies/proxy-src1-slide-002-029.png` | `67761c28c414ac2c4c27f4fa76478f184f19b671dd3042fc4ec122a16427c39e` | 3709 |
-| `proxies/proxy-src1-slide-005-011.png` | `22c344431a4d185847df06279860daf2a7ff477d995d030bf34382518ed16494` | 7731 |
-| `proxies/proxy-src1-slide-012-004.png` | `aaf745a4f113a4f8eca3e2ccecef0af028e7062c83d11d6d0c26adcf47baf852` | 437 |
-| `proxies/proxy-src1-slide-012-007.png` | `da76ef444fc31185b8859169be85dd8f656168a6ad4a5a5197d105235af6d9aa` | 447 |
-| `proxies/proxy-src1-slide-012-010.png` | `f861b7b48052b510a5803f37125352ea330fb14449ec40aed510babfaf2e0077` | 465 |
-| `proxies/proxy-src1-slide-030-011.png` | `398cc0ba8a4898080f55cc0f11c963270e0714419cda6afd3c97d119594175f2` | 1036 |
-| `proxies/proxy-src1-slide-030-012.png` | `1d62bf44a02b13eb02edf3b139383e1ffcbf7db1930a794261b9b555c592405c` | 1238 |
-| `proxies/proxy-src1-slide-030-013.png` | `8c23f0cd3cfbea17a387cfcba83c4755179d36e1638a4365c364f91c68e92604` | 1168 |
-| `proxies/proxy-src1-slide-030-018.png` | `584c9ea1a1f64484a927463eb79ddd08d1f6be0a3e5eeb2d5540895ab52beae2` | 4973 |
-| `proxies/proxy-src1-slide-030-022.png` | `38e9cc8c7b760e73a0a2e8d6300a1703c7753c895abce8a7e6708a45035c71cc` | 4592 |
-| `proxies/proxy-src1-slide-030-024.png` | `39cc36e7e8b75d1cb9d4bc6d6d3a856c080b1d27e87abe58f0a880db817b041a` | 6006 |
-| `proxies/proxy-src1-slide-030-027.png` | `41b5fd1e238eec442412b3de58ed86732fac22c97431a277f2d6e33a41429a07` | 4849 |
-| `proxies/proxy-src1-slide-030-028.png` | `9444c4806e916d63676318d8ae5af403e594f07e6bae8e49cd9f51368ccc8235` | 200 |
-| `proxies/proxy-src1-slide-030-029.png` | `134a8c24f521660915a1f2f0ccfb90871ecdf7b1b8056b78d89a548de94e5b3b` | 213 |
-| `proxies/proxy-src1-slide-030-030.png` | `2bb676834cab308c9b3c7d49f92bf875386a8b051564401e87cadac8e007a6d7` | 205 |
-| `proxies/proxy-src1-slide-030-032.png` | `9230ac0d5de0a5289eb4a96bf580768c787b07f276d09c35dd3fffb222d8caa0` | 4835 |
-| `proxies/proxy-src1-slide-030-034.png` | `3e1ef9301eb569ab4cc023c1532e6fc0540bf4e932d2bab88312ce2eb5546e06` | 3285 |
-| `proxies/proxy-src1-slide-030-037.png` | `8aa5e908e23a1799633a7249e7530157f0d27007f1621547d5786ab9319018d6` | 3506 |
-| `proxies/proxy-src1-slide-030-040.png` | `02d6116c4456194244eb0519cf5295c836a91807db65276c0a96e7b552050ac4` | 3540 |
-| `proxies/proxy-src1-slide-030-042.png` | `2c2d21d20957a75c2f109de59ad57d3f1ba715ef47a473c61387d3a4258df9a8` | 494 |
-| `proxies/proxy-src1-slide-030-043.png` | `6de1dd533a0dab08f00e199f523c88e61d7fa0afad23bdc0d87dfee162399c68` | 497 |
-| `proxies/proxy-src1-slide-030-044.png` | `55624e4086c97ce2774b0ff7c8c2fa7e39e1b156da17e9b55df1f78d2fed6f99` | 3596 |
-| `proxies/proxy-src1-slide-030-045.png` | `b9caf06d23dcbcbba17a7e29dc87335df6355021b78b62cc64039582cd069635` | 3548 |
-| `proxies/proxy-src1-slide-030-048.png` | `b3c23ec655d91cb1ab1e1769d86f1740073a8ac4bf7c59eb4bee9482a58d94f2` | 205 |
-| `proxies/proxy-src1-slide-030-050.png` | `be1c7802b035dccd24e6a84a20ce84371c2ab829a94625db02eafafd02f40016` | 6600 |
-| `proxies/proxy-src1-slide-030-052.png` | `95db3ef2b5551f4a564c2725b997e96a675df2519569b9a02fe9b7873c395a2e` | 494 |
-| `proxies/proxy-src1-slide-030-053.png` | `af0c6035da0bc5eeaea187f30b78daa6f9ec903acd50a1ab76bd08ad14835708` | 261 |
-| `proxies/proxy-src1-slide-030-054.png` | `3cc5a273124636cb27ad705bbfcca2a0c9338ebdfda71ba605d6f34db2b9723c` | 297 |
-| `proxies/proxy-src1-slide-030-055.png` | `48720bcbebb1e488b21bbef6c9afed424a5f8a9dbe773185ab75e0b229365b2a` | 297 |
-| `proxies/proxy-src1-slide-030-056.png` | `53140e20c9407e985c070276d1d9cf726aeffc1714681d49ac6537511552ca01` | 4624 |
-| `proxies/proxy-src2-slide-009-023.png` | `0b7f3688557e9d597006379103f48c95f383f7cc2e130cb1851f68aa451a4b60` | 13116 |
-| `proxies/proxy-src2-slide-009-024.png` | `1955f0a4566644ad752027813a39c0a217aa513c33aeee668da435fc7e839852` | 18475 |
-| `proxies/proxy-src5-slide-001-004.png` | `49c4fa98d502e99fc0920a31d5862fabbb5a9c0732e7918f85d0d4be8f53fa90` | 7905 |
-| `proxies/proxy-src5-slide-001-009.png` | `992fee4860fa846f6cbeaf7e4df07e13b5953222625577936c3915f1ffb7d29a` | 2278 |
-| `proxy-isolation.json` | `2ee06d0e85f5e9b671bef721191254c6db5bb363feed5d9fc576a1979be7e478` | 55314 |
-| `rebuilt.pptx` | `0421feff3aac7838012e4e80eb84066ea1e2035c1f334ca4d16551e9dd23fbb9` | 31264185 |
+| `pages.json` | `2bd7ba682687595737e87abb11d0329fe691c535eb6716fac1ebd401ba7826d8` | 509853 |
+| `projection/canonical-author.html` | `52e4c49130f52ce98c226268ffc6b9a37bea0ff28b6a0937f5d9e97f62fc972a` | 42561353 |
+| `projection/projection-report.json` | `383748108d706142afd6c63620f3ed8f8bac72bd341269337cfa7a9ddbe3fd65` | 671537 |
+| `projection/proxy-src1-slide-002-007.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
+| `projection/proxy-src1-slide-002-010.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
+| `projection/proxy-src1-slide-002-028.png` | `d2a5702e43081ea50b44fd5ce48c811a8ac51379e0ec4df22ca04b8340016641` | 19045 |
+| `projection/proxy-src1-slide-002-029.png` | `1e1415cd1c33082986bb599fbb099dc5c569099ec61d4446d997b1036375e23c` | 4758 |
+| `projection/proxy-src1-slide-005-011.png` | `bf16c05721d2321183a96aa704ac36f2218b67a0685bddc44e29118a47067ef4` | 9054 |
+| `projection/proxy-src1-slide-012-004.png` | `45781f35837ca0876e29cbae9e2b9da745e548fa6fff4db1911e95545776f8a2` | 502 |
+| `projection/proxy-src1-slide-012-007.png` | `864aa5d97e8c3ca65f971bf48963d359cc7c7fe8e03151ea4aea17112726472a` | 519 |
+| `projection/proxy-src1-slide-012-010.png` | `e114bcbc6fc4f959f301ce72aa64c250c3396bb203691438ef77df4a43eb9e62` | 535 |
+| `projection/proxy-src1-slide-030-011.png` | `fa42c3b14e6629a34b84425bbc3b1781156e6a7d5d639f00f716f7ca096850eb` | 1356 |
+| `projection/proxy-src1-slide-030-012.png` | `dccbd0aea3935032d56b2f6989905842c38c403b372fa37492ae3339dca1a318` | 1671 |
+| `projection/proxy-src1-slide-030-013.png` | `04a64039d9773baee6076dc52ab5101911fdf2ba0f18bce1aa36e462da3ec0bc` | 1612 |
+| `projection/proxy-src1-slide-030-018.png` | `dedcff3e8cf255b58acda1726ff352ad84dff9b95940110efeea61cfab7ca496` | 6718 |
+| `projection/proxy-src1-slide-030-022.png` | `6d728759cc80dd73caffd3771dc76dba04cd2b9213f63b6a6796e14ef62d2b11` | 6320 |
+| `projection/proxy-src1-slide-030-024.png` | `6201c30542dd1e70d7a09a62d20d21114a60b11aa6f4525c863b853fcb4a7404` | 8128 |
+| `projection/proxy-src1-slide-030-027.png` | `c8521b3957b53940a997f819485db589af0d66190858642c3b0bd5275d6c5e85` | 6506 |
+| `projection/proxy-src1-slide-030-028.png` | `1b776c5266d61294d8af5b0a61908e66c94ac5d051e1c405c68ba2464e5f6dae` | 290 |
+| `projection/proxy-src1-slide-030-029.png` | `1e049c004091d93d7c7b07c320a625d49a026635553233e308938ea4f6092c38` | 319 |
+| `projection/proxy-src1-slide-030-030.png` | `75336da6e353a2dfd599db783a8e9b19a69bbdf965f1ac52ddcad67797b9f26d` | 284 |
+| `projection/proxy-src1-slide-030-032.png` | `243e4c4dc78c49752abc1abe8011e46408a63268b6dfb6b8b176061fea366059` | 6547 |
+| `projection/proxy-src1-slide-030-034.png` | `a18b1b7bebd22304c075f4d2f737aecdddb214d5f2fc09ec26ac2783b312aad0` | 4527 |
+| `projection/proxy-src1-slide-030-037.png` | `8b91cf30059f817156058e9e946879596336f54460f1c415527e19256b3220b6` | 4771 |
+| `projection/proxy-src1-slide-030-040.png` | `140e81c132e6b91a250415dce31ce8b1843ab2a7304b6e933ef3251e66148b2a` | 4831 |
+| `projection/proxy-src1-slide-030-042.png` | `0c121e40b2e805d76b5f2b1f4000a3d6c4419a2dd563b43e81ea68dfde39ba19` | 576 |
+| `projection/proxy-src1-slide-030-043.png` | `ec451dfed1ffa2ee82434977ba393d26e411b609955e1f4cf0640227ef019d2a` | 573 |
+| `projection/proxy-src1-slide-030-044.png` | `b287f5e94ab76a5bb3b135d29239b7bebd8f62c72dd6d5e92da427b835dce130` | 5027 |
+| `projection/proxy-src1-slide-030-045.png` | `245ba2a59cf23142f571f5dfcec1e81faa3ad9ca6b46eae1af8e5cf07095832f` | 4729 |
+| `projection/proxy-src1-slide-030-048.png` | `da7fdd38735b92809955f9fe38c7f7e331666c0680283cb9d574dba39fad005c` | 293 |
+| `projection/proxy-src1-slide-030-050.png` | `4eb26fc30c42fd2238abb570b65006f42e9bdf5eeace096038961c79f68558c6` | 8797 |
+| `projection/proxy-src1-slide-030-052.png` | `f2eb3807b6970b8895149098f6cc1be32373edfa856be1e690b7eabc4bc0099e` | 576 |
+| `projection/proxy-src1-slide-030-053.png` | `0e3ad3e0caf7d5b5ae86ee31dce11ad6400614c993dffe76461ac6964c6e741e` | 685 |
+| `projection/proxy-src1-slide-030-054.png` | `d99d247a4c86b0e49cb98b7c19e87fca65aacf20985f5e4d0651d826a435428e` | 761 |
+| `projection/proxy-src1-slide-030-055.png` | `2f756780f76b040509dcd9e6e9158dbbde4b2b5e1c0007cc1c58a3e4c10c2f87` | 843 |
+| `projection/proxy-src1-slide-030-056.png` | `754b60a902d4c7214a54dd5abf5f3f89d7585156fe643bd77f25b2becf428641` | 6123 |
+| `projection/proxy-src2-slide-009-023.png` | `fb99c8431a611b963e450ffb95c9855dbb69e9eddb73aff0680899ddb111ebf8` | 12936 |
+| `projection/proxy-src2-slide-009-024.png` | `8f1b189665eecf0061d556edc09e2566f36522a45ca07c5d01cc55f3dbbfa3c8` | 18586 |
+| `projection/proxy-src5-slide-001-004.png` | `bcea1a3055b82a799a06ded6c66db21b0311f2715ce59c553b9c24f9d2a82a01` | 8881 |
+| `projection/proxy-src5-slide-001-009.png` | `0c1eeb7f5a662e4a421203c92d4341596326618fd0e6e13c63de7ddd0378c3c7` | 2420 |
+| `projection/source-map.json` | `7c2356ac346d6b9b68a1d3a151c400247802e17e3c862cade881b05072eede2a` | 611997 |
+| `projection-report.json` | `383748108d706142afd6c63620f3ed8f8bac72bd341269337cfa7a9ddbe3fd65` | 671537 |
+| `proxies/proxy-src1-slide-002-007.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
+| `proxies/proxy-src1-slide-002-010.png` | `f90ad850862b35a6655a6f64846266058e9f78fde04c01f9e87a8cf26b0e0ef0` | 487 |
+| `proxies/proxy-src1-slide-002-028.png` | `d2a5702e43081ea50b44fd5ce48c811a8ac51379e0ec4df22ca04b8340016641` | 19045 |
+| `proxies/proxy-src1-slide-002-029.png` | `1e1415cd1c33082986bb599fbb099dc5c569099ec61d4446d997b1036375e23c` | 4758 |
+| `proxies/proxy-src1-slide-005-011.png` | `bf16c05721d2321183a96aa704ac36f2218b67a0685bddc44e29118a47067ef4` | 9054 |
+| `proxies/proxy-src1-slide-012-004.png` | `45781f35837ca0876e29cbae9e2b9da745e548fa6fff4db1911e95545776f8a2` | 502 |
+| `proxies/proxy-src1-slide-012-007.png` | `864aa5d97e8c3ca65f971bf48963d359cc7c7fe8e03151ea4aea17112726472a` | 519 |
+| `proxies/proxy-src1-slide-012-010.png` | `e114bcbc6fc4f959f301ce72aa64c250c3396bb203691438ef77df4a43eb9e62` | 535 |
+| `proxies/proxy-src1-slide-030-011.png` | `fa42c3b14e6629a34b84425bbc3b1781156e6a7d5d639f00f716f7ca096850eb` | 1356 |
+| `proxies/proxy-src1-slide-030-012.png` | `dccbd0aea3935032d56b2f6989905842c38c403b372fa37492ae3339dca1a318` | 1671 |
+| `proxies/proxy-src1-slide-030-013.png` | `04a64039d9773baee6076dc52ab5101911fdf2ba0f18bce1aa36e462da3ec0bc` | 1612 |
+| `proxies/proxy-src1-slide-030-018.png` | `dedcff3e8cf255b58acda1726ff352ad84dff9b95940110efeea61cfab7ca496` | 6718 |
+| `proxies/proxy-src1-slide-030-022.png` | `6d728759cc80dd73caffd3771dc76dba04cd2b9213f63b6a6796e14ef62d2b11` | 6320 |
+| `proxies/proxy-src1-slide-030-024.png` | `6201c30542dd1e70d7a09a62d20d21114a60b11aa6f4525c863b853fcb4a7404` | 8128 |
+| `proxies/proxy-src1-slide-030-027.png` | `c8521b3957b53940a997f819485db589af0d66190858642c3b0bd5275d6c5e85` | 6506 |
+| `proxies/proxy-src1-slide-030-028.png` | `1b776c5266d61294d8af5b0a61908e66c94ac5d051e1c405c68ba2464e5f6dae` | 290 |
+| `proxies/proxy-src1-slide-030-029.png` | `1e049c004091d93d7c7b07c320a625d49a026635553233e308938ea4f6092c38` | 319 |
+| `proxies/proxy-src1-slide-030-030.png` | `75336da6e353a2dfd599db783a8e9b19a69bbdf965f1ac52ddcad67797b9f26d` | 284 |
+| `proxies/proxy-src1-slide-030-032.png` | `243e4c4dc78c49752abc1abe8011e46408a63268b6dfb6b8b176061fea366059` | 6547 |
+| `proxies/proxy-src1-slide-030-034.png` | `a18b1b7bebd22304c075f4d2f737aecdddb214d5f2fc09ec26ac2783b312aad0` | 4527 |
+| `proxies/proxy-src1-slide-030-037.png` | `8b91cf30059f817156058e9e946879596336f54460f1c415527e19256b3220b6` | 4771 |
+| `proxies/proxy-src1-slide-030-040.png` | `140e81c132e6b91a250415dce31ce8b1843ab2a7304b6e933ef3251e66148b2a` | 4831 |
+| `proxies/proxy-src1-slide-030-042.png` | `0c121e40b2e805d76b5f2b1f4000a3d6c4419a2dd563b43e81ea68dfde39ba19` | 576 |
+| `proxies/proxy-src1-slide-030-043.png` | `ec451dfed1ffa2ee82434977ba393d26e411b609955e1f4cf0640227ef019d2a` | 573 |
+| `proxies/proxy-src1-slide-030-044.png` | `b287f5e94ab76a5bb3b135d29239b7bebd8f62c72dd6d5e92da427b835dce130` | 5027 |
+| `proxies/proxy-src1-slide-030-045.png` | `245ba2a59cf23142f571f5dfcec1e81faa3ad9ca6b46eae1af8e5cf07095832f` | 4729 |
+| `proxies/proxy-src1-slide-030-048.png` | `da7fdd38735b92809955f9fe38c7f7e331666c0680283cb9d574dba39fad005c` | 293 |
+| `proxies/proxy-src1-slide-030-050.png` | `4eb26fc30c42fd2238abb570b65006f42e9bdf5eeace096038961c79f68558c6` | 8797 |
+| `proxies/proxy-src1-slide-030-052.png` | `f2eb3807b6970b8895149098f6cc1be32373edfa856be1e690b7eabc4bc0099e` | 576 |
+| `proxies/proxy-src1-slide-030-053.png` | `0e3ad3e0caf7d5b5ae86ee31dce11ad6400614c993dffe76461ac6964c6e741e` | 685 |
+| `proxies/proxy-src1-slide-030-054.png` | `d99d247a4c86b0e49cb98b7c19e87fca65aacf20985f5e4d0651d826a435428e` | 761 |
+| `proxies/proxy-src1-slide-030-055.png` | `2f756780f76b040509dcd9e6e9158dbbde4b2b5e1c0007cc1c58a3e4c10c2f87` | 843 |
+| `proxies/proxy-src1-slide-030-056.png` | `754b60a902d4c7214a54dd5abf5f3f89d7585156fe643bd77f25b2becf428641` | 6123 |
+| `proxies/proxy-src2-slide-009-023.png` | `fb99c8431a611b963e450ffb95c9855dbb69e9eddb73aff0680899ddb111ebf8` | 12936 |
+| `proxies/proxy-src2-slide-009-024.png` | `8f1b189665eecf0061d556edc09e2566f36522a45ca07c5d01cc55f3dbbfa3c8` | 18586 |
+| `proxies/proxy-src5-slide-001-004.png` | `bcea1a3055b82a799a06ded6c66db21b0311f2715ce59c553b9c24f9d2a82a01` | 8881 |
+| `proxies/proxy-src5-slide-001-009.png` | `0c1eeb7f5a662e4a421203c92d4341596326618fd0e6e13c63de7ddd0378c3c7` | 2420 |
+| `proxy-isolation.json` | `f4996b13fdeb8b233a2afd8b725eaa4640440d810d1e420934e457f622afecc0` | 55313 |
+| `rebuilt.pptx` | `becaf43037fc6f4f0b0f7f77346a6ced6552bb06fa180f053696261f072e2800` | 31293884 |
 | `retained-findings.json` | `3ab74f6274f2fa0382c999e55811d1493872a461da3e24b0e17a0cccc33d9b69` | 41174 |
 | `scope-evidence.json` | `73586ba9de0a57672f271fc9fe84f25637c6248ea6177d2cbd5e818c3c4266e1` | 22398 |
-| `source-map.json` | `bc1c0aec86f6dc29004cd096d2bb58536623a7b4f514f9db13906ee2aba71d6d` | 611997 |
+| `source-map.json` | `7c2356ac346d6b9b68a1d3a151c400247802e17e3c862cade881b05072eede2a` | 611997 |
 
 `gate/gate-report.json` and `gate/gate-report.md` are excluded from that list because a document cannot contain its own hash; the bundle's `artifact-manifest.json` covers them instead, except for itself.
 

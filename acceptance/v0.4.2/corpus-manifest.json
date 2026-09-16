@@ -150,7 +150,7 @@
       "coverage_purpose": "proxy/overlay isolation: no sibling text may be embedded in any raster payload, and no wording may appear twice in the rebuilt deck",
       "scope_note": "Every object on this probe is canonical-editable and no proxy is emitted, so the rebuilt deck must contain no raster payload for this page at all. The overlay wording is asserted to appear exactly once in the rebuilt deck; if the rect, the ellipse or the arrow were ever replaced by a picture, this probe's unaccounted picture count would show it.",
       "synthetic": true,
-      "fixture_sha256": "81edd2018ce3710bf2a54dd5bbd9cfa23ffbbe90f79e4e81d394db93483eb633"
+      "fixture_sha256": "79648832daac7d065bb7ef65ba52221274116ca7d1e6122d91b63df7537ddefe"
     },
     {
       "order": 10,
@@ -162,7 +162,7 @@
       "coverage_purpose": "rich text semantics and the locked container boundary: mixed runs, hard break, empty paragraph, bullet nesting, numbering, Latin/CJK fonts, theme-token evidence, fixed numeric strings, and one group with a bound connector represented exactly once",
       "scope_note": "OfficeCLI reports no inheritance source for the theme run's colour, so the gate classifies it canonical-editable and the projection emits it without a colour declaration; the theme token is preserved in the source and in the projection's evidence, and no semantic token round trip is claimed. The group is one locked container boundary whose child shape and connector are represented once inside it and never emitted again as siblings.",
       "synthetic": true,
-      "fixture_sha256": "210981c6990abb0286534a91a2d29dac85ed6a16211a71022bb2f9fa3655312f"
+      "fixture_sha256": "762fca61423f8ffb2da8ffa64eb1fa1a152867291fbc4af7f889f885869ddc3f"
     }
   ],
   "seam_selection": [
@@ -227,14 +227,14 @@
       "page_id": "probe-a",
       "source_id": "probe-a",
       "source_page": 1,
-      "source_sha256": "81edd2018ce3710bf2a54dd5bbd9cfa23ffbbe90f79e4e81d394db93483eb633"
+      "source_sha256": "79648832daac7d065bb7ef65ba52221274116ca7d1e6122d91b63df7537ddefe"
     },
     {
       "order": 10,
       "page_id": "probe-b",
       "source_id": "probe-b",
       "source_page": 1,
-      "source_sha256": "210981c6990abb0286534a91a2d29dac85ed6a16211a71022bb2f9fa3655312f"
+      "source_sha256": "762fca61423f8ffb2da8ffa64eb1fa1a152867291fbc4af7f889f885869ddc3f"
     }
   ],
   "source_decks": [
@@ -288,9 +288,9 @@
   },
   "source_deck_write_operations": 0,
   "synthetic_only": false,
-  "elapsed_seconds": 345.6,
-  "commit": "ac0ab2eb1fe674340b4da560f8730a47038a8450 (working tree dirty)",
-  "run_id": "a6c28012656e75ec036f432f0e3d071d156b8df8c38af3890cb90157f2f8f5a3",
+  "elapsed_seconds": 412.0,
+  "commit": "8a98823c61ab49c1ff317d6653d932d0ab7d2886 (working tree dirty)",
+  "run_id": "a0c541fba5207d68d4a3506f1139b37c18ec64dd6ae1ef2cfa1f73dcca2f1be2",
   "privacy": "This manifest is committed text. It records each private source deck's selection order and page numbers and the fact that every deck was hashed and verified unchanged, but it carries no private filename, no absolute path and no private hash: the source sha256 values are withheld and the verification is recorded as a per-deck verdict instead. The gate's own evidence under acceptance/v0.4.2/gate/ does carry the absolute paths; .gitignore excludes it from the repository. If page numbers themselves must not be published, the corpus has to run against decks that may be named, because a page selection cannot be reviewed without them.",
   "visual_records": [
     {
@@ -316,7 +316,7 @@
       "after": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 5889,
+        "distinct_colors": 5859,
         "background_rgb": [
           103,
           103,
@@ -349,7 +349,7 @@
       "after": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 16542,
+        "distinct_colors": 16621,
         "background_rgb": [
           103,
           103,
@@ -382,7 +382,7 @@
       "after": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 3056,
+        "distinct_colors": 3069,
         "background_rgb": [
           103,
           103,
@@ -415,7 +415,7 @@
       "after": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 16804,
+        "distinct_colors": 16984,
         "background_rgb": [
           133,
           68,
@@ -481,7 +481,7 @@
       "after": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 999,
+        "distinct_colors": 1095,
         "background_rgb": [
           103,
           103,
@@ -601,7 +601,7 @@
       "before": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 1010,
+        "distinct_colors": 1015,
         "background_rgb": [
           103,
           103,
@@ -613,7 +613,7 @@
       "after": {
         "width": 1280,
         "height": 720,
-        "distinct_colors": 2235,
+        "distinct_colors": 2212,
         "background_rgb": [
           103,
           103,
