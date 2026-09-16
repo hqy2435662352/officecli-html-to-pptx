@@ -41,13 +41,13 @@
     {
       "name": "gate/disposition-ledger.json",
       "sha256": "45697b432f4482900ae7dd805533c4b36d1dc85a4123e02306a9c3d3b0b6ffca",
-      "size_bytes": 251424,
+      "size_bytes": 245606,
       "in_repository": false
     },
     {
       "name": "gate/gate-report.json",
       "sha256": "632f2bc7ed89dd53b578d0042fc2075ef9a1a7cf222cb69a1a6c7f93e2d7fedb",
-      "size_bytes": 1376974,
+      "size_bytes": 1338215,
       "in_repository": false
     },
     {
@@ -59,13 +59,13 @@
     {
       "name": "gate/material-deltas.json",
       "sha256": "55e51092d333ce5355cfc5a1853f3aa03f22b6dc6e49eb6fb5f9c00d42fc7405",
-      "size_bytes": 31,
+      "size_bytes": 28,
       "in_repository": false
     },
     {
       "name": "gate/pages.json",
       "sha256": "e7edcbd828acacab604753e77c01598a465c8ac7d5c275ae19ad1a96cd6bc792",
-      "size_bytes": 509810,
+      "size_bytes": 495153,
       "in_repository": false
     },
     {
@@ -77,7 +77,7 @@
     {
       "name": "gate/projection/projection-report.json",
       "sha256": "558eae6ed36f389f75e364385476309796532b13f40f56d38bbea4cb179df367",
-      "size_bytes": 671454,
+      "size_bytes": 654491,
       "in_repository": false
     },
     {
@@ -305,13 +305,13 @@
     {
       "name": "gate/projection/source-map.json",
       "sha256": "6c7e97955fc74c7a3aeab251d816f30a1c915fe5ac3552fafd2294efa980e83f",
-      "size_bytes": 611918,
+      "size_bytes": 595383,
       "in_repository": false
     },
     {
       "name": "gate/projection-report.json",
       "sha256": "558eae6ed36f389f75e364385476309796532b13f40f56d38bbea4cb179df367",
-      "size_bytes": 671454,
+      "size_bytes": 654491,
       "in_repository": false
     },
     {
@@ -539,7 +539,7 @@
     {
       "name": "gate/proxy-isolation.json",
       "sha256": "64310b6acedf50173a546ca0b50b1bf7ea742e09da52dd5d0c2a4344c59e66d3",
-      "size_bytes": 55272,
+      "size_bytes": 53693,
       "in_repository": false
     },
     {
@@ -551,19 +551,19 @@
     {
       "name": "gate/retained-findings.json",
       "sha256": "7f6e0c5a1d0ea015af7cf11dc21ad100c81a060336466a5f9d26bacb937766fb",
-      "size_bytes": 41174,
+      "size_bytes": 39819,
       "in_repository": false
     },
     {
       "name": "gate/scope-evidence.json",
       "sha256": "49788ae6b85eded92d1a235ee0f2df23bd4d3e89ffd4909a370bee6099c412c9",
-      "size_bytes": 22398,
+      "size_bytes": 21914,
       "in_repository": false
     },
     {
       "name": "gate/source-map.json",
       "sha256": "6c7e97955fc74c7a3aeab251d816f30a1c915fe5ac3552fafd2294efa980e83f",
-      "size_bytes": 611918,
+      "size_bytes": 595383,
       "in_repository": false
     },
     {

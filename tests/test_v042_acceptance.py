@@ -1580,12 +1580,17 @@ BUNDLE = REPO_ROOT / "acceptance" / "v0.4.2"
 _TEXT_SUFFIXES = (".md", ".json", ".html", ".txt", ".csv")
 
 
-def _bundle_sha256(path: Path) -> str:
-    """Return the digest a published document is verified by."""
+def _bundle_text_bytes(path: Path) -> bytes:
+    """Return the bytes a published document is verified from."""
     payload = path.read_bytes()
     if path.suffix.lower() in _TEXT_SUFFIXES:
-        payload = payload.replace(b"\r\n", b"\n")
-    return hashlib.sha256(payload).hexdigest()
+        return payload.replace(b"\r\n", b"\n")
+    return payload
+
+
+def _bundle_sha256(path: Path) -> str:
+    """Return the digest a published document is verified by."""
+    return hashlib.sha256(_bundle_text_bytes(path)).hexdigest()
 
 
 def test_the_published_acceptance_manifest_agrees_with_disk() -> None:
@@ -1627,7 +1632,7 @@ def test_the_published_acceptance_manifest_agrees_with_disk() -> None:
             f"{item['name']}: the checkout's bytes are not the bytes the manifest "
             "hashed -- a line-ending conversion would do exactly this"
         )
-        assert path.stat().st_size == item["size_bytes"], item["name"]
+        assert len(_bundle_text_bytes(path)) == item["size_bytes"], item["name"]
 
     # The local-only entries are exactly the ones git ignores: the manifest cannot
     # quietly stop describing half the run, and it cannot claim a file is local
