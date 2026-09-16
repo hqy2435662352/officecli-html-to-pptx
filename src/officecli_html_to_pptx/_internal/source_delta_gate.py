@@ -597,6 +597,10 @@ class RebuiltStyle:
     #: Set when the readback could not be established, which is a blocking
     #: condition rather than an empty style.
     unavailable: str | None = None
+    #: The size the rebuilt object's runs state, in points.  A rebuilt leading
+    #: reported as a multiple is a multiple of *this* size, so resolving it against
+    #: the source's size instead compares two different measurements.
+    font_size_pt: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -607,6 +611,7 @@ class RebuiltStyle:
             "space_before": self.space_before,
             "space_after": self.space_after,
             "runs": list(self.runs),
+            "font_size_pt": self.font_size_pt,
         }
         if self.unavailable:
             payload["unavailable"] = self.unavailable
@@ -690,7 +695,23 @@ def rebuilt_style(detailed: Mapping[str, Any]) -> RebuiltStyle:
             fmt.get("spaceAfter") or fmt.get("effective.spaceAfter")
         ),
         runs=tuple(runs),
+        font_size_pt=_run_font_size_pt(runs),
     )
+
+
+def _run_font_size_pt(runs: Sequence[str]) -> float | None:
+    """Return the size the runs state, in points, or ``None``."""
+    for run in runs:
+        match = re.search(r"size=(-?\d+(?:\.\d+)?)(pt|px)", str(run))
+        if match is None:
+            continue
+        value = float(match.group(1))
+        if value <= 0:
+            continue
+        # A size reported in browser pixels is half its point value on the
+        # Author canvas, which is where the rebuild's own leading is measured.
+        return value if match.group(2) == "pt" else value / 2.0
+    return None
 
 
 def _resolved_value(
@@ -768,6 +789,45 @@ def _declaration_matches(
     if name == "align":
         return left == right
     return left.lstrip("#") == right.lstrip("#")
+
+
+def _leading_matches_two_sided(
+    expected: Any,
+    actual: Any,
+    *,
+    expected_font_size_pt: float | None,
+    actual_font_size_pt: float | None,
+) -> bool:
+    """Whether a source leading and a rebuilt leading name the same measurement.
+
+    Each side's multiple is resolved against **its own** font size.  A rebuilt deck
+    reports a leading as a multiple of the size it carries, which need not be the
+    size the source declared, so resolving the rebuilt multiple against the source's
+    size compares two different measurements and reports a faithful rebuild as a
+    regression.  That is what happened to every one of the line-spacing findings on
+    the three-deck corpus.
+
+    Both sides are put into points before comparison, and a side that cannot be
+    resolved declines rather than guessing.
+    """
+    left_text = _style_token(expected)
+    right_text = _style_token(actual)
+    if left_text is None or right_text is None:
+        return left_text == right_text
+
+    left_points = _leading_points(left_text)
+    if left_points is None:
+        if not expected_font_size_pt:
+            return False
+        left_points = _multiple_points(left_text, expected_font_size_pt)
+    right_points = _leading_points(right_text)
+    if right_points is None:
+        if not actual_font_size_pt:
+            return False
+        right_points = _multiple_points(right_text, actual_font_size_pt)
+    if left_points is None or right_points is None:
+        return False
+    return abs(left_points - right_points) <= max(0.5, 0.02 * left_points)
 
 
 def _leading_matches(left: Any, right: Any, *, font_size_pt: float | None) -> bool:
@@ -1056,8 +1116,18 @@ class TextReadback:
                     f"{name}: the source declares {expected!r} and the rebuilt "
                     "object reports none"
                 )
-            elif not _declaration_matches(
-                expected, actual, name=name, font_size_pt=font_size_pt
+            elif name == "align":
+                if _style_token(expected) != _style_token(actual):
+                    found.append(
+                        f"{name}: expected {expected!r} from the source, rebuilt "
+                        f"reports {actual!r}"
+                    )
+            elif not _leading_matches_two_sided(
+                expected,
+                actual,
+                expected_font_size_pt=font_size_pt,
+                # The rebuild's own size: its multiple is a multiple of that.
+                actual_font_size_pt=built.font_size_pt or font_size_pt,
             ):
                 found.append(
                     f"{name}: expected {expected!r} from the source, rebuilt "
