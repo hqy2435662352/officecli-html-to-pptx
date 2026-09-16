@@ -144,6 +144,54 @@ def test_a_real_rename_refusal_is_not_retried(
     assert len(attempts) == 1, "a refusal is not a transient condition"
 
 
+def test_windows_access_denied_onto_an_occupied_directory_is_a_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows calls an occupied destination "access denied"; it is still a collision.
+
+    The first real three-deck run hit exactly this: ``os.rename`` onto a directory
+    that already existed raised ``PermissionError: [WinError 5]`` rather than
+    ``FileExistsError``, and the failure reached the caller as a raw access
+    refusal.  The destination's own existence is the authoritative test, and it is
+    read only after the rename has already failed -- so the classification cannot
+    re-open the race the atomic move closed.
+    """
+    destination = tmp_path / "evidence"
+    destination.mkdir()
+    (destination / "gate-report.json").write_text("first", encoding="utf-8")
+    attempts: list[int] = []
+
+    def access_denied(source: Any, target: Any) -> None:
+        attempts.append(1)
+        raise PermissionError(5, "Access is denied", None, 5)
+
+    monkeypatch.setattr(gate.os, "rename", access_denied)
+    staging = _staging(tmp_path, "staging", "second")
+    with pytest.raises(ProjectionError) as raised:
+        gate._claim_destination(staging, destination)
+    assert raised.value.code == "output_collision"
+    # Classified, not retried: the destination is somebody else's publication.
+    assert len(attempts) == 1
+    assert (destination / "gate-report.json").read_text(encoding="utf-8") == "first"
+
+
+def test_access_denied_with_no_destination_is_a_real_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """And an access refusal where nothing published is reported as itself."""
+    attempts: list[int] = []
+
+    def access_denied(source: Any, target: Any) -> None:
+        attempts.append(1)
+        raise PermissionError(5, "Access is denied", None, 5)
+
+    monkeypatch.setattr(gate.os, "rename", access_denied)
+    staging = _staging(tmp_path, "staging", "payload")
+    with pytest.raises(PermissionError):
+        gate._claim_destination(staging, tmp_path / "evidence")
+    assert len(attempts) == 1
+
+
 def test_publishing_moves_the_whole_set_in_one_step(tmp_path: Path) -> None:
     """The successful direction, so the claim is not only tested when it fails."""
     staging = _staging(tmp_path, "staging", "payload")

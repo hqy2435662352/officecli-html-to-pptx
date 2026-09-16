@@ -184,6 +184,7 @@ from .author_projector import (
     ProjectionError,
     ProjectionResult,
     SelectedPage,
+    _published_selection,
     _sha256_file,
     _write_text_exact,
     project_pptx_to_author_html,
@@ -4577,7 +4578,11 @@ def _evidence_document(
                 1 for item in officecli_calls if item.resident_closed
             ),
         },
-        "selection": [page.as_dict() for page in projected.selection],
+        # The selection is published with the source key the ledger uses, not
+        # as the path a caller handed in: source-a page 2 and source-c page 2
+        # are different pages, and a published record that cannot say which deck a
+        # page came from is the ambiguity the multi-deck input exists to remove.
+        "selection": _published_selection(projected.selection, projected.sources),
         "sources": [record.as_dict() for record in projected.sources],
         "counts": {
             "selected_pages": len(evaluation.pages),
@@ -4883,7 +4888,15 @@ def _claim_destination(staging: Path, destination: Path) -> None:
             os.rename(staging, destination)
             return
         except OSError as error:
-            if _is_collision(error):
+            # Windows reports renaming onto an existing *directory* as
+            # ``ERROR_ACCESS_DENIED`` rather than as a collision, so the
+            # destination's own existence is the authoritative test: the rename
+            # either moved the whole set or it did not, and if the destination is
+            # there and ours is not, somebody else published.  This is a
+            # classification of a failure that already happened atomically, so
+            # reading the destination here cannot re-open the race the atomic
+            # move closed.
+            if _is_collision(error) or destination.exists():
                 raise ProjectionError(
                     "Gate output appeared during the run, so this run published "
                     f"nothing: {destination}",
@@ -5025,7 +5038,9 @@ def _write_evaluation_documents(
         staging / LEDGER_NAME,
         {
             "schema_version": GATE_SCHEMA_VERSION,
-            "selection": [page.as_dict() for page in evaluation.projected.selection],
+            "selection": _published_selection(
+                evaluation.projected.selection, evaluation.projected.sources
+            ),
             "sources": [record.as_dict() for record in evaluation.projected.sources],
             "entries": [item.as_dict() for item in evaluation.projected.ledger],
             "counts": evaluation.projected.disposition_counts(),

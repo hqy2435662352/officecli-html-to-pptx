@@ -2771,6 +2771,33 @@ def test_the_source_map_agrees_with_the_published_artifacts(clean_result: Any) -
         assert record["source_sha256"] == clean_result.projected.source_sha256
 
 
+def test_the_published_selection_names_the_deck_each_page_came_from(
+    clean_result: Any,
+) -> None:
+    """Every published selection entry carries the source key the ledger uses.
+
+    The report published the caller's own path per entry and no key, so a three-deck
+    selection could not say which deck page 2 came from -- exactly the ambiguity the
+    multi-deck input exists to remove.  The ledger, the source map and the report
+    now name the same source key for the same page.
+    """
+    report = json.loads(Path(clean_result.report_path).read_text(encoding="utf-8"))
+    assert report["selection"], "the report publishes the selection it ran"
+    keys = {record.source_key for record in clean_result.projected.sources}
+    for entry in report["selection"]:
+        assert entry["source_key"] in keys, entry
+        assert entry["source_page"] >= 1
+    # The source map's selection is the same record, keyed the same way.
+    source_map = json.loads(
+        (Path(clean_result.output_directory) / "source-map.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert [item["source_key"] for item in source_map["selection"]] == [
+        item["source_key"] for item in report["selection"]
+    ]
+
+
 def test_the_published_ledger_matches_the_run_ledger(clean_result: Any) -> None:
     """The ledger evidence document is the ledger the run classified."""
     payload = json.loads(
