@@ -69,6 +69,7 @@ from officecli_html_to_pptx._internal.source_delta_gate import (
     RebuiltObject,
     RetainedFinding,
     ScopeEvidence,
+    TextReadback,
     classify_gate_outcome,
     compact_text,
     compare_issues,
@@ -77,6 +78,7 @@ from officecli_html_to_pptx._internal.source_delta_gate import (
     normalize_text,
     parse_issue_path,
     pressure_ratio,
+    structure_text,
 )
 from officecli_html_to_pptx.contract import check_contract
 
@@ -2967,15 +2969,70 @@ def test_the_published_tolerances_are_the_ones_the_rule_uses() -> None:
 
 
 def test_whitespace_normalization_is_published_and_applied() -> None:
-    """The text comparison rule is one function, and it is documented."""
+    """The report's whitespace-blind rendering, which is not the acceptance rule."""
     assert normalize_text("a\nb   c \t") == "a b c"
     assert normalize_text("\u00a0a\u00a0") == "a"
-    # The comparison is character-level with whitespace taken out, so a moved
-    # space is not a lost character and a lost character is not a moved space.
+    # The report collapses whitespace, so a moved space reads as the same
+    # characters.  That is a reporting convenience; see the comparison test below
+    # for what actually decides acceptance.
     assert compact_text("HIGHLY GSX102") == compact_text("HIGHLYGSX102")
     assert compact_text("IDU SIZE") == compact_text("IDU  SIZE")
     assert compact_text("910x305x195") != compact_text("910x305x19")
     assert compact_text("MODEL") != compact_text("MODLE")
+
+
+def test_the_text_comparison_preserves_structure() -> None:
+    """The rule that decides whether rebuilt text is faithful.
+
+    A whitespace-blind comparison cannot see a lost hard break, a lost paragraph
+    boundary, or two words run together -- and this gate shipped with one, so
+    visual review found those defects instead of the gate.  The rule is now an
+    explicit, enumerated normalization that keeps structure, and this test pins
+    the boundary between what may legitimately differ and what may not.
+    """
+    # May differ: the same content with a break spelled another way, a display-only
+    # non-breaking space, and a tab where the source had a space.
+    assert structure_text("one\x0btwo") == structure_text("one\ntwo")
+    assert structure_text("one\rtwo") == structure_text("one\ntwo")
+    assert structure_text("A\u00a0B") == structure_text("A B")
+    assert structure_text("A\tB") == structure_text("A B")
+    assert structure_text("A  B") == structure_text("A B")
+    assert structure_text("A \nB") == structure_text("A\nB")
+
+    # May not differ: structure lost, words run together, characters changed.
+    assert structure_text("line one\nline two") != structure_text("line oneline two")
+    assert structure_text("line one\nline two") != structure_text("line one line two")
+    assert structure_text("A B") != structure_text("AB")
+    assert structure_text("Model 12K") != structure_text("Model 12")
+    assert structure_text("MODEL") != structure_text("MODLE")
+
+    # The exact shape of the defect that a whitespace-blind rule accepted.
+    merged = "Hard break probe linesecond visual line"
+    split = "Hard break probe line\nsecond visual line"
+    assert compact_text(merged) == compact_text(split)
+    assert structure_text(merged) != structure_text(split)
+
+
+def test_a_structure_lost_difference_is_not_a_whitespace_finding() -> None:
+    """Two words run together is a blocking difference, not a spacing detail."""
+    readback = TextReadback(
+        source_key="src1",
+        source_page=1,
+        source_object="/slide[1]/shape[@name=probe]",
+        emitted_name="slide-001-textbox-001",
+        rebuilt_kind="textbox",
+        rebuilt_slide=1,
+        expected_text="Hard break probe line\nsecond visual line",
+        rebuilt_text="Hard break probe linesecond visual line",
+        style_declarations={},
+    )
+    assert readback.compact_equal is True, "the characters did survive"
+    assert readback.matched is False, "but the structure did not"
+    assert readback.structure_lost is True
+    assert readback.whitespace_only_difference is False
+    payload = readback.as_dict()
+    assert payload["structure_lost"] is True
+    assert payload["expected_structure_text"] != payload["rebuilt_structure_text"]
 
 
 def _record(
