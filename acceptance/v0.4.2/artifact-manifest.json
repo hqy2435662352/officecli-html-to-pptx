@@ -1,6 +1,8 @@
 {
   "schema_version": 1,
   "algorithm": "sha256",
+  "commit": "3f2b9679c181d0c8ddfc0cb85e61c2614dfa1367 (working tree dirty)",
+  "run_id": "162c239d38c8c4bbb9493348a85f860488087b46069afdc6d84f9a81fee62c42",
   "note": "artifact-manifest.json is excluded from its own inventory: a document cannot contain its own hash. Every other file in the bundle is listed, and this manifest records acceptance-report.md's own hash in report_sha256.  `in_repository` says which entries a clone of the repository carries: the rest are the run's local evidence -- the gate directory and the page renders -- which `.gitignore` excludes and which therefore cannot be verified anywhere but on the machine that produced them.  All published documents are written with LF endings and `.gitattributes` keeps them that way, so their digests are the same in every checkout.",
   "artifact_count": 125,
   "published_count": 4,
@@ -8,8 +10,8 @@
   "artifacts": [
     {
       "name": "acceptance-report.md",
-      "sha256": "6f397b83112b8a13871865a26ced7bd18d312275da23f7fb0b428fb0bd133fd9",
-      "size_bytes": 44944,
+      "sha256": "e4346f00f713c7e440a265c7c7b35927ca9669e9a152f7ab24e2da1432fb1e2d",
+      "size_bytes": 44945,
       "in_repository": true
     },
     {
@@ -757,6 +759,6 @@
       "in_repository": false
     }
   ],
-  "report_sha256": "6f397b83112b8a13871865a26ced7bd18d312275da23f7fb0b428fb0bd133fd9",
+  "report_sha256": "e4346f00f713c7e440a265c7c7b35927ca9669e9a152f7ab24e2da1432fb1e2d",
   "report_name": "acceptance-report.md"
 }
