@@ -1,0 +1,49 @@
+#!/bin/sh
+# Refuse a commit that would publish private material.
+#
+# Scans the *index* rather than the working tree: what matters is what this commit
+# would introduce, and a file staged from elsewhere is not in the working tree at
+# all.
+#
+# Exit codes are distinct on purpose.  1 is "you are about to publish a private
+# identifier".  3 is "the guard could not run", which also refuses: an unguarded
+# tree is the condition the guard exists to prevent, so "could not run" must never
+# read as "passed".
+#
+# Bypassing this is `git commit --no-verify`, which is deliberate and visible in
+# the developer's own shell history.
+
+set -eu
+
+# Force UTF-8 for the interpreter below.
+#
+# Without this, CPython on Windows decodes the process working directory with the
+# legacy ANSI code page.  On a checkout whose path contains non-ASCII characters
+# that decode is lossy, so the guard resolves a directory that does not exist and
+# refuses -- a *false* refusal caused by where the repository lives, which would
+# train a developer to bypass the guard.  It is cheap to prevent and impossible to
+# diagnose from the failure message alone.
+PYTHONUTF8=1
+export PYTHONUTF8
+
+root=$(git rev-parse --show-toplevel)
+guard="$root/.githooks/private_material_guard.py"
+
+if [ ! -f "$guard" ]; then
+    echo "private-material guard refused: no scanner at $guard" >&2
+    exit 3
+fi
+
+python=""
+for candidate in "${PYTHON:-}" "$root/.venv/Scripts/python.exe" "$root/.venv/bin/python" python3 python; do
+    if [ -n "$candidate" ] && command -v "$candidate" >/dev/null 2>&1; then
+        python="$candidate"
+        break
+    fi
+done
+if [ -z "$python" ]; then
+    echo "private-material guard refused: no python interpreter found" >&2
+    exit 3
+fi
+
+exec "$python" "$guard" --mode staged

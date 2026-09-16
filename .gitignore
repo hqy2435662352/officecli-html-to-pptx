@@ -227,6 +227,12 @@ __marimo__/
 *.local.pptx
 _smoke/
 
+# The private-material guard's own configuration.  It lists the strings that must
+# never be published, so committing it would publish them.  The scanner and its
+# synthetic self-test are tracked; the values are not.
+/private-material.json
+/private-material.local.json
+
 # V0.4.2 representative acceptance bundle (acceptance/v0.4.2/).
 # Only the text evidence is committed: the report, the JSON manifests and the
 # gate's JSON documents.  The generated binaries and the visual records are

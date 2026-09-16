@@ -1,0 +1,11 @@
+# Line-ending policy for files whose bytes are semantically load-bearing.
+#
+# The repository is developed on Windows and validated on Linux, and git's
+# `core.autocrlf` default would rewrite these on checkout.  For the hook scripts
+# that is a correctness problem, not a cosmetic one: a POSIX shell script whose
+# shebang line ends in CRLF does not run, so a hook that works on the development
+# machine would fail on a Linux clone -- which is exactly the environment the
+# acceptance track uses.
+
+.githooks/* text eol=lf
+*.sh text eol=lf
