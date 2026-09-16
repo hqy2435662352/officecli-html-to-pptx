@@ -1404,11 +1404,158 @@ def test_the_rebuilt_deck_really_contains_the_source_characters(
 def test_supported_style_declarations_are_recorded_for_every_readback(
     clean_result: Any,
 ) -> None:
-    """Each readback carries the emitted object's own formatting declarations."""
+    """Each readback carries the *source object's* own formatting, per run.
+
+    The expectation used to be parsed back out of the generated HTML, which made
+    the style check compare the projection with itself.  It is now the captured
+    source declaration, and it is per run rather than one representative value, so
+    a mixed-run body cannot pass by having one style.
+    """
+    checked = 0
     for readback in clean_result.pages[0].text_readback:
-        assert readback.style_declarations.get("font-size")
-        assert readback.style_declarations.get("font-family")
-        assert readback.style_declarations.get("color")
+        declarations = readback.style_declarations
+        runs = declarations.get("runs") or []
+        assert runs, f"{readback.source_object} declares no run style"
+        for run in runs:
+            # Every run states the formatting the source owns.  A run that
+            # declares a size must also state its face and colour.
+            if "size=" in run:
+                assert "font=" in run, run
+                assert "color=" in run, run
+        checked += 1
+        # And the rebuilt side is read from the rebuilt PPTX, per run.
+        assert readback.rebuilt_style.unavailable is None, readback.source_object
+        assert len(readback.rebuilt_style.runs) == len(runs), readback.source_object
+        assert readback.style_matched, readback.style_failures()
+    assert checked, "the clean fixture projects at least one text object"
+
+
+def test_a_changed_rebuilt_font_size_blocks(clean_result: Any, tmp_path: Path) -> None:
+    """A rebuilt object whose size changed is not a faithful rebuild.
+
+    This is the mutation the gate used to be blind to: the characters were intact,
+    the text check passed, and nothing looked at the formatting at all.
+    """
+    target = _object_named(clean_result, "clean-text")
+    result = _run_gate(
+        clean_result.projected.selection[0].source_pptx,
+        tmp_path / "gate",
+        intake_mutation=_style_mutation(
+            target.emitted_name,
+            lambda style: replace(
+                style,
+                runs=tuple(
+                    run.replace("size=18pt", "size=99pt") for run in style.runs
+                ),
+            ),
+        ),
+    )
+    assert result.outcome is GateOutcome.BLOCK
+    diagnostic = next(
+        item for item in result.diagnostics if item.code == "style_readback_mismatch"
+    )
+    assert diagnostic.source_object == target.source_object
+    assert diagnostic.rebuilt_object == target.emitted_name
+
+
+def test_a_changed_rebuilt_font_family_blocks(clean_result: Any, tmp_path: Path) -> None:
+    """A substituted typeface is a style regression, not a detail."""
+    target = _object_named(clean_result, "clean-text")
+    result = _run_gate(
+        clean_result.projected.selection[0].source_pptx,
+        tmp_path / "gate",
+        intake_mutation=_style_mutation(
+            target.emitted_name,
+            lambda style: replace(
+                style,
+                runs=tuple(
+                    re.sub(r"font=[^|]*", "font=comic sans ms", run)
+                    for run in style.runs
+                ),
+            ),
+        ),
+    )
+    assert result.outcome is GateOutcome.BLOCK
+    assert "style_readback_mismatch" in {item.code for item in result.diagnostics}
+
+
+def test_a_changed_rebuilt_colour_blocks(clean_result: Any, tmp_path: Path) -> None:
+    target = _object_named(clean_result, "clean-text")
+    result = _run_gate(
+        clean_result.projected.selection[0].source_pptx,
+        tmp_path / "gate",
+        intake_mutation=_style_mutation(
+            target.emitted_name,
+            lambda style: replace(
+                style,
+                runs=tuple(
+                    re.sub(r"color=[^|]*", "color=#00ff00", run)
+                    for run in style.runs
+                ),
+            ),
+        ),
+    )
+    assert result.outcome is GateOutcome.BLOCK
+    assert "style_readback_mismatch" in {item.code for item in result.diagnostics}
+
+
+def test_a_flattened_run_list_blocks(clean_result: Any, tmp_path: Path) -> None:
+    """A body whose runs were collapsed into one style is not faithful.
+
+    The readback is compared run for run, so losing a run boundary fails even when
+    the surviving style is a correct representative of the body.
+    """
+    target = _object_named(clean_result, "clean-text")
+    result = _run_gate(
+        clean_result.projected.selection[0].source_pptx,
+        tmp_path / "gate",
+        intake_mutation=_style_mutation(
+            target.emitted_name,
+            lambda style: replace(style, runs=style.runs[:1]),
+        ),
+    )
+    assert result.outcome is GateOutcome.BLOCK
+    assert "style_readback_mismatch" in {item.code for item in result.diagnostics}
+
+
+def test_an_unreadable_rebuilt_style_blocks_rather_than_passing(
+    clean_result: Any, tmp_path: Path
+) -> None:
+    """A style the gate cannot read must not be treated as a style that matched."""
+    target = _object_named(clean_result, "clean-text")
+    result = _run_gate(
+        clean_result.projected.selection[0].source_pptx,
+        tmp_path / "gate",
+        intake_mutation=_style_mutation(
+            target.emitted_name,
+            lambda style: replace(style, unavailable="the readback reported nothing"),
+        ),
+    )
+    assert result.outcome is GateOutcome.BLOCK
+    assert "style_readback_mismatch" in {item.code for item in result.diagnostics}
+
+
+def _style_mutation(name: str, rewrite: Any) -> Any:
+    """Mutate one rebuilt object's style inside the sealed intake bundle.
+
+    The mutation is applied to the *readback*, not to the deck, so every case is
+    judged by the same production comparison a real run uses.  Reading the deck
+    itself was correct; what is under test is that the comparison notices a
+    readback whose formatting no longer matches the source's declaration.
+    """
+
+    def mutate(intake: GateIntake) -> GateIntake:
+        return replace(
+            intake,
+            rebuilt_objects=tuple(
+                replace(item, style=rewrite(item.style))
+                if item.emitted_name == name
+                else item
+                for item in intake.rebuilt_objects
+            ),
+        )
+
+    return mutate
 
 
 def test_a_changed_rebuilt_text_blocks(clean_result: Any, tmp_path: Path) -> None:
@@ -1584,7 +1731,7 @@ def test_a_rebuilt_table_that_differs_only_in_whitespace_is_reported(
     )
     check = result.pages[0].tables[0]
     assert check.failures() == ()
-    assert check.whitespace_differing_cells() == (2,)
+    assert check.space_only_cell_positions() == (2,)
 
 
 def test_a_rasterised_table_blocks(clean_result: Any, tmp_path: Path) -> None:

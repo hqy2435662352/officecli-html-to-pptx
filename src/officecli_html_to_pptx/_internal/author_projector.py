@@ -614,6 +614,15 @@ class ProjectedObject:
     source_file: str = ""
     source_sha256: str = ""
     reason_code: str | None = None
+    #: The text formatting the *source object* declares, captured at read time.
+    #:
+    #: Carried here so the acceptance gate can compare the rebuilt PPTX against
+    #: what the source actually declared.  Without it the gate could only re-parse
+    #: the generated HTML, which is the artifact under test -- a style check that
+    #: compares the projection with itself.  Each entry is one paragraph:
+    #: ``{"align", "line_spacing", "runs": ({"font","size","color","bold",
+    #: "italic","underline"}, ...)}``.
+    text_style: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def emitted_name(self) -> str:
@@ -2189,6 +2198,36 @@ def _assert_one_to_one_mapping(build: _ProjectionBuild) -> None:
             )
 
 
+def _captured_text_style(obj: CapturedObject) -> tuple[Mapping[str, Any], ...]:
+    """Return the text formatting the source object declares, as plain data.
+
+    This is the evidence side of the acceptance gate's style check.  It is taken
+    from the *captured source object* -- what OfficeCLI read out of the source
+    deck -- rather than from the HTML the projector goes on to emit, so the
+    comparison at the gate has two genuinely independent sides.
+    """
+    paragraphs: list[Mapping[str, Any]] = []
+    for paragraph in obj.paragraphs:
+        paragraphs.append(
+            {
+                "align": str(paragraph.align or ALIGNMENT_DEFAULT).lower(),
+                "line_spacing": paragraph.line_spacing,
+                "runs": tuple(
+                    {
+                        "font": run.font_family,
+                        "size": f"{run.font_size_pt:g}pt" if run.font_size_pt else None,
+                        "color": run.color,
+                        "bold": bool(run.bold),
+                        "italic": bool(run.italic),
+                        "underline": str(run.underline or "none").lower(),
+                    }
+                    for run in paragraph.runs
+                ),
+            }
+        )
+    return tuple(paragraphs)
+
+
 def _published_selection(
     selection: Sequence[SelectedPage],
     sources: Sequence[ProjectionSourceRecord],
@@ -2582,6 +2621,7 @@ def _build_projection(
                 source_file=Path(source.source_path).name,
                 source_sha256=source.source_sha256,
                 reason_code=reason_code,
+                text_style=_captured_text_style(obj),
             )
             object_html[html_id] = _emit_object_html(
                 obj,

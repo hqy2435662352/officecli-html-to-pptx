@@ -403,11 +403,14 @@ COMPARISON_RULES: tuple[NormalizationRule, ...] = (
             "source PPTX through OfficeCLI rather than from the projection's "
             "emitted HTML; comparing against the emitted HTML would only prove "
             "that the projection is consistent with itself. Cell text is compared "
-            "under the same structure-preserving rule as object text. The table's "
-            "kind, row count, column count, cell count and per-cell source mapping "
-            "are compared exactly, and a source matrix that cannot be read is a "
-            "blocking source_table_readback_unavailable diagnostic rather than an "
-            "empty expectation."
+            "under the same structure-preserving rule as object text, so a cell "
+            "whose words ran together or whose line structure changed blocks. The "
+            "table's kind, row count, column count and cell count are compared "
+            "exactly; the per-cell source mapping is read from the emitted HTML, "
+            "which is where that claim belongs. A source matrix that cannot be "
+            "read, or that is ragged, is a blocking "
+            "source_table_readback_unavailable diagnostic rather than an empty "
+            "expectation."
         ),
     ),
     NormalizationRule(
@@ -571,6 +574,118 @@ class OfficeCliEvidence:
 
 
 @dataclass(frozen=True)
+class RebuiltStyle:
+    """The supported text formatting of one rebuilt object, as OfficeCLI reports it.
+
+    Read from the rebuilt PPTX, never from the generated HTML.  The gate used to
+    build its "expected style" out of the emitted document and compare it with
+    nothing at all, so changing a rebuilt object's font, size, colour or weight
+    while leaving its characters intact would still pass.  These are the
+    declaration names the canonical surface actually carries.
+    """
+
+    align: str | None = None
+    line_spacing: str | None = None
+    wrap: str | None = None
+    auto_fit: str | None = None
+    space_before: str | None = None
+    space_after: str | None = None
+    #: One entry per distinct resolved run style, in reading order.  Per-run, not
+    #: a single representative value: a mixed-run body whose runs were flattened
+    #: into one style must not read as faithful.
+    runs: tuple[str, ...] = ()
+    #: Set when the readback could not be established, which is a blocking
+    #: condition rather than an empty style.
+    unavailable: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "align": self.align,
+            "line_spacing": self.line_spacing,
+            "wrap": self.wrap,
+            "auto_fit": self.auto_fit,
+            "space_before": self.space_before,
+            "space_after": self.space_after,
+            "runs": list(self.runs),
+        }
+        if self.unavailable:
+            payload["unavailable"] = self.unavailable
+        return payload
+
+
+def _style_token(value: Any) -> str | None:
+    """Return a normalized declaration value, or ``None`` when it is not stated."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "false"}:
+        return None
+    return text.lower()
+
+
+def rebuilt_style(detailed: Mapping[str, Any]) -> RebuiltStyle:
+    """Read one rebuilt object's supported text formatting from its readback."""
+    fmt = dict(detailed.get("format") or {})
+    runs: list[str] = []
+    for paragraph in detailed.get("children") or []:
+        if str(paragraph.get("type")) != "paragraph":
+            continue
+        paragraph_format = dict(paragraph.get("format") or {})
+        for run in paragraph.get("children") or []:
+            if str(run.get("type")) != "run":
+                continue
+            run_format = dict(run.get("format") or {})
+            sources = (run_format, paragraph_format, fmt)
+            family = _resolved_value(sources, "font.latin", "effective.font.latin",
+                                     "font", "effective.font")
+            size = _resolved_value(sources, "size", "effective.size")
+            colour = _resolved_value(sources, "color", "effective.color")
+            bold = _resolved_value(sources, "bold", "effective.bold")
+            italic = _resolved_value(sources, "italic", "effective.italic")
+            underline = _resolved_value(sources, "underline", "effective.underline")
+            runs.append(
+                "|".join(
+                    f"{name}={_style_token(value) or '-'}"
+                    for name, value in (
+                        ("font", family),
+                        ("size", size),
+                        ("color", colour),
+                        ("bold", bold),
+                        ("italic", italic),
+                        ("underline", underline),
+                    )
+                )
+            )
+    return RebuiltStyle(
+        align=_style_token(fmt.get("align") or fmt.get("effective.align")),
+        line_spacing=_style_token(
+            fmt.get("lineSpacing") or fmt.get("effective.lineSpacing")
+        ),
+        wrap=_style_token(fmt.get("wrap")),
+        auto_fit=_style_token(fmt.get("autoFit")),
+        space_before=_style_token(
+            fmt.get("spaceBefore") or fmt.get("effective.spaceBefore")
+        ),
+        space_after=_style_token(
+            fmt.get("spaceAfter") or fmt.get("effective.spaceAfter")
+        ),
+        runs=tuple(runs),
+    )
+
+
+def _resolved_value(
+    sources: Sequence[Mapping[str, Any]], *names: str
+) -> Any:
+    """Return the first stated value for ``names`` across the fallbacks."""
+    for mapping in sources:
+        for name in names:
+            value = mapping.get(name)
+            if value is not None:
+                return value
+    return None
+
+
+@dataclass(frozen=True)
 class RebuiltObject:
     """One object of the rebuilt deck, as OfficeCLI reports it."""
 
@@ -583,6 +698,8 @@ class RebuiltObject:
     rows: int | None = None
     columns: int | None = None
     cells: tuple[str, ...] = ()
+    #: The supported text formatting OfficeCLI reports for this rebuilt object.
+    style: RebuiltStyle = RebuiltStyle()
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -592,6 +709,7 @@ class RebuiltObject:
             "path": self.path,
             "text": self.text,
             "bounds_pt": [round(value, 4) for value in self.bounds_pt],
+            "style": self.style.as_dict(),
         }
         if self.rows is not None:
             payload["rows"] = self.rows
@@ -600,9 +718,114 @@ class RebuiltObject:
         return payload
 
 
+def _declaration_matches(expected: Any, actual: Any, *, name: str) -> bool:
+    """Whether one object-level declaration survived the rebuild.
+
+    Lengths are compared with a tolerance because a point value round-trips
+    through pixels and back; a colour is compared by its digits, because a
+    rebuild may spell the same colour with or without the leading hash.
+    """
+    left = _style_token(expected)
+    right = _style_token(actual)
+    if left is None or right is None:
+        return left == right
+    if name == "lineSpacing":
+        return _numbers_agree(left, right, tolerance=0.02)
+    if name == "align":
+        return left == right
+    return left.lstrip("#") == right.lstrip("#")
+
+
+def _run_matches(expected: Any, actual: Any) -> bool:
+    """Whether one run's resolved formatting survived the rebuild."""
+    left = str(expected)
+    right = str(actual)
+    if left == right:
+        return True
+    left_fields = dict(part.split("=", 1) for part in left.split("|") if "=" in part)
+    right_fields = dict(part.split("=", 1) for part in right.split("|") if "=" in part)
+    for field, expected_value in left_fields.items():
+        actual_value = right_fields.get(field)
+        if actual_value is None:
+            return False
+        if field in {"size", "lineSpacing"}:
+            if not _numbers_agree(expected_value, actual_value, tolerance=0.05):
+                return False
+            continue
+        if field == "color":
+            if expected_value.lstrip("#") != actual_value.lstrip("#"):
+                return False
+            continue
+        if field in {"bold", "italic", "underline"}:
+            if _style_token(expected_value) != _style_token(actual_value):
+                return False
+            continue
+        if expected_value != actual_value:
+            return False
+    return True
+
+
+def _numbers_agree(left: Any, right: Any, *, tolerance: float) -> bool:
+    """Whether two declaration values name the same measurement."""
+    import re as _re
+
+    def number(value: Any) -> float | None:
+        match = _re.search(r"-?\d+(?:\.\d+)?", str(value or ""))
+        return float(match.group(0)) if match else None
+
+    left_number = number(left)
+    right_number = number(right)
+    if left_number is None or right_number is None:
+        return _style_token(left) == _style_token(right)
+    return abs(left_number - right_number) <= tolerance
+
+
+def expected_style_declarations(projected: Any) -> dict[str, Any]:
+    """Return the supported formatting the *source object* declares.
+
+    Read from the projection's own captured object rather than re-parsed out of
+    the generated HTML.  The emitted HTML is the artifact under test; using it as
+    the expectation would make the style check compare the projection with itself,
+    which is the defect this replaces.
+    """
+    payload: dict[str, Any] = {}
+    capabilities = getattr(projected, "capabilities", None) or {}
+    if isinstance(capabilities, Mapping) and capabilities:
+        payload["capabilities"] = dict(capabilities)
+
+    paragraphs = list(getattr(projected, "text_style", ()) or ())
+    if paragraphs:
+        first = paragraphs[0]
+        if first.get("align") and str(first["align"]).lower() not in {"left", "start"}:
+            payload["text-align"] = first["align"]
+        if first.get("line_spacing"):
+            payload["line-height"] = first["line_spacing"]
+        runs: list[str] = []
+        for paragraph in paragraphs:
+            for run in paragraph.get("runs") or ():
+                if not isinstance(run, Mapping):
+                    continue
+                runs.append(
+                    "|".join(
+                        f"{name}={_style_token(value) or '-'}"
+                        for name, value in (
+                            ("font", run.get("font")),
+                            ("size", run.get("size")),
+                            ("color", run.get("color")),
+                            ("bold", run.get("bold")),
+                            ("italic", run.get("italic")),
+                            ("underline", run.get("underline")),
+                        )
+                    )
+                )
+        if runs:
+            payload["runs"] = runs
+    return payload
+
+
 @dataclass(frozen=True)
 class TextReadback:
-    """Independent text/style readback of one canonical-editable object."""
+    """Independent text and supported-style readback of one canonical-editable object."""
 
     source_key: str
     source_page: int
@@ -612,7 +835,11 @@ class TextReadback:
     rebuilt_slide: int
     expected_text: str
     rebuilt_text: str
-    style_declarations: Mapping[str, str]
+    style_declarations: Mapping[str, Any]
+    #: The same formatting as OfficeCLI reports it *from the rebuilt PPTX*.  The
+    #: evidence side is the source's own declaration and this is the artifact's, so
+    #: the two sides are read from different places and the comparison can fail.
+    rebuilt_style: RebuiltStyle = RebuiltStyle()
 
     @property
     def compact_equal(self) -> bool:
@@ -667,10 +894,67 @@ class TextReadback:
             "expected_structure_text": structure_text(self.expected_text),
             "rebuilt_structure_text": structure_text(self.rebuilt_text),
             "matched": self.matched,
+            "style_matched": self.style_matched,
             "structure_lost": self.structure_lost,
             "whitespace_only_difference": self.whitespace_only_difference,
-            "style_declarations": dict(self.style_declarations),
+            "expected_style": dict(self.style_declarations),
+            "rebuilt_style": self.rebuilt_style.as_dict(),
         }
+
+    @property
+    def style_matched(self) -> bool:
+        """Whether the supported formatting survived the rebuild.
+
+        Part of acceptance, not a separate report: while only ``matched`` decided
+        the verdict, a rebuilt object whose font, size, colour or weight changed
+        passed as long as its characters were intact.
+        """
+        if self.rebuilt_style.unavailable:
+            return False
+        return not self.style_failures()
+
+    def style_failures(self) -> tuple[str, ...]:
+        """Name every supported declaration that did not survive, with both sides."""
+        built = self.rebuilt_style
+        found: list[str] = []
+        for name, expected in (
+            ("align", self.style_declarations.get("text-align")),
+            ("lineSpacing", self.style_declarations.get("line-height")),
+        ):
+            if expected is None:
+                continue
+            actual = built.align if name == "align" else built.line_spacing
+            if actual is None:
+                found.append(
+                    f"{name}: the source declares {expected!r} and the rebuilt "
+                    "object reports none"
+                )
+            elif not _declaration_matches(expected, actual, name=name):
+                found.append(
+                    f"{name}: expected {expected!r} from the source, rebuilt "
+                    f"reports {actual!r}"
+                )
+        # Per-run formatting is compared run for run.  A body whose runs were
+        # flattened into one style has fewer entries and fails here, which is the
+        # point: a representative value is not a faithful readback.
+        expected_runs = self.style_declarations.get("runs")
+        if expected_runs:
+            expected_list = list(expected_runs)
+            if len(expected_list) != len(built.runs):
+                found.append(
+                    f"run count: the source declares {len(expected_list)} styled "
+                    f"run(s) and the rebuilt object reports {len(built.runs)}"
+                )
+            else:
+                for index, (expected_run, actual_run) in enumerate(
+                    zip(expected_list, built.runs)
+                ):
+                    if not _run_matches(expected_run, actual_run):
+                        found.append(
+                            f"run {index}: expected {expected_run!r}, rebuilt "
+                            f"reports {actual_run!r}"
+                        )
+        return tuple(found)
 
 
 @dataclass(frozen=True)
@@ -692,20 +976,44 @@ class TableCheck:
     rebuilt_cells: tuple[str, ...]
     cell_paths: tuple[str, ...]
 
-    def compact_cells_equal(self) -> bool:
-        """Whether the matrices carry the same characters, whitespace aside."""
-        return tuple(map(compact_text, self.expected_cells)) == tuple(
-            map(compact_text, self.rebuilt_cells)
+    def structure_cells_equal(self) -> bool:
+        """Whether the matrices carry the same text under the object-text rule.
+
+        Cell text is compared with the same explicit, structure-preserving
+        normalization object text uses.  It used to be compared whitespace-blind,
+        which was the rule this gate was already criticized for elsewhere: a cell
+        whose words ran together, or whose paragraph break disappeared, matched.
+        Two different strictness levels for "the same text" is one rule too many,
+        and the looser one was on the path that is hardest to check by eye.
+        """
+        return tuple(map(structure_text, self.expected_cells)) == tuple(
+            map(structure_text, self.rebuilt_cells)
         )
 
-    def whitespace_differing_cells(self) -> tuple[int, ...]:
-        """The cell positions whose text differs in whitespace placement alone."""
+    def differing_cell_positions(self) -> tuple[int, ...]:
+        """The cell positions whose text differs under that rule."""
         return tuple(
             index
             for index, (expected, rebuilt) in enumerate(
                 zip(self.expected_cells, self.rebuilt_cells)
             )
-            if expected != rebuilt and compact_text(expected) == compact_text(rebuilt)
+            if structure_text(expected) != structure_text(rebuilt)
+        )
+
+    def space_only_cell_positions(self) -> tuple[int, ...]:
+        """The cells that differ in space placement alone, structure intact.
+
+        These are the ones worth reporting as a retained finding: the characters
+        and the line structure survive, and only the spaces moved.  A cell that
+        also fails :meth:`structure_cells_equal` is a blocking failure instead.
+        """
+        return tuple(
+            index
+            for index, (expected, rebuilt) in enumerate(
+                zip(self.expected_cells, self.rebuilt_cells)
+            )
+            if expected != rebuilt
+            and structure_text(expected) == structure_text(rebuilt)
         )
 
     def failures(self) -> tuple[str, ...]:
@@ -730,10 +1038,12 @@ class TableCheck:
                 f"the rebuilt table reports {len(self.rebuilt_cells)} cell(s) for "
                 f"a {self.expected_rows}x{self.expected_columns} matrix"
             )
-        if not self.compact_cells_equal():
+        if not self.structure_cells_equal():
+            positions = self.differing_cell_positions()
             found.append(
-                "cell text differs from the source matrix by more than "
-                "whitespace placement"
+                "cell text differs from the SOURCE deck's matrix under the "
+                f"structure-preserving rule at cell position(s) {list(positions[:8])}"
+                + (" ..." if len(positions) > 8 else "")
             )
         if len(self.cell_paths) != self.expected_rows * self.expected_columns:
             found.append(
@@ -758,7 +1068,7 @@ class TableCheck:
             "expected_cells": list(self.expected_cells),
             "rebuilt_cells": list(self.rebuilt_cells),
             "cell_paths": list(self.cell_paths),
-            "whitespace_differing_cells": list(self.whitespace_differing_cells()),
+            "differing_cell_positions": list(self.differing_cell_positions()),
             "failures": list(self.failures()),
         }
 
@@ -1917,6 +2227,7 @@ def _rebuilt_objects(
                     rows=int(rows) if rows is not None else None,
                     columns=int(columns) if columns is not None else None,
                     cells=cells,
+                    style=rebuilt_style(detailed),
                 )
             )
     return tuple(objects)
@@ -2759,7 +3070,7 @@ def _table_readback(
     for the per-cell source mapping, which is a property of the projection rather
     than a claim about the source.
     """
-    _, cell_paths = _emitted_table_cells(html_text, item.html_id)
+    cell_paths = _emitted_table_cell_paths(html_text, item.html_id)
     cells = source_table_matrix(item.source_path, item.source_object)
     return TableCheck(
         source_key=item.source_key,
@@ -2779,32 +3090,28 @@ def _table_readback(
     )
 
 
-def _emitted_table_cells(
-    html_text: str, html_id: str
-) -> tuple[tuple[tuple[str, ...], ...], tuple[str, ...]]:
-    """Return the emitted table's cell matrix and its per-cell source mapping.
+def _emitted_table_cell_paths(html_text: str, html_id: str) -> tuple[str, ...]:
+    """Return the emitted table's per-cell source mapping, in reading order.
 
-    The matrix is parsed from the published Canonical Author HTML -- the same
-    artifact the New Deck compiler consumed -- so the independent readback has a
-    source-side matrix to compare against without ever reading the projection's
-    generated manifest.
+    Only the mapping, not a matrix.  This function used to return the emitted
+    cell text as well and the table check used it as the *expectation*, which made
+    the check compare the rebuilt table against the deck rebuilt from the same
+    HTML.  The expectation now comes from the source deck
+    (:func:`source_table_matrix`), so the emitted HTML is read for the one thing
+    that really is a property of the projection: which source cell each emitted
+    cell claims to come from.
     """
     from lxml import html as lxml_html
 
     document = lxml_html.fromstring(html_text)
     nodes = document.xpath(f'//*[@id="{html_id}"]')
     if not nodes:
-        return (), ()
-    node = nodes[0]
-    matrix: list[tuple[str, ...]] = []
-    paths: list[str] = []
-    for row in node.xpath(".//tr"):
-        values: list[str] = []
-        for cell in row.xpath("./td|./th"):
-            values.append(normalize_text(cell.text_content()))
-            paths.append(str(cell.get("data-cell-path", "")))
-        matrix.append(tuple(values))
-    return tuple(matrix), tuple(paths)
+        return ()
+    return tuple(
+        str(cell.get("data-cell-path", ""))
+        for row in nodes[0].xpath(".//tr")
+        for cell in row.xpath("./td|./th")
+    )
 
 
 def _style_declarations(html_text: str, html_id: str) -> dict[str, str]:
@@ -2885,7 +3192,11 @@ def _whitespace_only_findings(
             )
         )
     for check in tables:
-        positions = check.whitespace_differing_cells()
+        # A cell whose text differs under the structure-preserving rule is already
+        # a blocking table failure; it must not also be reported here as an
+        # accepted whitespace detail, or the same condition would be both a
+        # failure and a finding.
+        positions = check.space_only_cell_positions()
         if not positions:
             continue
         findings.append(
@@ -2896,8 +3207,9 @@ def _whitespace_only_findings(
                 condition="table_cell_whitespace_placement",
                 reason=(
                     f"{len(positions)} table cell(s) carry the same characters "
-                    "but place their whitespace differently; the difference is "
-                    "reported here and does not block acceptance"
+                    "and the same line structure but place their spaces "
+                    "differently; the difference is reported here and does not "
+                    "block acceptance"
                 ),
                 rebuilt_slide=check.rebuilt_slide or None,
                 rebuilt_object=check.emitted_name,
@@ -3098,7 +3410,12 @@ def evaluate_intake(
                     rebuilt_slide=rebuilt.rebuilt_slide,
                     expected_text=item.text,
                     rebuilt_text=rebuilt.text,
-                    style_declarations=_style_declarations(html_text, item.html_id),
+                    # The expectation is the SOURCE object's own captured
+                    # declaration; the actual is read from the rebuilt PPTX.  The
+                    # generated HTML used to stand in for the expectation, which
+                    # made this check compare the projection with itself.
+                    style_declarations=expected_style_declarations(item),
+                    rebuilt_style=rebuilt.style,
                 )
                 text_readbacks.append(readback)
                 if not readback.matched:
@@ -3119,6 +3436,28 @@ def evaluate_intake(
                             rebuilt_object=item.emitted_name,
                         )
                     )
+                if not readback.style_matched:
+                    # A style mismatch is its own blocking condition with its own
+                    # code, so the report says which formatting was lost rather
+                    # than only that "the text readback failed".
+                    for failure in readback.style_failures() or (
+                        readback.rebuilt_style.unavailable
+                        or "the rebuilt object reports no readable style",
+                    ):
+                        diagnostics.append(
+                            GateDiagnostic(
+                                code="style_readback_mismatch",
+                                message=(
+                                    "supported formatting did not survive the "
+                                    f"rebuild: {failure}"
+                                ),
+                                source_key=item.source_key,
+                                source_page=item.source_slide,
+                                source_object=item.source_object,
+                                rebuilt_slide=rebuilt.rebuilt_slide,
+                                rebuilt_object=item.emitted_name,
+                            )
+                        )
             elif item.projected_kind == "table":
                 try:
                     check = _table_readback(item, html_text=html_text, rebuilt=rebuilt)
