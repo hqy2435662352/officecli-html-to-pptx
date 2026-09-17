@@ -163,22 +163,33 @@ async def test_public_author_compiler_preserves_chromium_soft_wraps_inside_measu
         str(html_path), "author", str(output_path), slide_indices=[0]
     )
 
+    # Select the two capacity paragraphs by the source object they came from, not
+    # by the text Chromium happened to break.  Where the visual line falls is a
+    # host text-stack artefact — a Windows host breaks after "18K" and a Linux
+    # host after the following "/" — and both are faithful records of what that
+    # host measured.  The measured box is identical either way, so geometry stays
+    # asserted exactly while the break offset is not asserted at all.
     capacities = [
         item
         for item in result.manifest["objects"]
-        if item["text"] in {"09K / 12K / 18K\n/ 24K", "09K / 12K / 18K / 24K"}
+        if item["kind"] == "textbox" and item["source_object"].endswith("/p[2]")
     ]
     assert len(capacities) == 2
-    wrapped = next(item for item in capacities if "\n" in item["text"])
-    single_line = next(item for item in capacities if "\n" not in item["text"])
+    wrapped = next(item for item in capacities if len(item["paragraphs"]) == 2)
+    single_line = next(item for item in capacities if len(item["paragraphs"]) == 1)
+
+    authored_capacity = "09K / 12K / 18K / 24K"
+    # The product invariant under test: one source paragraph that Chromium wrapped
+    # is represented as native paragraphs whose visual lines rejoin to the authored
+    # text, and a box wide enough for one line stays a single paragraph.
+    for item in capacities:
+        assert " ".join(
+            paragraph["text"] for paragraph in item["paragraphs"]
+        ) == authored_capacity
 
     assert wrapped["bounds_pt"] == pytest.approx(
         [59.5, 235.3984, 76.25, 29.390625], abs=0.01
     )
-    assert [paragraph["text"] for paragraph in wrapped["paragraphs"]] == [
-        "09K / 12K / 18K",
-        "/ 24K",
-    ]
     assert all(
         paragraph["space_before_pt"] == 0.0
         and paragraph["space_after_pt"] == 0.0
@@ -187,6 +198,7 @@ async def test_public_author_compiler_preserves_chromium_soft_wraps_inside_measu
     assert single_line["bounds_pt"] == pytest.approx(
         [511.5, 235.3984, 111.0, 14.6953125], abs=0.01
     )
+    assert single_line["paragraphs"][0]["text"] == authored_capacity
 
     validation = _run_process("validate", str(output_path))
     assert validation.returncode == 0, validation.stdout + validation.stderr
@@ -240,7 +252,7 @@ def _table_deck_html() -> str:
 </style></head><body>
   <section class="slide active">
     <table aria-label="native table">
-      <thead><tr><th>MODEL</th><th>VARIANT</th><th>INDOOR SIZE</th><th>OUTDOOR SIZE</th><th>TCL CODE</th></tr></thead>
+      <thead><tr><th>MODEL</th><th>VARIANT</th><th>INDOOR SIZE</th><th>OUTDOOR SIZE</th><th>PART CODE</th></tr></thead>
       <tbody>
         <tr><td>Capacity Class</td><td>12K, one</td><td>12K</td><td>18K</td><td>Z4U20101035061</td></tr>
         <tr><td>Cooling Capacity</td><td>12000</td><td>18100</td><td>22000</td><td>R32</td></tr>
@@ -324,6 +336,12 @@ def _mixed_runs_html() -> str:
 
 
 def _flex_labels_html() -> str:
+    """Flex children must lower to separate text objects, never one merged run.
+
+    The labels are deliberately generic placeholders.  This fixture previously
+    carried wording lifted from a customer deck, which a public repository should
+    not fingerprint; keep replacement text synthetic rather than domain-flavoured.
+    """
     return """<!doctype html>
 <html><head><style>
   * { box-sizing: border-box; }
@@ -336,8 +354,8 @@ def _flex_labels_html() -> str:
   .nav { position: absolute; left: 40px; top: 120px; display: flex; gap: 18px; }
   .nav span { font-size: 12px; }
 </style></head><body><section class="slide">
-  <div class="header"><strong>AIR CONDITIONER</strong><small>PRODUCT LINE-UP</small></div>
-  <div class="nav"><span>COMFORT</span><span>RELIABILITY</span><span>INTELLIGENCE</span></div>
+  <div class="header"><strong>SECTION TITLE</strong><small>SECTION SUBTITLE</small></div>
+  <div class="nav"><span>FIRST</span><span>SECOND</span><span>THIRD</span></div>
 </section></body></html>"""
 
 
@@ -414,13 +432,13 @@ async def test_public_compiler_keeps_flex_children_as_separate_text_objects(
         for item in result.manifest["objects"]
         if item["kind"] in {"shape", "textbox"} and item["text"]
     ]
-    assert "AIR CONDITIONER" in texts
-    assert "PRODUCT LINE-UP" in texts
-    assert "COMFORT" in texts
-    assert "RELIABILITY" in texts
-    assert "INTELLIGENCE" in texts
-    assert "AIR CONDITIONERPRODUCT LINE-UP" not in texts
-    assert "COMFORTRELIABILITYINTELLIGENCE" not in texts
+    assert "SECTION TITLE" in texts
+    assert "SECTION SUBTITLE" in texts
+    assert "FIRST" in texts
+    assert "SECOND" in texts
+    assert "THIRD" in texts
+    assert "SECTION TITLESECTION SUBTITLE" not in texts
+    assert "FIRSTSECONDTHIRD" not in texts
 
 
 @pytest.mark.asyncio
@@ -535,7 +553,13 @@ async def test_public_author_compiler_emits_one_editable_native_table(
     assert len(table_manifest["cells"]) == 45
     assert len({cell["name"] for cell in table_manifest["cells"]}) == 45
     assert all(cell["source_object"].startswith(table_manifest["source_object"] + "/tr[") for cell in table_manifest["cells"])
-    assert table_manifest["bounds_pt"] == pytest.approx([80, 60, 501, 274])
+    # The table's x, y and width are authored and must not move.  Its height is a
+    # sum of measured line boxes, so it rounds differently per host text stack:
+    # this fixture measures 274pt on Windows and 276pt on Linux.  The height
+    # therefore carries a tolerance instead of encoding one host's rounding.
+    table_bounds = table_manifest["bounds_pt"]
+    assert table_bounds[:3] == pytest.approx([80, 60, 501], abs=0.01)
+    assert table_bounds[3] == pytest.approx(274, abs=3)
     header_run = table_manifest["cells"][0]["paragraphs"][0]["runs"][0]
     assert header_run["font_family"] == "Arial"
     assert header_run["font_size_pt"] == pytest.approx(12)
@@ -553,7 +577,13 @@ async def test_public_author_compiler_emits_one_editable_native_table(
     assert table["format"]["cols"] == 5
     assert len(table["children"]) == 9
     assert all(len(row["children"]) == 5 for row in table["children"])
-    assert [row["format"]["height"] for row in table["children"]] == [
+    # Row heights are measured line boxes rounded to whole points, so a host text
+    # stack can land one point higher on an individual row: this fixture reads
+    # 26pt where Windows reads 25pt for row 8, which is the 2pt difference in the
+    # table's total height.  Assert the row count and each row's height within one
+    # point rather than pinning one host's rounding.
+    measured_heights = [row["format"]["height"] for row in table["children"]]
+    expected_heights = [
         "37pt",
         "25pt",
         "37pt",
@@ -564,6 +594,14 @@ async def test_public_author_compiler_emits_one_editable_native_table(
         "25pt",
         "25pt",
     ]
+    assert len(measured_heights) == len(expected_heights)
+    for index, (measured, expected) in enumerate(zip(measured_heights, expected_heights)):
+        assert measured.endswith("pt"), (index, measured)
+        assert float(measured[:-2]) == pytest.approx(float(expected[:-2]), abs=1), (
+            index,
+            measured,
+            expected,
+        )
 
     header = table["children"][0]["children"][0]
     assert header["text"] == "MODEL"

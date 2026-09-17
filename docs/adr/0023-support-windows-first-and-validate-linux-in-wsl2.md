@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0031
 ---
 
 # Support Windows first and validate Linux in WSL2

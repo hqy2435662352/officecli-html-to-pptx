@@ -70,7 +70,7 @@ from officecli_html_to_pptx.contract import (
     paragraph_layout_surface,
 )
 from officecli_html_to_pptx.protocol import PRODUCT_NAME, PRODUCT_VERSION
-from officecli_html_to_pptx.runtime import FORMAL_OFFICECLI_VERSION
+from officecli_html_to_pptx.runtime import FORMAL_OFFICECLI_VERSION, SUPPORTED_PLATFORMS
 
 pytestmark = pytest.mark.skipif(
     shutil.which("officecli") is None,
@@ -811,7 +811,11 @@ def test_doctor_passes_and_records_the_officecli_floor() -> None:
     discovered = runtime["officecli"]["discovered_version"]
     assert runtime["officecli"]["required_version"] == f">={FORMAL_OFFICECLI_VERSION}"
     assert runtime["officecli"]["compatible"] is True
-    assert runtime["platform"]["discovered"] == "Windows"
+    # The platform is whatever this suite runs on; the claim under test is that it
+    # is inside the supported set, not that it is any one particular platform.
+    assert runtime["platform"]["discovered"] in SUPPORTED_PLATFORMS
+    assert runtime["platform"]["required"] == list(SUPPORTED_PLATFORMS)
+    assert runtime["platform"]["compatible"] is True
     assert runtime["compatible"] is True
     assert isinstance(discovered, str) and discovered.strip()
     # The declared floor is satisfied by the discovered version, parsed here

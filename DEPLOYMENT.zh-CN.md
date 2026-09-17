@@ -2,7 +2,7 @@
 
 ## 交付范围
 
-本 ZIP 是 Windows 客户试用包，包含：
+本 ZIP 是客户试用包，包含：
 
 - `core/officecli_html_to_pptx-0.2.0-py3-none-any.whl`：Python Core Product；
 - `plugins/officecli-html-to-pptx/`：skills-only Codex Plugin；
@@ -14,7 +14,10 @@ ZIP 不内嵌 Python、Node.js、OfficeCLI、Chromium 或 Python 第三方依赖
 
 ## 环境要求
 
-- Windows 10 或 Windows 11；
+- 支持的操作系统（二选一）：
+  - Windows 10 或 Windows 11；
+  - Linux。已通过验收的是 WSL2 上的 Ubuntu 24.04；其他发行版和原生安装尚未验证，
+    请先按「Platform Acceptance Track」跑一遍完整流程再投入使用；
 - Python `>=3.10,<3.15`，推荐 Python 3.12；
 - Node.js `>=20,<23`；
 - OfficeCLI `>=1.0.147`，且 `officecli` 命令已加入 `PATH`；
@@ -23,6 +26,9 @@ ZIP 不内嵌 Python、Node.js、OfficeCLI、Chromium 或 Python 第三方依赖
 
 OfficeCLI、Python、Node.js 和 Codex 的安装来源由部署方管理。本产品只检查环境，
 不会自动安装、升级或改写系统配置。
+
+`capabilities --json` 会同时给出 `platform`（当前运行平台）与
+`supported_platforms`（本构建支持的平台），据此判断"此处是否受支持"。
 
 ## 安装 Core Product
 
@@ -48,6 +54,56 @@ py -3.12 -m venv .venv
 只有 `doctor` 返回 exit code `0` 且 JSON `status` 为 `PASS` 时才继续构建。
 OfficeCLI 低于 `1.0.147`、Playwright/Chromium 不匹配、Node.js 或路径缺失都会返回
 exit code `2` 和可操作的诊断。
+
+## 在 Linux 上部署
+
+安装步骤与 Windows 相同，只是路径不同：
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install ./core/officecli_html_to_pptx-0.2.0-py3-none-any.whl
+.venv/bin/python -m playwright install --with-deps chromium
+.venv/bin/officecli-html-to-pptx capabilities --json
+.venv/bin/officecli-html-to-pptx doctor --json
+```
+
+Linux 上有三个前置条件，**都不会让 `doctor` 报错**，但每一个都会让构建失败或产出错版：
+
+### 1）不要以 root 运行
+
+产品启动 Chromium 时不传 `--no-sandbox`，而 Chromium 拒绝以 root 运行且不加该参数。
+请用普通用户执行，不要 `sudo`。
+
+### 2）先激活虚拟环境
+
+`build` 的最后一步会用 OfficeCLI 渲染 PPTX 对比图，而 OfficeCLI 自行寻找无头浏览器：
+它需要一个 **`PATH` 上带 Playwright 的 `python3`**，或一个系统级
+`chromium` / `google-chrome` / `chromium-browser`。
+
+激活虚拟环境即可满足（这也正是 Windows 侧要求"在已激活虚拟环境的终端中启动"的原因）：
+
+```bash
+source .venv/bin/activate
+```
+
+注意两点：
+
+- `CHROME_PATH` 不被识别，设它没有用；
+- OfficeCLI 会为每个文档常驻一个 resident 进程，**并把"找不到浏览器"的结果缓存下来**。
+  所以如果在修复环境之前已经失败过一次，需要先结束该 resident
+  （`pkill -f __resident-serve__`）再重试，否则修好环境也仍然失败。
+
+### 3）安装 Author HTML 声明的字体（最重要）
+
+产品在**构建机**上用 Chromium 测量文本，再据此设定 PPTX 里文本框的宽高。如果构建机
+没有该字体，Chromium 会替换字体，框尺寸就按替换字体的度量算出来——**PPTX 里字体名
+是对的，尺寸却是错的**，表现为标题折行、文字压住其它元素等可见错版，而 `doctor` 依然
+报告 `PASS`。
+
+因此构建机需要安装 Author HTML 声明的字体族，并且**字重字面也要齐**。例如
+`font-weight:900` 需要该字体族真的提供 Black 字面（如 `Arial Black`），否则会退到
+Bold，度量随之改变。字体来源与授权由部署方按自身许可方式解决。
 
 ## 安装 Codex Plugin
 
@@ -158,6 +214,13 @@ Bundle、`doctor --json` 输出和产品版本号。
 - `missing_playwright`：确认在同一虚拟环境中安装了本 wheel；
 - `missing_chromium` / `chromium_revision_mismatch`：在同一虚拟环境执行
   `python -m playwright install chromium`；
+- `unsupported_platform`：当前操作系统尚未通过 Platform Acceptance Track。诊断信息会
+  列出受支持的平台；不要通过改代码绕过，先补验收证据；
 - `BLOCK` from `check`：按 diagnostics 修复 Candidate HTML，不要绕过 Contract；
 - output collision：选择新输出名，不要删除或覆盖已有 Artifact Pair；
-- `REVISION_REQUIRED`：根据 major findings 修改 HTML，重新 `check` 和 `build`。
+- `REVISION_REQUIRED`：根据 major findings 修改 HTML，重新 `check` 和 `build`；
+- Linux 上 `build` 在证据阶段以 exit code `4` / `build_failed` 结束，报
+  "OfficeCLI did not create screenshot"：OfficeCLI 找不到无头浏览器。激活虚拟环境
+  （或装系统 Chromium），结束残留 resident 进程后重试；
+- Linux 上 `doctor` 通过但 PPTX 出现折行／重叠：构建机缺字体或缺该字重字面，
+  见「在 Linux 上部署」第 3 条。
