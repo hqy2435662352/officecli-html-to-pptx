@@ -8,6 +8,14 @@ PowerPoint presentation. From V0.2 onward it is not a compatible backend or
 release line of the original `html-to-pptx` product.
 _Avoid_: OfficeCLI V0.2, html-to-pptx OfficeCLI backend
 
+**Canonical Author HTML**:
+Candidate HTML that passes the current Author Contract and is eligible for the
+existing Author Compiler. In the V0.4.1 projection probe it is the output of
+`PPTX → PowerPoint Object Capture → Canonical Author HTML`; the projection seam
+checks the Contract before it publishes, so the name is earned rather than
+assumed. Passing the Contract does not by itself prove projection fidelity.
+_Avoid_: OfficeHTML, viewer HTML, projection HTML, decoded deck HTML
+
 **Original html-to-pptx**:
 The upstream-origin project from which browser measurement and other source
 code were initially derived. Its product identity, compatibility promises, and
