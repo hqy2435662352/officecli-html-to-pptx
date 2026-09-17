@@ -27,5 +27,15 @@ jobs:
           pip install -e ".[dev]"
           python -m playwright install --with-deps chromium
 
+      - name: Wire the repository's own gate
+        # `core.hooksPath` lives in `.git/config`, which a clone does not carry, so
+        # a fresh checkout has no guard until this runs once.  The suite asserts the
+        # checkout it runs in *is* wired -- that assertion is the point of the gate,
+        # and it is what caught a clean checkout with no guard at all -- so CI has to
+        # wire it rather than the test having to tolerate an unwired clone.
+        run: |
+          python scripts/install_hooks.py
+          python scripts/install_hooks.py --check
+
       - name: Run tests
         run: pytest -v

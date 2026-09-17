@@ -1,0 +1,57 @@
+#!/bin/sh
+# Refuse a push that would publish private material anywhere in its range.
+#
+# This is the check that catches the failure mode that actually happened in this
+# repository: a private string committed in one commit and deleted in the next.
+# The tip is clean, the working tree is clean, and the leak lives in the history
+# between them -- so scanning anything but the pushed range would miss it.
+#
+# Git passes each ref being pushed on stdin as:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# A remote sha of all zeroes means the remote ref does not exist yet, in which
+# case everything reachable from the local sha is newly published.
+#
+# Exit codes: 1 is a finding, 3 is "the guard could not run".  Both refuse.
+
+set -eu
+
+# Force UTF-8 for the interpreter below.  See the note in pre-commit: without it,
+# CPython on Windows decodes a non-ASCII working directory lossily and the guard
+# refuses for a reason that has nothing to do with what is being pushed.
+PYTHONUTF8=1
+export PYTHONUTF8
+
+root=$(git rev-parse --show-toplevel)
+guard="$root/.githooks/private_material_guard.py"
+
+if [ ! -f "$guard" ]; then
+    echo "private-material guard refused: no scanner at $guard" >&2
+    exit 3
+fi
+
+python=""
+for candidate in "${PYTHON:-}" "$root/.venv/Scripts/python.exe" "$root/.venv/bin/python" python3 python; do
+    if [ -n "$candidate" ] && command -v "$candidate" >/dev/null 2>&1; then
+        python="$candidate"
+        break
+    fi
+done
+if [ -z "$python" ]; then
+    echo "private-material guard refused: no python interpreter found" >&2
+    exit 3
+fi
+
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # A deleted ref publishes nothing.
+    case "$local_sha" in
+        0000000000000000000000000000000000000000) continue ;;
+    esac
+    echo "private-material guard: range $remote_sha..$local_sha ($remote_ref)"
+    if ! "$python" "$guard" --mode range --base "$remote_sha" --tip "$local_sha"; then
+        status=$?
+        [ "$status" -eq 0 ] && status=1
+    fi
+done
+
+exit "$status"

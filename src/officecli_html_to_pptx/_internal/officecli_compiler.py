@@ -445,15 +445,36 @@ def _paragraph_line_spacing(
     element: dict[str, Any],
     *,
     legacy_css_pixel_projection: bool = False,
+    preserve_table_projection: bool = False,
 ) -> str | None:
+    """Return one paragraph's leading as a ratio of its own font size.
+
+    The font size a *pixel* line height is divided by is the **element's**, not the
+    paragraph's first run's, and that is not a detail: a used ``lineHeight`` in px is
+    the element's own ``font-size`` multiplied by the declared ratio, so the element
+    is the only basis it can be attributed to.
+
+    Dividing it by a run instead inflated a paragraph whose first run is smaller than
+    the block's own font -- which is what a **re-partitioned** paragraph is: the
+    independent review found the synthetic probe's hard-break body compiled at
+    ``lnSpc 254500`` (the block's 40px-based 56px leading divided by the fragment's
+    22px run), so the rebuilt page painted a blank line where the source paints two
+    adjacent ones.  A unitless ``lineHeight`` needs no font size at all: the ratio is
+    the value itself.
+    """
     raw_line_height = paragraph.get("lineHeight") or element.get("lineHeight")
     if not raw_line_height:
         return None
     first_run = (paragraph.get("runs") or [{}])[0]
-    font_size = _number(first_run.get("fontSize"), _number(element.get("fontSize")))
+    run_size = _number(first_run.get("fontSize"))
+    element_size = _number(element.get("fontSize"))
+    pixels = re.search(r"(?:px|pt)\s*$", str(raw_line_height).strip(), re.IGNORECASE)
+    font_size = element_size if pixels else (run_size or element_size)
     return _line_spacing(
         {"fontSize": font_size, "lineHeight": str(raw_line_height)},
-        legacy_css_pixel_projection=legacy_css_pixel_projection,
+        legacy_css_pixel_projection=(
+            legacy_css_pixel_projection or preserve_table_projection
+        ),
     )
 
 
@@ -967,6 +988,8 @@ def _officehtml_text_node(element: Any) -> Any | None:
 def _officehtml_paragraphs(
     element: Any,
     fallback: dict[str, str],
+    *,
+    undo_officecli_projection: bool = False,
 ) -> list[dict[str, Any]]:
     paragraph_nodes = element.xpath(
         ".//*[contains(concat(' ', normalize-space(@class), ' '), ' para ')]"
@@ -1003,7 +1026,8 @@ def _officehtml_paragraphs(
                 "text": "".join(str(run["text"]) for run in runs),
                 "align": paragraph_styles.get("text-align", "left"),
                 "lineHeight": _officehtml_line_height(
-                    paragraph_styles.get("line-height")
+                    paragraph_styles.get("line-height"),
+                    undo_officecli_projection=undo_officecli_projection,
                 ),
                 "spaceBefore": _officehtml_length(
                     paragraph_styles.get("margin-top")
@@ -1018,18 +1042,37 @@ def _officehtml_paragraphs(
     return result
 
 
-def _officehtml_line_height(value: str | None) -> str | None:
+def _officehtml_line_height(
+    value: str | None, *, undo_officecli_projection: bool = False
+) -> str | None:
+    """Return a line-height ready for the lowering path.
+
+    ``undo_officecli_projection`` exists because the same declaration means two
+    different things depending on which document it came from, and the two profiles
+    need opposite treatment:
+
+    * **officehtml** -- the HTML was serialized *by OfficeCLI*, which writes a
+      unitless line height at a 4/3 projection of the native ratio (1.05x becomes
+      1.4).  That projection must be undone before lowering.
+    * **author** -- the HTML is Canonical Author HTML, where the unitless value is
+      the ratio itself: the V0.4.1 projection emits the number it captured from the
+      source deck.  Un-projecting it multiplies an author's "one and a half lines"
+      by 0.75 and the rebuilt deck carries 1.125x.
+
+    This function used to un-project unconditionally, so every Canonical Author
+    document lost a quarter of its leading -- 22 objects on the three-deck corpus.
+    The scale is documented in the Contract for the OfficeHTML boundary and is
+    correct there; the defect was applying it outside that boundary.
+    """
     if not value:
         return None
     normalized = value.strip().lower()
     if normalized == "normal":
         return None
     if re.fullmatch(r"-?(?:\d+(?:\.\d*)?|\.\d+)", normalized):
-        # OfficeCLI 1.0.147 serializes unitless line height in HTML at a
-        # 4/3 projection of the native ratio (for example, 1.05x becomes
-        # 1.4).  Undo that projection before the value reaches the normal
-        # OfficeCLI line-spacing lowering path.
-        ratio = float(normalized) * 0.75
+        ratio = float(normalized)
+        if undo_officecli_projection:
+            ratio *= 0.75
         if abs(ratio - 1.0) <= 0.01:
             return None
         return str(ratio)
@@ -1039,9 +1082,6 @@ def _officehtml_line_height(value: str | None) -> str | None:
         ratio = float(normalized)
     except ValueError:
         return None
-    # OfficeCLI emits 1.33 for its normal paragraph line height even when the
-    # source did not request an explicit line spacing.  Treat that projection
-    # default as inheritance rather than turning it into a new B-only overflow.
     return str(ratio)
 
 
@@ -1055,6 +1095,8 @@ def _officehtml_text_fields(
     element: Any,
     styles: dict[str, str],
     fallback: dict[str, str],
+    *,
+    undo_officecli_projection: bool = False,
 ) -> dict[str, Any]:
     text_node = _officehtml_text_node(element)
     text_styles = _officehtml_style(text_node) if text_node is not None else {}
@@ -1074,7 +1116,9 @@ def _officehtml_text_fields(
     valign = "center" if "valign-center" in shape_tokens else (
         "bottom" if "valign-bottom" in shape_tokens else "top"
     )
-    paragraphs_data = _officehtml_paragraphs(element, fallback)
+    paragraphs_data = _officehtml_paragraphs(
+        element, fallback, undo_officecli_projection=undo_officecli_projection
+    )
     return {
         "text": _officehtml_text(element),
         "color": merged.get("color"),
@@ -1083,7 +1127,10 @@ def _officehtml_text_fields(
         "fontWeight": merged.get("font-weight", "400"),
         "fontStyle": merged.get("font-style", "normal"),
         "textAlign": merged.get("text-align", "left"),
-        "lineHeight": _officehtml_line_height(merged.get("line-height")),
+        "lineHeight": _officehtml_line_height(
+            merged.get("line-height"),
+            undo_officecli_projection=undo_officecli_projection,
+        ),
         "direction": merged.get("direction", "ltr"),
         "alignItems": valign,
         "verticalAlign": merged.get("vertical-align", "top"),
@@ -1103,6 +1150,7 @@ def _officehtml_base_element(
     slide_styles: dict[str, str],
     *,
     tag: str,
+    undo_officecli_projection: bool = False,
     text_element: Any | None = None,
 ) -> dict[str, Any]:
     styles = _officehtml_style(element)
@@ -1115,7 +1163,12 @@ def _officehtml_base_element(
         "color": slide_styles.get("color", "#000000"),
     }
     text_source = text_element if text_element is not None else element
-    fields = _officehtml_text_fields(text_source, styles, fallback)
+    fields = _officehtml_text_fields(
+        text_source,
+        styles,
+        fallback,
+        undo_officecli_projection=undo_officecli_projection,
+    )
     fields.update(
         {
             "tag": tag,
@@ -1137,8 +1190,18 @@ def _officehtml_base_element(
     return fields
 
 
-def _officehtml_shape(element: Any, slide_styles: dict[str, str]) -> dict[str, Any]:
-    result = _officehtml_base_element(element, slide_styles, tag="shape")
+def _officehtml_shape(
+    element: Any,
+    slide_styles: dict[str, str],
+    *,
+    undo_officecli_projection: bool = False,
+) -> dict[str, Any]:
+    result = _officehtml_base_element(
+        element,
+        slide_styles,
+        tag="shape",
+        undo_officecli_projection=undo_officecli_projection,
+    )
     result["dataPath"] = element.get("data-path")
     result["officeHtmlKind"] = "shape"
     if (
@@ -1159,8 +1222,14 @@ def _officehtml_picture(
     slide_styles: dict[str, str],
     *,
     source_slide: int,
+    undo_officecli_projection: bool = True,
 ) -> dict[str, Any]:
-    result = _officehtml_base_element(element, slide_styles, tag="img")
+    result = _officehtml_base_element(
+        element,
+        slide_styles,
+        tag="img",
+        undo_officecli_projection=undo_officecli_projection,
+    )
     images = element.xpath(".//img[@src]")
     source = _officehtml_picture_source(element)
     if source is None:
@@ -1256,6 +1325,7 @@ async def _rasterize_officehtml_svg_fallbacks(
 def _officehtml_cell(
     element: Any,
     *,
+    undo_officecli_projection: bool = True,
     row_index: int,
     column_index: int,
     x: float,
@@ -1273,7 +1343,12 @@ def _officehtml_cell(
             source_slide,
             f"row[{row_index}]/cell[{column_index}]",
         )
-    result = _officehtml_base_element(element, slide_styles, tag="td")
+    result = _officehtml_base_element(
+        element,
+        slide_styles,
+        tag="td",
+        undo_officecli_projection=undo_officecli_projection,
+    )
     styles = _officehtml_style(element)
     result.update(
         {
@@ -1311,6 +1386,7 @@ def _officehtml_table(
     slide_styles: dict[str, str],
     *,
     source_slide: int,
+    undo_officecli_projection: bool = True,
 ) -> dict[str, Any]:
     source = element.get("data-path")
     if not source:
@@ -1377,6 +1453,7 @@ def _officehtml_table(
             normalized_cells.append(
                 _officehtml_cell(
                     cell,
+                    undo_officecli_projection=undo_officecli_projection,
                     row_index=row_index,
                     column_index=column_index,
                     x=current_x,
@@ -1397,7 +1474,12 @@ def _officehtml_table(
         )
         current_y += row_data["height"]
 
-    result = _officehtml_base_element(element, slide_styles, tag="table")
+    result = _officehtml_base_element(
+        element,
+        slide_styles,
+        tag="table",
+        undo_officecli_projection=undo_officecli_projection,
+    )
     result.update(
         {
             "dataPath": source,
@@ -1452,6 +1534,13 @@ def _parse_officehtml_measurements(input_html: str) -> list[dict[str, Any]]:
         raise ValueError("No slides found. Ensure the OfficeHTML contains .slide elements.")
 
     measurements: list[dict[str, Any]] = []
+    # This parser serves the `officehtml` profile only, which is HTML
+    # serialized by OfficeCLI.  Its unitless line height is a 4/3 projection of
+    # the native ratio and must be un-projected.  The `author` profile takes a
+    # different path and must NOT apply that scale: Canonical Author HTML states
+    # the ratio itself.  Getting this wrong costs an author a quarter of the
+    # leading they declared.
+    undo_officecli_projection = True
     for slide_number, slide in enumerate(slides, start=1):
         slide_styles = _officehtml_style(slide)
         slide_width = _officehtml_length(slide_styles.get("width"), SLIDE_WIDTH_PT)
@@ -1469,7 +1558,10 @@ def _parse_officehtml_measurements(input_html: str) -> list[dict[str, Any]]:
             ):
                 elements.append(
                     _officehtml_table(
-                        element, slide_styles, source_slide=slide_number
+                        element,
+                        slide_styles,
+                        source_slide=slide_number,
+                        undo_officecli_projection=undo_officecli_projection,
                     )
                 )
             elif path_kind == "picture" or (
@@ -1477,13 +1569,22 @@ def _parse_officehtml_measurements(input_html: str) -> list[dict[str, Any]]:
             ):
                 elements.append(
                     _officehtml_picture(
-                        element, slide_styles, source_slide=slide_number
+                        element,
+                        slide_styles,
+                        source_slide=slide_number,
+                        undo_officecli_projection=undo_officecli_projection,
                     )
                 )
             elif path_kind == "shape" or (
                 path_kind is None and "shape" in classes
             ):
-                elements.append(_officehtml_shape(element, slide_styles))
+                elements.append(
+                    _officehtml_shape(
+                        element,
+                        slide_styles,
+                        undo_officecli_projection=undo_officecli_projection,
+                    )
+                )
             else:
                 raise _diagnostic(
                     "unsupported_object_kind",
@@ -1531,6 +1632,26 @@ def _border_radius(element: dict[str, Any]) -> float:
     value = str(element.get("borderRadius", "") or "")
     match = re.search(r"-?[\d.]+", value)
     return max(0.0, float(match.group(0))) if match else 0.0
+
+
+# The preset geometries the Canonical Author shape surface carries as PowerPoint
+# presets rather than inferring from CSS.  A block box is a rect and a
+# border-radius is a roundRect; an ellipse and a right arrow cannot be inferred
+# that way, so an emitted object declares the preset it must be rebuilt as and
+# the declaration wins over the CSS inference.
+DECLARED_SHAPE_GEOMETRIES = frozenset({"ellipse", "rightArrow"})
+
+
+def _declared_shape_geometry(element: dict[str, Any]) -> str | None:
+    value = str(element.get("shapeGeometry", "") or "").strip()
+    return value if value in DECLARED_SHAPE_GEOMETRIES else None
+
+
+def _shape_geometry(element: dict[str, Any]) -> str:
+    declared = _declared_shape_geometry(element)
+    if declared is not None:
+        return declared
+    return "roundRect" if _border_radius(element) > 0 else "rect"
 
 
 def _line_spacing(
@@ -1632,7 +1753,26 @@ def _tight_single_line_font_scale(
 
 
 def _source_fidelity_line_spacing(element: dict[str, Any]) -> bool:
-    """Use browser-computed CSS pixels for the reviewed slide-1 title only."""
+    """Whether this element's leading is a reading to preserve, not CSS to project.
+
+    Two kinds of element say what their leading is in browser pixels, and only one
+    of them wants the V0.2 CSS-pixel projection applied:
+
+    * a **hand-authored** element states a CSS declaration.  The released V0.2
+      projection is the product's documented translation of that, and it is
+      unchanged here.
+    * a **projected** element states what the source deck declared, measured in
+      browser pixels.  Projection exists to reproduce the source, so applying the
+      projection to it charges the author a quarter of their leading: a source
+      ``lineSpacing=1.5x`` reached the rebuilt deck as ``1.125x``, which is exactly
+      the regression that made 22 objects fail the acceptance gate.
+
+    A projected element is identified structurally, by the marker the projection
+    emits, rather than by matching its text.  Identifying it by text was the
+    earlier mechanism and it does not generalise: it named one reviewed title.
+    """
+    if str(element.get("projectedFrom", "") or "").strip():
+        return True
     return (
         _text_of(element).strip() == SOURCE_FIDELITY_LINE_SPACING_TEXT
         and _number(element.get("fontSize"))
@@ -1758,7 +1898,7 @@ def _shape_props(
     backdrop: tuple[int, int, int],
 ) -> dict[str, str]:
     props = _text_props(element, bounds, scale_x, scale_y, backdrop)
-    props["geometry"] = "roundRect" if _border_radius(element) > 0 else "rect"
+    props["geometry"] = _shape_geometry(element)
 
     fill = _parse_css_color(element.get("backgroundColor"))
     if fill:
@@ -1784,7 +1924,10 @@ def _shape_props(
 
     radius = _border_radius(element)
     min_size = min(_number(element.get("width")), _number(element.get("height")))
-    if radius > 0 and min_size > 0:
+    # An adjust handle is the rounded rectangle's corner radius; another preset
+    # carries its own geometry and would reject or misread one, so it is only
+    # written when the object really lowers to a roundRect.
+    if radius > 0 and min_size > 0 and _shape_geometry(element) == "roundRect":
         adjustment = min(50000, round(radius / min_size * 100000))
         props["adj"] = f"adj:val {adjustment}"
     return props
@@ -2588,6 +2731,12 @@ def _lower_slide(
             and left_border is not None
         )
         has_shape = fill is not None or (border is not None and border_width > 0)
+        if _declared_shape_geometry(element) is not None:
+            # An object that names its own preset geometry is an explicit
+            # PowerPoint shape even when its fill and outline are both absent,
+            # exactly as an OfficeHTML slide-owned shape is: dropping it would
+            # silently lose a source object from the rebuilt deck.
+            has_shape = True
         if profile == "officehtml" and not text and not has_shape:
             # A slide-owned OfficeHTML shape is an explicit PowerPoint object
             # even when its fill is transparent and its text body is empty.
