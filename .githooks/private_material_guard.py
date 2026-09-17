@@ -31,6 +31,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Sequence
 
 CONFIG_NAME = "private-material.json"
 CONFIG_ENV = "OFFICECLI_H2P_PRIVATE_MATERIAL"
@@ -112,8 +113,10 @@ def scan_staged(root: Path, patterns: list[str]) -> list[str]:
     return findings
 
 
-def scan_range(root: Path, patterns: list[str], base: str, tip: str) -> list[str]:
-    """Scan every blob the tip's history contains that the base's does not.
+def scan_range(
+    root: Path, patterns: list[str], base: str | Sequence[str], tip: str
+) -> list[str]:
+    """Scan every blob the tip's history contains that no base's does not.
 
     Three enumerations that look equivalent are not, and the differences are the
     whole point of this mode:
@@ -128,9 +131,17 @@ def scan_range(root: Path, patterns: list[str], base: str, tip: str) -> list[str
       the base never contained is not the case.
 
     So: every blob this push would publish (everything reachable from the tip),
-    minus every blob the remote already holds (everything reachable from the base).
+    minus every blob the remote already holds (everything reachable from any base).
     A blob in neither set is a blob this push introduces, however its commits were
     later rewritten.
+
+    ``base`` may be **several** revisions, and for a new remote ref it has to be:
+    that ref is empty, but the repository is not, so what the push publishes is what
+    the remote's existing refs do not already hold.  With a single empty base the
+    scan re-presents everything the local branch shares with ``main`` -- including an
+    identifier that is in ``main``'s history and predates the branch -- and *no new
+    branch could ever be pushed*, which is how this was found: the guard refused the
+    push of a clean one-commit follow-up branch.
     """
     reachable = _objects(root, tip)
     # ``_objects`` returns ``(sha, path)`` pairs, so the exclusion set must be the
@@ -138,11 +149,12 @@ def scan_range(root: Path, patterns: list[str], base: str, tip: str) -> list[str
     # range scan degenerated into scanning the whole history -- which flags blobs
     # the remote already holds and refuses every push, including clean ones.  A
     # guard that refuses everything gets bypassed, which is worse than no guard.
-    already = (
-        set()
-        if not base or set(base) == {"0"}
-        else {sha for sha, _ in _objects(root, base)}
-    )
+    bases = [base] if isinstance(base, str) else list(base)
+    already: set[str] = set()
+    for revision in bases:
+        if not revision or set(revision) == {"0"}:
+            continue
+        already.update(sha for sha, _ in _objects(root, revision))
     findings: list[str] = []
     for sha, path in reachable:
         if sha in already:
@@ -215,7 +227,15 @@ def main(argv: list[str] | None = None) -> int:
         default="worktree",
         help="what to scan; the hooks pass 'staged' and 'range'",
     )
-    parser.add_argument("--base", default="", help="range base (pre-push)")
+    parser.add_argument(
+        "--base",
+        action="append",
+        default=None,
+        help=(
+            "range base (pre-push); repeatable -- a new remote ref has no base of "
+            "its own, so the hook passes every ref the remote already holds"
+        ),
+    )
     parser.add_argument("--tip", default="HEAD", help="range tip (pre-push)")
     parser.add_argument("--config", type=Path, default=None)
     args = parser.parse_args(argv)
@@ -226,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "staged":
             findings = scan_staged(root, patterns)
         elif args.mode == "range":
-            findings = scan_range(root, patterns, args.base, args.tip)
+            findings = scan_range(root, patterns, args.base or "", args.tip)
         else:
             findings = scan_worktree(root, patterns)
     except (ScannerError, ValueError, OSError) as error:
