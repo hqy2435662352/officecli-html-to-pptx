@@ -30,10 +30,17 @@ from PIL import Image
 from lxml import html as _lxml_html
 
 from ..contract import (
+    CANONICAL_RUN_IDENTITY_FIELDS,
+    LINE_HEIGHT_PX_PROJECTION_SCALE,
+    LIST_MARKER_PRESETS,
+    SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX,
+    SOURCE_FIDELITY_LINE_SPACING_TEXT,
+    SUPPORTED_INLINE_ELEMENTS,
     ContractReport,
     _inline_styles,
     _officehtml_parser,
     _officehtml_picture_source,
+    _resolve_text_alignment,
     check_contract,
 )
 from ..measurement import extract_measurements
@@ -59,11 +66,10 @@ _SVG_CAPABILITY_PROBE = (
 )
 _OFFICECLI_SVG_SUPPORT: bool | None = None
 _OFFICECLI_BATCH_MAX_BYTES = 32 * 1024 * 1024
-_INLINE_TAGS = {
-    "span", "strong", "em", "b", "i", "a", "code", "mark", "sub",
-    "sup", "small", "u", "s", "del", "abbr", "cite", "q", "time",
-    "var", "kbd",
-}
+# The accepted inline element set is owned by the Contract authority that
+# ``capabilities`` publishes, so the lowered inline surface and the declared
+# one cannot drift apart.
+_INLINE_TAGS = frozenset(SUPPORTED_INLINE_ELEMENTS)
 _SOURCE_FIDELITY_TEXT_SCALE = 1.35
 _SOURCE_FIDELITY_LABELS = frozenset({"ELITE", "XPRO", "TPRO", "T-PLUS"})
 _SOURCE_FIDELITY_REVIEW_NUMBERS = frozenset({"01", "02", "03", "04"})
@@ -416,6 +422,17 @@ def _text_of(element: dict[str, Any]) -> str:
     return str(element.get("text", "") or "")
 
 
+def _paragraphs_text(paragraphs: Sequence[dict[str, Any]]) -> str:
+    """Return the native text body for a normalized paragraph sequence.
+
+    OfficeCLI creates one native paragraph per ``\\n`` in the text body, so the
+    object text must be derived from exactly the paragraphs the run ranges are
+    computed from.  Deriving them separately is what misaligns a range after a
+    visual-line split or a supplementary Unicode character.
+    """
+    return "\n".join(str(paragraph.get("text", "")) for paragraph in paragraphs)
+
+
 def _underline_value(value: Any) -> str:
     tokens = str(value or "").lower().replace(",", " ").split()
     if "underline" in tokens:
@@ -440,6 +457,122 @@ def _paragraph_line_spacing(
     )
 
 
+def _canonical_run_key(run: dict[str, Any]) -> tuple[Any, ...]:
+    """Return the Paragraph-local identity of one resolved run.
+
+    A run boundary is a formatting boundary, not a DOM node boundary.  Two
+    adjacent runs with the same resolved formatting and the same supported
+    semantic attributes are one Canonical Run; anything else stays a boundary.
+    The identity dimensions are exactly the ones
+    ``contract.CANONICAL_RUN_IDENTITY`` declares, which is also the declaration
+    ``capabilities`` publishes, so the published mixed-run surface and this key
+    cannot drift apart.  Every value is read from the normalization above, which
+    already produced the canonical type of each field (a bool for
+    ``bold``/``italic``/``is_gradient_text``, ``None`` or a non-empty string for
+    ``href``/``background_image``), so no coercion can distinguish two runs.
+    """
+    return tuple(run.get(field) for field in CANONICAL_RUN_IDENTITY_FIELDS)
+
+
+def _canonical_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge adjacent identical runs and concatenate their text exactly.
+
+    Merging never trims, normalizes, or otherwise mutates text, so an authored
+    boundary space survives: ``North`` followed by `` Africa`` becomes the
+    single Canonical Run ``North Africa``.  Merging is only ever applied to the
+    runs of one paragraph, so it can never cross a paragraph, list-item, or
+    <br> boundary.
+    """
+    merged: list[dict[str, Any]] = []
+    for run in runs:
+        if merged and _canonical_run_key(merged[-1]) == _canonical_run_key(run):
+            merged[-1]["text"] = merged[-1]["text"] + run["text"]
+            continue
+        merged.append(dict(run))
+    return merged
+
+
+def _canonical_source_runs(
+    raw_paragraph: dict[str, Any],
+    element: dict[str, Any],
+    scale_x: float,
+    backdrop: tuple[int, int, int],
+    element_opacity: float,
+) -> list[dict[str, Any]]:
+    """Normalize one measured paragraph's runs and merge them canonically.
+
+    This is the one place a measured run becomes a lowering run, so the object
+    text, the Canonical Runs, the native run ranges and the soft-wrap decision
+    all read the same normalized sequence.
+    """
+    normalized_runs: list[dict[str, Any]] = []
+    for raw_run in raw_paragraph.get("runs") or []:
+        text = str(raw_run.get("text", ""))
+        if not text:
+            continue
+        color = _parse_css_color(raw_run.get("color"))
+        if color is None:
+            color_value = None
+        else:
+            rgb, alpha = color
+            if element_opacity < 0.999:
+                color_value = _hex_with_alpha(rgb, alpha * element_opacity)
+            else:
+                color_value = _hex(
+                    rgb if alpha >= 0.999 else _blend(rgb, alpha, backdrop)
+                )
+        font_size = _number(
+            raw_run.get("fontSize"), _number(element.get("fontSize"))
+        )
+        normalized_runs.append(
+            {
+                "text": text,
+                "font_family": _resolve_pptx_font(
+                    str(raw_run.get("fontFamily") or element.get("fontFamily") or "")
+                ),
+                "font_size_pt": _pt(font_size, scale_x) if font_size > 0 else 0.0,
+                "bold": _is_bold(raw_run.get("fontWeight", element.get("fontWeight"))),
+                "italic": str(
+                    raw_run.get("fontStyle", element.get("fontStyle", ""))
+                ).lower() in {"italic", "oblique"},
+                "underline": _underline_value(
+                    raw_run.get("textDecoration", raw_run.get("text-decoration"))
+                ),
+                "color": color_value,
+                # Supported semantic attributes participate in run identity:
+                # a hyperlink target or a gradient-text fill is a real
+                # boundary and is never merged away.
+                "href": raw_run.get("href"),
+                "is_gradient_text": bool(raw_run.get("isGradientText")),
+                "background_image": raw_run.get("backgroundImage"),
+            }
+        )
+    return _canonical_runs(normalized_runs)
+
+
+def _is_one_canonical_run(
+    raw_paragraph: dict[str, Any],
+    element: dict[str, Any],
+    scale_x: float,
+    backdrop: tuple[int, int, int],
+    element_opacity: float,
+) -> bool:
+    """Return whether a measured paragraph resolves to one Canonical Run.
+
+    The declared soft-wrap model requires one source run, because the visual
+    lines of the browser can only become native paragraph boundaries when every
+    line carries the same run formatting.  That question is asked of the one
+    Canonical Run identity: a paragraph whose source nodes resolve to identical
+    formatting is one run, whatever the node count, and can therefore keep the
+    visual-line boundaries Chromium measured.
+    """
+    return len(
+        _canonical_source_runs(
+            raw_paragraph, element, scale_x, backdrop, element_opacity
+        )
+    ) == 1
+
+
 def _text_paragraphs(
     element: dict[str, Any],
     scale_x: float,
@@ -447,17 +580,32 @@ def _text_paragraphs(
     backdrop: tuple[int, int, int],
     *,
     preserve_table_projection: bool = False,
+    preserve_paragraph_spacing: bool = False,
+    visual_lines_as_paragraphs: bool = True,
 ) -> tuple[dict[str, Any], ...]:
     raw_paragraphs = element.get("paragraphs") or []
     visual_lines = element.get("visualLines")
+    element_opacity = max(0.0, min(1.0, _number(element.get("opacity"), 1.0)))
     if (
-        isinstance(visual_lines, list)
+        visual_lines_as_paragraphs
+        and isinstance(visual_lines, list)
         and len(visual_lines) > 1
         and len(raw_paragraphs) == 1
-        and len(raw_paragraphs[0].get("runs") or []) == 1
+        and _is_one_canonical_run(
+            raw_paragraphs[0], element, scale_x, backdrop, element_opacity
+        )
     ):
         visual_texts = [str(line) for line in visual_lines if str(line)]
-        if visual_texts:
+        raw_text = str(raw_paragraphs[0].get("text", ""))
+        # A browser visual line can only become a native paragraph break where
+        # the source flow already had whitespace, and a CJK line breaks between
+        # two characters.  Accept the split only when re-joining the lines
+        # reproduces the authored text exactly, with or without the space that a
+        # Latin break consumes.  A spurious Chromium "row" (a color-emoji glyph,
+        # or a run whose trailing space narrows the line) reproduces neither, so
+        # it falls through to the authored paragraph and its runs.
+        rejoined = (" ".join(visual_texts), "".join(visual_texts))
+        if visual_texts and raw_text in rejoined:
             raw_paragraph = raw_paragraphs[0]
             raw_run = raw_paragraph["runs"][0]
             raw_paragraphs = [
@@ -501,45 +649,10 @@ def _text_paragraphs(
             }]
 
     result: list[dict[str, Any]] = []
-    element_opacity = max(0.0, min(1.0, _number(element.get("opacity"), 1.0)))
     for raw_paragraph in raw_paragraphs:
-        raw_runs = raw_paragraph.get("runs") or []
-        normalized_runs: list[dict[str, Any]] = []
-        for raw_run in raw_runs:
-            text = str(raw_run.get("text", ""))
-            if not text:
-                continue
-            color = _parse_css_color(raw_run.get("color"))
-            if color is None:
-                color_value = None
-            else:
-                rgb, alpha = color
-                if element_opacity < 0.999:
-                    color_value = _hex_with_alpha(rgb, alpha * element_opacity)
-                else:
-                    color_value = _hex(
-                        rgb if alpha >= 0.999 else _blend(rgb, alpha, backdrop)
-                    )
-            font_size = _number(
-                raw_run.get("fontSize"), _number(element.get("fontSize"))
-            )
-            normalized_runs.append(
-                {
-                    "text": text,
-                    "font_family": _resolve_pptx_font(
-                        str(raw_run.get("fontFamily") or element.get("fontFamily") or "")
-                    ),
-                    "font_size_pt": _pt(font_size, scale_x) if font_size > 0 else 0.0,
-                    "bold": _is_bold(raw_run.get("fontWeight", element.get("fontWeight"))),
-                    "italic": str(
-                        raw_run.get("fontStyle", element.get("fontStyle", ""))
-                    ).lower() in {"italic", "oblique"},
-                    "underline": _underline_value(
-                        raw_run.get("textDecoration", raw_run.get("text-decoration"))
-                    ),
-                    "color": color_value,
-                }
-            )
+        normalized_runs = _canonical_source_runs(
+            raw_paragraph, element, scale_x, backdrop, element_opacity
+        )
         paragraph_text = "".join(run["text"] for run in normalized_runs)
         direction = str(
             raw_paragraph.get("direction", element.get("direction", "ltr")) or "ltr"
@@ -571,12 +684,12 @@ def _text_paragraphs(
                 # into the cell body, so their spacing still needs projection.
                 "space_before_pt": (
                     _pt(_number(raw_paragraph.get("spaceBefore")), scale_y)
-                    if preserve_table_projection
+                    if preserve_table_projection or preserve_paragraph_spacing
                     else 0.0
                 ),
                 "space_after_pt": (
                     _pt(_number(raw_paragraph.get("spaceAfter")), scale_y)
-                    if preserve_table_projection
+                    if preserve_table_projection or preserve_paragraph_spacing
                     else 0.0
                 ),
                 "direction": direction,
@@ -596,7 +709,108 @@ def _paragraph_props(paragraph: dict[str, Any]) -> dict[str, str]:
         props["spaceAfter"] = _length(_number(paragraph["space_after_pt"]))
     if str(paragraph.get("direction", "ltr")).lower() == "rtl":
         props["direction"] = "rtl"
+    marker = str(paragraph.get("list") or "")
+    if marker:
+        # A Native List Paragraph keeps its bullet or automatic number, its
+        # list level, and its indentation as native paragraph properties.  The
+        # marker is never literal text: ``list`` writes ``a:buChar`` for the
+        # bullet preset and ``a:buAutoNum`` for automatic numbering,
+        # ``marginLeft`` writes the list's own @marL, and ``indent`` hangs the
+        # marker box one em left of the item's text edge.
+        props["list"] = marker
+        props["level"] = str(int(_number(paragraph.get("level"))))
+        props["marginLeft"] = _length(_number(paragraph.get("margin_left_pt")))
+        indent_pt = _number(paragraph.get("indent_pt"))
+        if indent_pt:
+            props["indent"] = _length(indent_pt)
     return props
+
+
+def _list_items(list_element: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the direct ``li`` children of a measured list, in source order."""
+    return [
+        child
+        for child in list_element.get("children", []) or []
+        if str(child.get("tag", "element") or "element").lower() == "li"
+    ]
+
+
+def _empty_item_paragraph(
+    item: dict[str, Any],
+    scale_y: float,
+) -> dict[str, Any]:
+    """One Native List Paragraph for an authored item that has no text.
+
+    An authored empty item is still one Native List Paragraph; it keeps the
+    item's own measured paragraph spacing so the items after it do not move.
+    """
+    raw = (item.get("paragraphs") or [{}])[0]
+    return {
+        "text": "",
+        "align": _text_alignment(item),
+        "line_spacing": _line_spacing(item),
+        "space_before_pt": _pt(_number(raw.get("spaceBefore")), scale_y),
+        "space_after_pt": _pt(_number(raw.get("spaceAfter")), scale_y),
+        "direction": str(item.get("direction", "ltr") or "ltr"),
+        "runs": [],
+    }
+
+
+def _list_paragraphs(
+    list_element: dict[str, Any],
+    scale_x: float,
+    scale_y: float,
+    backdrop: tuple[int, int, int],
+    source_slide: int,
+    source_object: str,
+) -> tuple[dict[str, Any], ...]:
+    """Return one Native List Paragraph per direct item of one measured list.
+
+    The list keeps one object identity: every direct ``li`` contributes exactly
+    one paragraph, in source order, carrying the item's own runs (Canonical Run
+    normalization stays inside that one paragraph) plus the native list
+    properties the list element and its items measured.
+    """
+    list_facts = list_element.get("list") or {}
+    list_kind = str(list_facts.get("kind") or list_element.get("tag") or "")
+    list_x = _number(list_element.get("x"))
+    paragraphs: list[dict[str, Any]] = []
+    for position, item in enumerate(_list_items(list_element), start=1):
+        item_facts = item.get("listItem") or {}
+        item_paragraphs = _text_paragraphs(
+            item,
+            scale_x,
+            scale_y,
+            backdrop,
+            preserve_paragraph_spacing=True,
+            visual_lines_as_paragraphs=False,
+        )
+        if not item_paragraphs:
+            item_paragraphs = (_empty_item_paragraph(item, scale_y),)
+        if len(item_paragraphs) != 1:
+            raise _diagnostic(
+                "multi_paragraph_list_item",
+                f"List item {_source_path(source_slide, source_object, 'li', position)} "
+                f"measures {len(item_paragraphs)} native paragraphs; the declared "
+                "list surface is one Native List Paragraph per direct item.",
+                source_slide,
+                _source_path(source_slide, source_object, "li", position),
+            )
+        paragraph = dict(item_paragraphs[0])
+        first_run = (paragraph.get("runs") or [{}])[0]
+        font_size_pt = _number(
+            first_run.get("font_size_pt"),
+            _pt(_number(item.get("fontSize")), scale_x),
+        )
+        paragraph["list"] = str(
+            item_facts.get("marker")
+            or LIST_MARKER_PRESETS.get(list_kind, "bullet")
+        )
+        paragraph["level"] = int(_number(item_facts.get("level")))
+        paragraph["margin_left_pt"] = _pt(_number(item.get("x")) - list_x, scale_x)
+        paragraph["indent_pt"] = -font_size_pt if font_size_pt > 0 else 0.0
+        paragraphs.append(paragraph)
+    return tuple(paragraphs)
 
 
 def _run_props(run: dict[str, Any]) -> dict[str, str]:
@@ -1340,9 +1554,10 @@ def _line_spacing(
         # measured in browser pixels.  Existing non-target text and the
         # table-cell path retain the established OfficeCLI 1.0.147 projection;
         # the targeted Author title opts into the browser ratio so it does not
-        # become 25% tighter.
+        # become 25% tighter.  Both branches are declared by the Contract
+        # ``paragraph_layout_surface`` line-height entry.
         if legacy_css_pixel_projection and line_height.lower().strip().endswith("px"):
-            line_height_value *= 0.75
+            line_height_value *= LINE_HEIGHT_PX_PROJECTION_SCALE
         ratio = line_height_value / font_size
     if abs(ratio - 1.0) < 0.01:
         return None
@@ -1350,13 +1565,8 @@ def _line_spacing(
 
 
 def _text_alignment(element: dict[str, Any]) -> str:
-    value = str(element.get("textAlign", "start") or "start").lower()
-    direction = str(element.get("direction", "ltr") or "ltr").lower()
-    if value == "start":
-        return "right" if direction == "rtl" else "left"
-    if value == "end":
-        return "left" if direction == "rtl" else "right"
-    return value if value in {"left", "center", "right", "justify"} else "left"
+    """Native paragraph alignment, resolved by the declared Contract surface."""
+    return _resolve_text_alignment(element)
 
 
 def _vertical_alignment(element: dict[str, Any]) -> str:
@@ -1424,8 +1634,9 @@ def _tight_single_line_font_scale(
 def _source_fidelity_line_spacing(element: dict[str, Any]) -> bool:
     """Use browser-computed CSS pixels for the reviewed slide-1 title only."""
     return (
-        _text_of(element).strip() == "ALGERIA PRODUCT LINE-UP"
-        and _number(element.get("fontSize")) >= 45
+        _text_of(element).strip() == SOURCE_FIDELITY_LINE_SPACING_TEXT
+        and _number(element.get("fontSize"))
+        >= SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX
     )
 
 
@@ -1511,7 +1722,10 @@ def _text_props(
     direction = str(element.get("direction", "ltr") or "ltr").lower()
     if direction == "rtl":
         props["direction"] = "rtl"
-    margin = _margin(element, scale_x, scale_y)
+    # A Native List Textbox carries the list's own indentation in its native
+    # paragraph properties (marginLeft/indent), so its text body keeps no CSS
+    # inset: a body inset would double-count the list padding.
+    margin = "0pt" if element.get("list") else _margin(element, scale_x, scale_y)
     if margin is not None:
         props["margin"] = margin
     # The browser measurement is the visual source of truth.  A generic
@@ -2239,7 +2453,29 @@ def _lower_slide(
         inherited_backdrop: tuple[int, int, int],
     ) -> None:
         tag = str(element.get("tag", "element") or "element").lower()
-        text = _text_of(element)
+        is_list = bool(element.get("list"))
+        if is_list:
+            # One supported top-level list is one Native List Textbox: its
+            # direct items are the paragraphs of that one object, so no item is
+            # ever emitted as its own textbox, picture, or marker-simulating
+            # shape.  The item ``li`` children are folded in below and are never
+            # walked as objects of their own.
+            paragraphs = _list_paragraphs(
+                element,
+                scale_x,
+                scale_y,
+                inherited_backdrop,
+                source_slide,
+                source_object,
+            )
+        else:
+            # One paragraph structure per element: the object text and every
+            # OfficeCLI range offset below are computed from this same
+            # structure, so a range can never address the wrong characters.
+            paragraphs = _text_paragraphs(
+                element, scale_x, scale_y, inherited_backdrop
+            )
+        text = _paragraphs_text(paragraphs)
         if element.get("isImage") or element.get("isSvg") or tag in {"img", "svg"}:
             picture_bounds = _bounds(element, scale_x, scale_y)
             picture_props, fallback_props = _picture_props(
@@ -2373,11 +2609,9 @@ def _lower_slide(
                 text,
                 props,
                 bounds,
-                paragraphs=_text_paragraphs(
-                    element, scale_x_local, scale_y_local, inherited_backdrop
-                ),
+                paragraphs=paragraphs,
             )
-        elif text:
+        elif text or paragraphs:
             props = _text_props(element, bounds, scale_x_local, scale_y_local, inherited_backdrop)
             add_object(
                 element,
@@ -2386,9 +2620,7 @@ def _lower_slide(
                 text,
                 props,
                 bounds,
-                paragraphs=_text_paragraphs(
-                    element, scale_x_local, scale_y_local, inherited_backdrop
-                ),
+                paragraphs=paragraphs,
             )
 
         if has_left:
@@ -2412,7 +2644,9 @@ def _lower_slide(
                 (bounds[0], bounds[1], left_width, bounds[3]),
             )
 
-        child_elements = element.get("children", []) or []
+        # A list's own items are the paragraphs of the one list object, so they
+        # are never walked as separate objects.
+        child_elements = [] if is_list else (element.get("children", []) or [])
         for position, child in enumerate(child_elements, start=1):
             child_tag = str(child.get("tag", "element") or "element").lower()
             if element.get("inlineRuns") and child_tag in _INLINE_TAGS:

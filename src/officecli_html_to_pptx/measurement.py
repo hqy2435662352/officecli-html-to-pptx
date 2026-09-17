@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 SLIDE_CANVAS_WIDTH_PX = 1920
 SLIDE_CANVAS_HEIGHT_PX = 1080
-MAX_HTML_SIZE_MB = 10
 PLAYWRIGHT_TIMEOUT_MS = 30_000
 FONT_LOAD_WAIT_MS = 1_000
 
@@ -30,19 +29,174 @@ EXTRACTION_JS = """
         'small','u','s','del','abbr','cite','q','time','var','kbd',
     ]);
     function getDirectText(el) {
+        // Direct text nodes with browser-equivalent whitespace collapsing applied
+        // to the element's own inline flow (leading/trailing whitespace drops,
+        // interior runs collapse to one space).  No source character is added or
+        // dropped besides that CSS white-space:normal collapsing.
         let text = '';
         for (const node of el.childNodes) {
-            if (node.nodeType === Node.TEXT_NODE) {
-                const t = node.textContent.trim();
-                if (t) text += (text ? ' ' : '') + t;
-            }
+            if (node.nodeType === Node.TEXT_NODE) text += node.textContent;
         }
-        return text;
+        return text.replace(/\\s+/g, ' ').trim();
     }
 
-    function collectInlineRuns(el) {
+    const LIST_TAGS = ['ul', 'ol'];
+    function isListTag(node) {
+        return !!node && LIST_TAGS.includes(node.tagName.toLowerCase());
+    }
+    // 0-based list nesting level: the number of enclosing <ul>/<ol> elements
+    // including the element's own list, minus one.  A direct item of a
+    // top-level list is level 0, which is the only level the initial list
+    // surface lowers.
+    function listLevel(node) {
+        let count = isListTag(node) ? 1 : 0;
+        for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+            if (isListTag(parent)) count += 1;
+        }
+        return Math.max(0, count - 1);
+    }
+
+    // Whitespace collapsing is a property of the whole inline flow, not of one
+    // DOM node: a boundary space that one sibling owns must still survive next
+    // to another.  Runs are therefore collected with their raw text and
+    // collapsed once, after the whole flow is known.
+    //
+    // One segment is one browser line: an authored <br> ends the segment before
+    // it and starts the next.  Within a segment:
+    //  - whitespace runs collapse to exactly one space;
+    //  - that space stays with the run that owns the source character, so a
+    //    boundary space never migrates into a differently formatted run;
+    //  - only the line-box edges drop whitespace: the start of the flow, the
+    //    end of the flow, and a duplicate of a space the flow already owns.
+    //
+    // Collapsing is formatting-free: which adjacent runs are one Canonical Run
+    // is a lowering decision, so the one Canonical Run identity lives in the
+    // compiler and is never restated here.
+    function collapseSegment(segment) {
+        const collapsed = [];
+        // A space whose owning run is already emitted, but whose fate is still
+        // open: it survives unless the line ends here (line-box end edge) or
+        // the next run starts with a space of its own (a duplicate).
+        let pendingSpace = false;
+        const flush = () => {
+            if (pendingSpace && collapsed.length) {
+                collapsed[collapsed.length - 1].text += ' ';
+            }
+            pendingSpace = false;
+        };
+        for (const run of segment) {
+            const raw = String(run.text == null ? '' : run.text);
+            if (!raw) continue;
+            // The segment is one browser line, so a newline inside it is only
+            // source formatting whitespace and collapses like any other space.
+            const match = raw.match(/^(\\s*)([\\s\\S]*?)(\\s*)$/);
+            const core = match[2].replace(/\\s+/g, ' ');
+            if (!core) {
+                // Whitespace-only source resolves to a boundary space of the
+                // flow and carries no format of its own: at the flow start it
+                // is the line leading space (dropped), otherwise it attaches to
+                // the run emitted before it.
+                if (collapsed.length) pendingSpace = true;
+                continue;
+            }
+            // This run's own leading space stays inside this run, unless the
+            // flow already owns a space at that boundary: then the earlier
+            // space keeps the position and this duplicate is removed.
+            let text = core;
+            if (match[1]) {
+                const last = collapsed.length
+                    ? collapsed[collapsed.length - 1]
+                    : null;
+                if (!pendingSpace && last && !last.text.endsWith(' ')) {
+                    text = ' ' + text;
+                }
+            }
+            flush();
+            collapsed.push({ ...run, text: text });
+            if (match[3]) pendingSpace = true;
+        }
+        // The line ends here, so a space still pending is the line-box end edge
+        // and is dropped rather than emitted.
+        return collapsed;
+    }
+
+    function collapseInlineRuns(runs) {
+        const flow = [];
+        let segment = [];
+        let breakRun = null;
+        const closeSegment = () => {
+            flow.push(...collapseSegment(segment));
+            if (breakRun) flow.push(breakRun);
+            segment = [];
+            breakRun = null;
+        };
+        for (const run of runs) {
+            // Only an explicitly marked break closes a segment.  A newline is a
+            // break where it was *authored* as one (a <br>, or a newline in
+            // white-space:pre* text); a whitespace-only text node of ordinary
+            // ``white-space: normal`` content is authored whitespace, so it
+            // collapses to a boundary space like any other source newline.
+            if (run.br === true) {
+                // Keep the authored break marker: a trailing <br> is a real
+                // empty paragraph, while a trailing source newline is not.  A
+                // break that a nested inline element produced carries the same
+                // ``br`` marker up through the recursion, so it closes the
+                // segment of this flow too.
+                breakRun = { ...run, text: '\\n', br: true };
+                closeSegment();
+                continue;
+            }
+            segment.push(run);
+        }
+        closeSegment();
+        // A trailing source newline is the indentation that closes the flow, and
+        // a whitespace run never becomes text of its own.
+        const kept = flow.filter(item => item.text === '\\n' || /\\S/.test(item.text));
+        while (kept.length && kept[kept.length - 1].text === '\\n' && kept[kept.length - 1].br !== true) {
+            kept.pop();
+        }
+        for (const item of kept) {
+            delete item.br;
+        }
+        return kept;
+    }
+
+    // Style fields of one resolved inline frame.  ``href`` carries the nearest
+    // enclosing anchor target so a link inside a styled span stays supported;
+    // it is null for every run that is not descended from an <a>.
+    function inlineRunFields(style, text, href) {
+        const bgImage = style.backgroundImage !== 'none' ? style.backgroundImage : null;
+        const fillColor = style.webkitTextFillColor || '';
+        const isGradientText = (fillColor === 'transparent' || fillColor === 'rgba(0, 0, 0, 0)') && bgImage && bgImage.includes('gradient');
+        return {
+            text: text,
+            color: style.color,
+            fontSize: parseFloat(style.fontSize),
+            fontFamily: style.fontFamily,
+            fontWeight: style.fontWeight,
+            fontStyle: style.fontStyle,
+            textTransform: style.textTransform,
+            ...(officecliMode ? {textDecoration: style.textDecorationLine} : {}),
+            href: href || null,
+            isGradientText: isGradientText,
+            backgroundImage: isGradientText ? bgImage : null,
+        };
+    }
+
+    // ``topLevel`` marks the inline flow of the measured element.  Whitespace
+    // collapsing is a property of the whole flow, so it runs exactly once, at
+    // the top: a nested inline element contributes its raw runs and is
+    // collapsed with the flow around it.  Collapsing a nested element on its
+    // own would resolve its leading space against a line edge that does not
+    // exist and drop a boundary space the authored line keeps
+    // (``Canonical: `` followed by ``<span>North</span><span> Africa</span>``).
+    //
+    // ``href`` is the nearest enclosing anchor target: an <a> hands its own
+    // target to the whole subtree it wraps, so a link's text keeps its
+    // hyperlink even when it sits inside <strong>/<span>.
+    function collectInlineRuns(el, style, topLevel, href) {
         const runs = [];
-        const parentStyle = getComputedStyle(el);
+        const parentStyle = style || getComputedStyle(el);
         const pre = parentStyle.whiteSpace && parentStyle.whiteSpace.indexOf('pre') === 0;
         const nodes = el.childNodes;
         for (let ni = 0; ni < nodes.length; ni++) {
@@ -54,34 +208,22 @@ EXTRACTION_JS = """
                 if (pre) {
                     const segs = node.textContent.split('\\n');
                     for (let si = 0; si < segs.length; si++) {
-                        if (si > 0) runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
-                        if (segs[si].length) runs.push({ text: segs[si], color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: parentStyle.textTransform, ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
+                        if (si > 0) runs.push({ ...inlineRunFields(parentStyle, '\\n', href), textTransform: 'none', br: true });
+                        if (segs[si].length) runs.push(inlineRunFields(parentStyle, segs[si], href));
                     }
                     continue;
                 }
-                // Collapse internal whitespace runs to single spaces (browser behavior)
-                // but preserve boundary spaces between inline siblings
-                let t = node.textContent.replace(/\\s+/g, ' ');
-                if (ni === 0) t = t.replace(/^\\s+/, '');
-                if (ni === nodes.length - 1) t = t.replace(/\\s+$/, '');
-                if (!t) continue;
-                runs.push({
-                    text: t,
-                    color: parentStyle.color,
-                    fontSize: parseFloat(parentStyle.fontSize),
-                    fontFamily: parentStyle.fontFamily,
-                    fontWeight: parentStyle.fontWeight,
-                    fontStyle: parentStyle.fontStyle,
-                    textTransform: parentStyle.textTransform,
-                    ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}),
-                });
+                if (!node.textContent) continue;
+                runs.push(inlineRunFields(parentStyle, node.textContent, href));
             } else if (node.nodeType === Node.ELEMENT_NODE) {
                 const tag = node.tagName.toLowerCase();
                 if (['script','style','link','meta'].includes(tag)) continue;
                 const cs = getComputedStyle(node);
                 if (cs.display === 'none' || cs.visibility === 'hidden') continue;
                 if (tag === 'br') {
-                    runs.push({ text: '\\n', color: parentStyle.color, fontSize: parseFloat(parentStyle.fontSize), fontFamily: parentStyle.fontFamily, fontWeight: parentStyle.fontWeight, fontStyle: parentStyle.fontStyle, textTransform: 'none', ...(officecliMode ? {textDecoration: parentStyle.textDecorationLine} : {}) });
+                    // The one place a break of ordinary content is declared, so
+                    // it is the one place that marks one.
+                    runs.push({ ...inlineRunFields(parentStyle, '\\n', href), textTransform: 'none', br: true });
                     continue;
                 }
                 // Only collect true inline-flow children as runs.  A tag such
@@ -91,31 +233,29 @@ EXTRACTION_JS = """
                 const isInline = officecliMode
                     ? cs.display.startsWith('inline')
                     : cs.display.startsWith('inline') || INLINE_TAGS.has(tag);
-                if (isInline) {
-                    const text = node.textContent.trim();
-                    if (text) {
-                        const childBgImage = cs.backgroundImage !== 'none' ? cs.backgroundImage : null;
-                        const childFillColor = cs.webkitTextFillColor || '';
-                        const childIsGradientText = (childFillColor === 'transparent' || childFillColor === 'rgba(0, 0, 0, 0)') && childBgImage && childBgImage.includes('gradient');
-                        runs.push({
-                            text: text,
-                            color: cs.color,
-                            fontSize: parseFloat(cs.fontSize),
-                            fontFamily: cs.fontFamily,
-                            fontWeight: cs.fontWeight,
-                            fontStyle: cs.fontStyle,
-                            textTransform: cs.textTransform,
-                            ...(officecliMode ? {textDecoration: cs.textDecorationLine} : {}),
-                            href: tag === 'a' ? node.getAttribute('href') : null,
-                            isGradientText: childIsGradientText,
-                            backgroundImage: childIsGradientText ? childBgImage : null,
-                        });
-                    }
+                if (!isInline) continue;
+                // Descend into the inline element instead of flattening it
+                // through textContent: a <br> nested inside an inline element
+                // is a real hard break, and every nested text node keeps the
+                // computed style of its *nearest* inline element (<strong>
+                // inside <span> still wins).  The nested runs stay separate
+                // here: which adjacent runs are one Canonical Run is resolved
+                // by the lowering pass, which owns that identity.
+                const childRuns = collectInlineRuns(
+                    node,
+                    cs,
+                    false,
+                    tag === 'a' ? (node.getAttribute('href') || href) : href,
+                );
+                for (const childRun of childRuns) {
+                    runs.push(childRun);
                 }
             }
         }
+        if (!pre && topLevel) return collapseInlineRuns(runs);
         return runs;
     }
+
 
     function textParagraphs(el, runs, directText) {
         const style = getComputedStyle(el);
@@ -279,22 +419,37 @@ EXTRACTION_JS = """
         const tag = el.tagName.toLowerCase();
 
         let markerColor = null;
-        let markerPrefix = '';
+        // List facts for the lowering seam.  The marker is never injected as
+        // literal text: one supported top-level list becomes one Native List
+        // Textbox and every direct item one Native List Paragraph whose bullet
+        // or automatic number, level, and indentation are native PowerPoint
+        // paragraph properties.
+        let listFacts = null;
+        let listItemFacts = null;
         if (tag === 'li') {
-            const parentTag = el.parentElement ? el.parentElement.tagName.toLowerCase() : '';
-            const listStyle = getComputedStyle(el).listStyleType;
-            if (parentTag === 'ol') {
-                const index = Array.from(el.parentElement.children).indexOf(el) + 1;
-                markerPrefix = index + '. ';
-                directText = markerPrefix + directText;
-            } else if (listStyle !== 'none') {
-                markerPrefix = '\\u2022 ';
-                directText = markerPrefix + directText;
-            }
+            const parent = el.parentElement;
+            const parentTag = parent ? parent.tagName.toLowerCase() : '';
+            listItemFacts = {
+                kind: isListTag(parent) ? parentTag : '',
+                level: listLevel(el),
+                index: parent ? Array.from(parent.children).indexOf(el) + 1 : 1,
+                // ``list-style-type: none`` stays unmarked, exactly as the
+                // released literal-prefix measurement left it unmarked.
+                marker: parentTag === 'ol'
+                    ? 'numbered'
+                    : (getComputedStyle(el).listStyleType === 'none' ? 'none' : 'bullet'),
+            };
             try {
                 const ms = getComputedStyle(el, '::marker');
                 if (ms && ms.color) markerColor = ms.color;
             } catch(e) {}
+        } else if (isListTag(el)) {
+            listFacts = {
+                kind: tag,
+                level: listLevel(el),
+                itemCount: Array.from(el.children)
+                    .filter(child => child.tagName.toLowerCase() === 'li').length,
+            };
         }
 
         const isImg = tag === 'img';
@@ -379,6 +534,8 @@ EXTRACTION_JS = """
             alt: isImg ? el.getAttribute('alt') : null,
             href: tag === 'a' ? el.getAttribute('href') : null,
             markerColor: markerColor,
+            list: listFacts,
+            listItem: listItemFacts,
             isSvgDataUri: isSvgDataUri,
             children: []
         };
@@ -472,11 +629,8 @@ EXTRACTION_JS = """
             ? (directText || hasChildElementText(el))
             : (directText && hasChildElementText(el));
         if (hasTextContent) {
-            const runs = collectInlineRuns(el);
+            const runs = collectInlineRuns(el, null, true);
             if (runs.length > 0 && (!officecliMode || !hasNonInlineTextChild(el))) {
-                if (markerPrefix && runs.length > 0) {
-                    runs[0].text = markerPrefix + runs[0].text;
-                }
                 data.inlineRuns = runs;
                 if (officecliMode) {
                     // Keep the flattened text field as a compatibility view
@@ -490,10 +644,10 @@ EXTRACTION_JS = """
                     data.text = '';
                 }
             } else if (directText && officecliMode) {
-                data.paragraphs = textParagraphs(el, [], markerPrefix + directText);
+                data.paragraphs = textParagraphs(el, [], directText);
             }
         } else if (directText && officecliMode) {
-            data.paragraphs = textParagraphs(el, [], markerPrefix + directText);
+            data.paragraphs = textParagraphs(el, [], directText);
         }
 
         if (
@@ -509,7 +663,7 @@ EXTRACTION_JS = """
         }
 
         const isContainer = !data.text && !isImg && !isSvg && !hasVisibleBg && !hasBorder &&
-                           !isTableElement &&
+                           !isTableElement && !data.list && !data.listItem &&
                            data.backgroundImage === null && !data.inlineRuns;
         if (isContainer && data.children.length === 1 && depth > 0) {
             const child = data.children[0];
@@ -668,7 +822,7 @@ async def extract_measurements(
 
     Raises:
         FileNotFoundError: If html_path does not exist.
-        ValueError: If the file exceeds the size limit or contains no slides.
+        ValueError: If the file contains no slides.
         ImportError: If Playwright is not installed.
     """
     from playwright.async_api import async_playwright
@@ -677,13 +831,11 @@ async def extract_measurements(
     if not os.path.isfile(abs_path):
         raise FileNotFoundError(f"HTML file not found: {abs_path}")
 
-    file_size_mb = os.path.getsize(abs_path) / (1024 * 1024)
-    if file_size_mb > MAX_HTML_SIZE_MB:
-        raise ValueError(
-            f"HTML file is {file_size_mb:.1f} MB, exceeds {MAX_HTML_SIZE_MB} MB limit"
-        )
-
-    logger.info("Loading %s (%.1f MB)", abs_path, file_size_mb)
+    logger.info(
+        "Loading %s (%.1f MB)",
+        abs_path,
+        os.path.getsize(abs_path) / (1024 * 1024),
+    )
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)

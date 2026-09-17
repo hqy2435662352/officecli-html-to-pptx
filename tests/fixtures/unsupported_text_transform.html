@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>text-transform is outside the supported surface</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background-color: #e8edf5; overflow: hidden; }
+    .slide {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        display: block;
+        overflow: hidden;
+        background-color: #f8fafc;
+        font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    .textbox { position: absolute; color: #172033; font-size: 40px; }
+</style>
+</head>
+<body>
+<section class="slide active" aria-label="Unsupported text-transform fixture">
+    <div class="textbox" id="transformed" style="left: 160px; top: 200px; width: 1200px; height: 120px; text-transform: uppercase;">
+        the browser shows this uppercase
+    </div>
+</section>
+</body>
+</html>

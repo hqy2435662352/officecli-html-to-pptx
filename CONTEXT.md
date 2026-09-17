@@ -165,6 +165,38 @@ path, an openable editable PPTX with complete evidence, `compileall`, and
 mode, the full Algeria regression, or WSL2 validation.
 _Avoid_: certification program, multi-layer release framework
 
+**User-Path Acceptance**:
+Completion evidence produced through the installed product's public command
+sequence: `capabilities`, `doctor`, `check`, `build`, Visual Review, and
+`finalize`. Internal module tests may diagnose failures but cannot substitute
+for this evidence.
+_Avoid_: compiler-only acceptance, internal-test completion
+
+**Native List Paragraph**:
+A PowerPoint paragraph whose bullet or automatic numbering, level, and
+indentation are stored as native paragraph properties. Literal `•` or `1.` text
+prefixes are content, not Native List Paragraphs.
+_Avoid_: marker-prefixed text, simulated list
+
+**Native List Textbox**:
+The single PowerPoint text-bearing object produced from one top-level HTML
+`ul` or `ol`; each direct `li` becomes one Native List Paragraph inside it.
+Nested lists are outside the initial V03-01 acceptance surface.
+_Avoid_: one textbox per list item, grouped marker text
+
+**Paragraph-local Run**:
+A native PowerPoint text run wholly contained by one paragraph. A styled HTML
+inline element that crosses `<br>` becomes separate Paragraph-local Runs with
+the same resolved formatting; no run range includes a paragraph separator.
+_Avoid_: cross-paragraph run, separator-inclusive range
+
+**Canonical Run**:
+The normalized native run defined by a formatting or supported-semantic
+boundary rather than an HTML node boundary. Adjacent source runs in the same
+paragraph and list item merge only when their resolved formatting and supported
+semantic attributes are identical, without changing text or whitespace.
+_Avoid_: DOM-node run, cross-boundary merge, whitespace-normalized run
+
 **Finalization**:
 A lightweight validation of the completed Visual Review record and its
 association with one Evidence Bundle. It never recompiles, rerenders, performs
@@ -332,7 +364,9 @@ This repository worktree is reserved for the OfficeCLI HTML-to-PPTX compiler MVP
 - Acceptance status: `KNOWN_BASELINE_DIFFERENCE` with Gate 3 visual review PASS for all 8 slides; all non-baseline checks PASS.
 - Ticket frontier: 01–07 are complete for the MVP; future work remains explicitly deferred below.
 
-The approved planning documents are under `.scratch/officecli-html-to-pptx-mvp/`.
+The detailed V0.2 planning records are preserved in Git history at the V0.2
+Experimental Pilot baseline. Active architecture decisions are maintained in
+the tracked `docs/adr/` directory.
 
 An earlier Codex-managed worktree exists at `C:\Users\Administrator\.codex\worktrees\742d\html-to-pptx`. It is not the canonical MVP workspace and no planning documents were intentionally published there. It has been left in place to avoid deleting copied untracked files without an explicit cleanup request.
 
@@ -570,7 +604,7 @@ Geometry tolerances agreed for the first contract:
 ## Issue 07 authoritative acceptance and targeted reacceptance (2026-09-08)
 
 The initial full replay and its durable review are preserved as historical
-evidence in `.scratch/officecli-html-to-pptx-mvp/issues/07-authoritative-acceptance-remediation.md` and under:
+evidence in the V0.2 Experimental Pilot history and under:
 
 `C:\TEMP\officecli-html-to-pptx-mvp-issue07-acceptance-17`
 
@@ -673,7 +707,7 @@ The tickets are tracer bullets rather than horizontal component tickets. The Mea
 ## V0.1 historical working rules
 
 The rules below governed the completed V0.1 MVP. For V0.2 implementation, the
-accepted ADRs and `.scratch/officecli-html-to-pptx-v0.2-core/spec.md` supersede
+accepted ADRs and the V0.2 Experimental Pilot release contract supersede
 them where product identity, public profiles, or Legacy Renderer treatment
 differs.
 
@@ -692,13 +726,7 @@ differs.
 
 ## Planning artifacts
 
-- `.scratch/officecli-html-to-pptx-mvp/spec.md` — approved feature specification.
-- `.scratch/officecli-html-to-pptx-mvp/issues/01-shape-text-vertical-slice.md` — complete.
-- `.scratch/officecli-html-to-pptx-mvp/issues/02-native-pictures.md` — complete.
-- `.scratch/officecli-html-to-pptx-mvp/issues/03-native-table.md` — complete.
-- `.scratch/officecli-html-to-pptx-mvp/issues/04-full-algeria-deck.md` — complete.
-- `.scratch/officecli-html-to-pptx-mvp/issues/05-officehtml-roundtrip.md` — complete.
-- `.scratch/officecli-html-to-pptx-mvp/issues/06-contract-and-acceptance-gate.md` — complete.
-- `.scratch/officecli-html-to-pptx-mvp/issues/07-authoritative-acceptance-remediation.md` — completed authoritative gate and evidence.
-- `.scratch/build-a-pptx-with-html/spec.md` — V0.2 Authoring Skill specification; static implementation is complete and live integration awaits the Core Product.
-- `.scratch/officecli-html-to-pptx-v0.2-core/spec.md` — ready-for-agent V0.2 Core Product implementation specification.
+Detailed V0.2 specifications and ticket records are historical working
+materials preserved in Git history, not part of the current public working tree.
+Current product decisions live in `docs/adr/`, and active V0.3 work is tracked
+by the implementation branch, focused tests, and acceptance fixtures.

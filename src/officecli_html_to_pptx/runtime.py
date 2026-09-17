@@ -19,6 +19,13 @@ from .protocol import Diagnostic
 FORMAL_OFFICECLI_VERSION = "1.0.147"
 FORMAL_PLAYWRIGHT_VERSION = "1.62.0"
 FORMAL_CHROMIUM_REVISION = "1234"
+# The Comparison Image is Gate 3 evidence, so its PPTX panel is rendered
+# through OfficeCLI's HTML projection rather than the native rasterizer that
+# ``auto`` selects on Windows.  The native rasterizer cannot compose a keycap
+# cluster (it draws a missing-glyph box for U+20E3) and draws monochrome emoji,
+# which would present a correct PPTX as broken content to a reviewer.
+FORMAL_PPTX_SCREENSHOT_RENDER = "html"
+PPTX_SCREENSHOT_DEFAULT_RENDER = "default"
 PYTHON_TESTED_RANGE = ">=3.10,<3.15"
 NODE_TESTED_RANGE = ">=20,<23"
 SUPPORTED_PLATFORM = "Windows"
@@ -69,6 +76,66 @@ def _run_version(
     raw = (stdout.strip() or stderr.strip()).splitlines()
     text = raw[0].strip() if raw else ""
     return text or None, text
+
+
+def _run_help_text(
+    executable: str,
+    args: Sequence[str],
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> str:
+    """Return a command's full standard output, or ``""`` when it cannot run."""
+    try:
+        completed = runner(
+            [executable, *args],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    stdout = completed.stdout
+    if isinstance(stdout, bytes):
+        return stdout.decode("utf-8", errors="replace")
+    return str(stdout or "")
+
+
+def _supports_pptx_screenshot_render(
+    executable: str | None,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> bool:
+    """Whether this OfficeCLI advertises the HTML PPTX screenshot render path."""
+    if not executable:
+        return False
+    return "--render" in _run_help_text(executable, ("view", "--help"), runner=runner)
+
+
+_PPTX_SCREENSHOT_RENDER: str | None = None
+
+
+def officecli_pptx_screenshot_render(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> str:
+    """Return the render path the Comparison Image's PPTX panel must use.
+
+    Returns :data:`FORMAL_PPTX_SCREENSHOT_RENDER` when the installed OfficeCLI
+    supports it, otherwise :data:`PPTX_SCREENSHOT_DEFAULT_RENDER`.  A runtime
+    that does not advertise ``--render`` keeps the default path rather than
+    failing the build, and ``doctor`` records which path is in force so the
+    Evidence Bundle never claims a rendering authority it did not use.
+    """
+    global _PPTX_SCREENSHOT_RENDER
+    if _PPTX_SCREENSHOT_RENDER is None:
+        supported = _supports_pptx_screenshot_render(
+            shutil.which("officecli"), runner
+        )
+        _PPTX_SCREENSHOT_RENDER = (
+            FORMAL_PPTX_SCREENSHOT_RENDER
+            if supported
+            else PPTX_SCREENSHOT_DEFAULT_RENDER
+        )
+    return _PPTX_SCREENSHOT_RENDER
 
 
 def _playwright_chromium() -> tuple[str | None, str | None, str | None]:
@@ -247,6 +314,22 @@ def diagnose_environment(
     if code:
         diagnostics.append(Diagnostic(code, "error", message, True, remediation=remediation, recheck="officecli-html-to-pptx doctor --json"))
 
+    # The Evidence Bundle's PPTX panel is rendered by OfficeCLI, so record which
+    # render path that runtime will use instead of leaving it implicit.
+    screenshot_supported = _supports_pptx_screenshot_render(officecli_executable, runner)
+    snapshot["pptx_screenshot"] = {
+        "render": (
+            FORMAL_PPTX_SCREENSHOT_RENDER
+            if screenshot_supported
+            else PPTX_SCREENSHOT_DEFAULT_RENDER
+        ),
+        "option": "--render" if screenshot_supported else None,
+        "supported": screenshot_supported,
+        "renderer": (
+            "officecli-html-projection" if screenshot_supported else "officecli-default"
+        ),
+    }
+
     playwright_version, chromium_revision, chromium_executable = _playwright_chromium()
     playwright_ok = playwright_version == FORMAL_PLAYWRIGHT_VERSION
     chromium_installed = bool(chromium_executable and Path(chromium_executable).is_file())
@@ -328,9 +411,12 @@ __all__ = [
     "FORMAL_CHROMIUM_REVISION",
     "FORMAL_OFFICECLI_VERSION",
     "FORMAL_PLAYWRIGHT_VERSION",
+    "FORMAL_PPTX_SCREENSHOT_RENDER",
     "NODE_TESTED_RANGE",
+    "PPTX_SCREENSHOT_DEFAULT_RENDER",
     "PYTHON_TESTED_RANGE",
     "SUPPORTED_PLATFORM",
     "RuntimeDiagnosis",
     "diagnose_environment",
+    "officecli_pptx_screenshot_render",
 ]

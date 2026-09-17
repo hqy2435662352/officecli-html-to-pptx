@@ -65,11 +65,15 @@ _RENDERED_CSS_PROPERTIES = frozenset(
         "padding-top",
         "text-align",
         "text-decoration",
-        "text-transform",
         "transform",
         "vertical-align",
     }
 )
+# ``text-transform`` is measured but never lowered: no Canonical Run key, run
+# property or readback carries the case transform, so a browser that shows
+# ``uppercase`` text would be silently checked as supported while the PPTX keeps
+# the authored case.  It is therefore declared unsupported and blocked until
+# lowering, readback and visual evidence exist for it.
 _MEASUREMENT_ONLY_CSS_PROPERTIES = frozenset(
     {
         "align-content",
@@ -136,6 +140,8 @@ _UNSUPPORTED_CSS_PROPERTIES = frozenset(
         "clip-path",
         "filter",
         "mix-blend-mode",
+        # Measured but never lowered: see the note above.
+        "text-transform",
         "text-shadow",
         "transition",
         "transition-delay",
@@ -155,6 +161,248 @@ CSS_PROPERTY_CLASSIFICATIONS = {
 }
 SUPPORTED_CSS_PROPERTIES = frozenset(CSS_PROPERTY_CLASSIFICATIONS)
 
+# The mixed-run surface is the inline formatting surface this product really
+# supports end to end.  It is declared once here and consumed by both the
+# Contract checker (``check``) and the OfficeCLI lowering pass, so the public
+# capability manifest cannot drift from what is actually enforced.
+SUPPORTED_INLINE_ELEMENTS = (
+    "span",
+    "strong",
+    "em",
+    "b",
+    "i",
+    "a",
+    "code",
+    "mark",
+    "sub",
+    "sup",
+    "small",
+    "u",
+    "s",
+    "del",
+    "abbr",
+    "cite",
+    "q",
+    "time",
+    "var",
+    "kbd",
+)
+# Canonical Run identity is declared exactly once, here.  A Canonical Run
+# boundary is a formatting boundary, so the published mixed-run surface and the
+# lowering pass that merges a paragraph's runs must read one declaration instead
+# of each restating it.  Each row is
+#
+#   (normalized lowering field, published mixed-run attribute, CSS property)
+#
+# The published attribute and the CSS property are ``None`` for a supported
+# *semantic* attribute that is not part of the declared CSS surface (an anchor
+# target, a gradient-text fill).  The published attributes are the ones the
+# capability manifest has always declared, so deriving them from this
+# declaration republishes the same surface; the lowering pass builds its merge
+# key from the same rows, so an identity dimension cannot be published without
+# being implemented, or implemented without being published.
+CANONICAL_RUN_IDENTITY = (
+    ("font_family", "font_family", "font-family"),
+    ("font_size_pt", "font_size", "font-size"),
+    ("bold", "bold", "font-weight"),
+    ("italic", "italic", "font-style"),
+    ("color", "color", "color"),
+    ("underline", "underline", "text-decoration"),
+    ("href", None, None),
+    ("is_gradient_text", None, None),
+    ("background_image", None, None),
+)
+CANONICAL_RUN_IDENTITY_FIELDS = tuple(
+    field for field, _attribute, _property in CANONICAL_RUN_IDENTITY
+)
+MIXED_RUN_ATTRIBUTES = {
+    attribute: css_property
+    for _field, attribute, css_property in CANONICAL_RUN_IDENTITY
+    if attribute is not None
+}
+CANONICAL_RUN_POLICY = {
+    "scope": "paragraph",
+    "requires": [
+        "identical resolved formatting",
+        "identical supported semantic attributes",
+    ],
+    "forbidden_across": ["paragraph", "list_item", "hard_break"],
+    "range_units": "utf-16-code-units",
+}
+
+# The paragraph-layout surface is the block-level text surface this product
+# really supports end to end.  Like ``SUPPORTED_INLINE_ELEMENTS`` it is declared
+# once here and consumed by both the checker and the lowering pass, so the
+# public capability manifest cannot drift from the paragraph alignment and
+# soft-wrap behavior the compiler applies.
+TEXT_ALIGNMENT_VALUES = ("center", "justify", "left", "right")
+TEXT_ALIGNMENT_DEFAULT = "left"
+TEXT_ALIGNMENT_MAPPING = {
+    "start": {"ltr": "left", "rtl": "right"},
+    "end": {"ltr": "right", "rtl": "left"},
+}
+LINE_HEIGHT_PROPERTY = "line-height"
+PARAGRAPH_SPACING_PROPERTIES = ("margin-top", "margin-bottom")
+# The lowering pass keeps the released V0.2 CSS-pixel projection (a px
+# line-height is scaled by 0.75) except for the one reviewed source-fidelity
+# label below, which opts into the raw browser ratio.
+LINE_HEIGHT_PX_PROJECTION_SCALE = 0.75
+SOURCE_FIDELITY_LINE_SPACING_TEXT = "ALGERIA PRODUCT LINE-UP"
+SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX = 45.0
+# Chromium's measured visual lines are the soft-wrap authority.  They become the
+# native paragraph boundaries of the one authored text object; no new
+# soft-line-break representation exists in the PPT Object IR.
+SOFT_WRAP_MODEL = {
+    "representation": "chromium-visual-lines-as-native-paragraph-boundaries",
+    "measured_property": "visualLines",
+    "unit": "native-paragraph",
+    "requires": [
+        "one-source-paragraph",
+        "one-source-run",
+        "visual-lines-rejoin-to-the-authored-text",
+        "ordered-soft-wrap-sequence",
+    ],
+    "fallback": "authored-paragraph-when-the-visual-lines-are-not-a-repartition",
+    "object_per_source": 1,
+    "object_kind": "textbox",
+    "new_soft_line_break_representation": False,
+}
+
+# The list surface is the top-level HTML list surface this product really
+# supports end to end: one ``ul``/``ol`` becomes one Native List Textbox and
+# every direct ``li`` one Native List Paragraph whose bullet or automatic number,
+# level, and indentation are native PowerPoint paragraph properties.  It is
+# declared once here and consumed by both the Contract checker (which blocks the
+# structures outside it) and the OfficeCLI lowering pass, so the published
+# capability manifest cannot drift from what is enforced.
+LIST_SURFACE_ELEMENTS = ("ol", "ul")
+LIST_MARKER_PRESETS = {"ol": "numbered", "ul": "bullet"}
+LIST_PARAGRAPH_PROPERTIES = ("list", "level", "marginLeft", "indent")
+LIST_LEVELS = (0,)
+LIST_ITEM_SOFT_WRAP = "native-re-wrap-inside-the-measured-list-bounds"
+# One stable, descriptive blocking code per structure outside the surface; each
+# diagnostic carries the source context of the offending DOM node.
+LIST_REJECTION_CODES = (
+    "nested_list",
+    "list_item_hard_break",
+    "multi_paragraph_list_item",
+)
+LIST_REJECTIONS = {
+    "nested_list": (
+        "A <ul>/<ol> nested inside another <ul>/<ol> is outside the initial "
+        "top-level list surface."
+    ),
+    "list_item_hard_break": (
+        "A list item containing a <br> would need more than one Native List "
+        "Paragraph."
+    ),
+    "multi_paragraph_list_item": (
+        "A list item with block-level children would need more than one Native "
+        "List Paragraph."
+    ),
+}
+
+
+def list_surface() -> dict[str, Any]:
+    """Declare the top-level list surface from its single authority.
+
+    ``author_capability_manifest`` publishes this, ``_check_lists`` blocks the
+    structures outside it, and the OfficeCLI lowering pass consumes the same
+    marker presets and paragraph properties, so checking and lowering are held
+    to one declaration instead of a parallel handwritten matrix.
+    """
+    return {
+        "elements": list(LIST_SURFACE_ELEMENTS),
+        "nesting": "top-level-only",
+        "levels": list(LIST_LEVELS),
+        "object_per_list": 1,
+        "object_kind": "textbox",
+        "paragraphs_per_item": 1,
+        "marker": {
+            "property": "list",
+            "presets": dict(LIST_MARKER_PRESETS),
+            "unmarked": "none",
+            "literal_prefix": "rejected",
+            "native": ["a:buChar", "a:buAutoNum"],
+        },
+        "indentation": {
+            "properties": ["marginLeft", "indent", "level"],
+            "native": ["@marL", "@indent", "@lvl"],
+            "margin_left": "measured item text edge minus the list border-box left edge",
+            "indent": "negative one em (the Chromium outside-marker box advance)",
+            "body_inset": "0pt",
+        },
+        "paragraph_properties": sorted(LIST_PARAGRAPH_PROPERTIES),
+        "item_soft_wrap": LIST_ITEM_SOFT_WRAP,
+        "rejections": dict(LIST_REJECTIONS),
+    }
+
+
+def paragraph_layout_surface() -> dict[str, Any]:
+    """Declare the paragraph-layout surface from its single authority.
+
+    ``author_capability_manifest`` publishes this, and both the Contract
+    checker and the OfficeCLI lowering pass resolve alignment through
+    ``_resolve_text_alignment`` in this module, so the published surface is the
+    same data the pipeline is held to rather than a parallel handwritten matrix.
+    """
+    return {
+        "alignment": {
+            "property": "text-align",
+            "values": sorted(TEXT_ALIGNMENT_VALUES),
+            "default": TEXT_ALIGNMENT_DEFAULT,
+            "mapping": {
+                name: dict(directions)
+                for name, directions in TEXT_ALIGNMENT_MAPPING.items()
+            },
+            "native": "paragraph-align",
+        },
+        "line_height": {
+            "property": LINE_HEIGHT_PROPERTY,
+            "native": "lineSpacing",
+            "unitless": "line-height / font-size",
+            "length_with_px_projection": (
+                f"(line-height x {LINE_HEIGHT_PX_PROJECTION_SCALE}) / font-size"
+            ),
+            "length_with_source_fidelity_projection": "line-height / font-size",
+            "omitted_when_ratio_within": 0.01,
+            "precision": "0.001x",
+            "default": "absent",
+            "source_fidelity_text": SOURCE_FIDELITY_LINE_SPACING_TEXT,
+            "source_fidelity_min_font_size_px": (
+                SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX
+            ),
+        },
+        "paragraph_spacing": {
+            "properties": list(PARAGRAPH_SPACING_PROPERTIES),
+            "native": ["spaceBefore", "spaceAfter"],
+            "unit": "pt",
+            "projection": "css-margin-px-to-native-paragraph-points",
+            "default": "absent",
+            "emitted_at": ["table-cell-paragraph"],
+            "standalone_text_block": "margins-are-already-in-the-measured-bounds",
+        },
+        "soft_wrap": {
+            key: (list(value) if isinstance(value, list) else value)
+            for key, value in SOFT_WRAP_MODEL.items()
+        },
+    }
+
+
+def _resolve_text_alignment(element: Mapping[str, Any]) -> str:
+    """Resolve a measured ``text-align`` to its native paragraph alignment.
+
+    The OfficeCLI lowering of a text body, a shape, and a table cell all use
+    this one resolution, so a declared alignment value cannot be one the
+    compiler would silently rewrite.
+    """
+    value = str(element.get("textAlign", "start") or "start").lower()
+    direction = str(element.get("direction", "ltr") or "ltr").lower()
+    relative = TEXT_ALIGNMENT_MAPPING.get(value)
+    if relative is not None:
+        return relative["rtl"] if direction == "rtl" else relative["ltr"]
+    return value if value in TEXT_ALIGNMENT_VALUES else TEXT_ALIGNMENT_DEFAULT
+
 
 def author_capability_manifest() -> dict[str, Any]:
     """Return the Author support claims owned by the Contract checker."""
@@ -166,6 +414,18 @@ def author_capability_manifest() -> dict[str, Any]:
             name: CSS_PROPERTY_CLASSIFICATIONS[name]
             for name in sorted(CSS_PROPERTY_CLASSIFICATIONS)
         },
+        "mixed_run_surface": {
+            "attributes": dict(MIXED_RUN_ATTRIBUTES),
+            "inline_elements": sorted(SUPPORTED_INLINE_ELEMENTS),
+            "canonical_run": {
+                key: (
+                    list(value) if isinstance(value, list) else value
+                )
+                for key, value in CANONICAL_RUN_POLICY.items()
+            },
+        },
+        "paragraph_layout_surface": paragraph_layout_surface(),
+        "list_surface": list_surface(),
         "accepted_resources": {
             "picture_source": AUTHOR_PICTURE_SOURCE,
             "external_resources": AUTHOR_EXTERNAL_RESOURCES_ALLOWED,
@@ -611,6 +871,107 @@ def _emit(
     )
 
 
+def _element_tag(element: Any) -> str:
+    return str(element.tag).lower() if isinstance(element.tag, str) else ""
+
+
+def _descendant_tag(element: Any, tag: str) -> Any | None:
+    for descendant in element.iterdescendants():
+        if _element_tag(descendant) == tag:
+            return descendant
+    return None
+
+
+def _child_tag(element: Any, tags: set[str]) -> Any | None:
+    for child in element:
+        if _element_tag(child) in tags:
+            return child
+    return None
+
+
+def _list_stray_text(element: Any) -> str:
+    """Return list-owned text that no direct ``li`` accounts for."""
+    parts = [element.text or ""]
+    parts.extend(child.tail or "" for child in element)
+    return "".join(parts).strip()
+
+
+def _check_lists(document: Any, findings: list[ContractDiagnostic]) -> None:
+    """Reject the list structures outside the declared top-level list surface.
+
+    The accepted surface is one ``ul``/``ol`` per Native List Textbox with one
+    Native List Paragraph per direct, single-paragraph ``li``.  A list nested in
+    another list, an item with a hard break, and an item with block-level
+    children all need paragraph structures the surface does not have, so they
+    block before any output exists.  A list's position in the DOM (inside a
+    ``div`` or ``section``) is not a rejection: only nesting and item structure
+    are.
+    """
+    list_tags = set(LIST_SURFACE_ELEMENTS)
+    for element in document.iter():
+        tag = _element_tag(element)
+        if tag not in list_tags:
+            continue
+        if not _is_visible_author_element(element, document):
+            continue
+        source = _node_path(element)
+        nested = _descendant_tag(element, "ul")
+        if nested is None:
+            nested = _descendant_tag(element, "ol")
+        if nested is not None:
+            _emit(
+                findings,
+                "author",
+                "nested_list",
+                f"{LIST_REJECTIONS['nested_list']} (found <{_element_tag(nested)}> at {_node_path(nested)}.)",
+                _node_path(nested),
+            )
+            continue
+        strays = [child for child in element if _element_tag(child) != "li"]
+        if strays:
+            _emit(
+                findings,
+                "author",
+                "multi_paragraph_list_item",
+                "Only direct <li> items are part of the Native List Textbox "
+                f"surface; found <{_element_tag(strays[0])}> instead.",
+                _node_path(strays[0]),
+            )
+            continue
+        if _list_stray_text(element):
+            _emit(
+                findings,
+                "author",
+                "multi_paragraph_list_item",
+                "List text that no direct <li> item owns is outside the Native List "
+                "Textbox surface.",
+                source,
+            )
+            continue
+        for item in element:
+            hard_break = _descendant_tag(item, "br")
+            if hard_break is not None:
+                _emit(
+                    findings,
+                    "author",
+                    "list_item_hard_break",
+                    f"{LIST_REJECTIONS['list_item_hard_break']} (found <br> at {_node_path(hard_break)}.)",
+                    _node_path(hard_break),
+                )
+                continue
+            block_child = _child_tag(
+                item, {"p", "div", "section", "ul", "ol", "table", "blockquote", "pre"}
+            )
+            if block_child is not None:
+                _emit(
+                    findings,
+                    "author",
+                    "multi_paragraph_list_item",
+                    f"{LIST_REJECTIONS['multi_paragraph_list_item']} (found <{_element_tag(block_child)}> at {_node_path(block_child)}.)",
+                    _node_path(block_child),
+                )
+
+
 def _css_classification(
     property_name: str,
     value: str,
@@ -770,6 +1131,8 @@ def _check_author(
                     "Merged table cells are not supported in OfficeCLI Contract v1.",
                     _node_path(element),
                 )
+
+    _check_lists(document, findings)
 
     for selector, declarations in _stylesheet_rules(document):
         preview_only = _selector_has_preview_token(selector)
@@ -1072,12 +1435,35 @@ __all__ = [
     "AUTHOR_TABLE_CELL_SPANS",
     "SUPPORTED_PROFILES",
     "SUPPORTED_OBJECT_KINDS",
+    "SUPPORTED_INLINE_ELEMENTS",
+    "CANONICAL_RUN_IDENTITY",
+    "CANONICAL_RUN_IDENTITY_FIELDS",
+    "MIXED_RUN_ATTRIBUTES",
+    "CANONICAL_RUN_POLICY",
+    "TEXT_ALIGNMENT_VALUES",
+    "TEXT_ALIGNMENT_DEFAULT",
+    "TEXT_ALIGNMENT_MAPPING",
+    "LINE_HEIGHT_PROPERTY",
+    "LINE_HEIGHT_PX_PROJECTION_SCALE",
+    "SOURCE_FIDELITY_LINE_SPACING_TEXT",
+    "SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX",
+    "PARAGRAPH_SPACING_PROPERTIES",
+    "SOFT_WRAP_MODEL",
+    "LIST_SURFACE_ELEMENTS",
+    "LIST_MARKER_PRESETS",
+    "LIST_PARAGRAPH_PROPERTIES",
+    "LIST_LEVELS",
+    "LIST_ITEM_SOFT_WRAP",
+    "LIST_REJECTION_CODES",
+    "LIST_REJECTIONS",
     "CSS_CLASSIFICATIONS",
     "CSS_PROPERTY_CLASSIFICATIONS",
     "SUPPORTED_CSS_PROPERTIES",
     "ContractDiagnostic",
     "ContractReport",
     "author_capability_manifest",
+    "paragraph_layout_surface",
+    "list_surface",
     "check_contract",
 ]
 
