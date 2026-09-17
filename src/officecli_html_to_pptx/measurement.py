@@ -55,6 +55,22 @@ EXTRACTION_JS = """
         }
         return Math.max(0, count - 1);
     }
+    // A numbered marker is written ``a:buAutoNum`` and a bullet ``a:buChar``, and
+    // which one an item gets is decided here rather than by literal marker text
+    // or by one list object per marker.  An item of an <ol> is numbered, and so
+    // is an item of a <ul> that declares its own numbering with an explicit
+    // ``list-style-type`` -- ``list-style-type`` is how any item states its own
+    // marker, so one list can carry both a bullet item and a numbered item
+    // exactly as a source deck's own list object can.  Everything else that is
+    // not ``none`` stays a bullet.
+    function listMarker(node, parentTag) {
+        const styleType = String(getComputedStyle(node).listStyleType || '').trim().toLowerCase();
+        if (styleType === 'none') return 'none';
+        if (parentTag === 'ol') return 'numbered';
+        return /decimal|roman|alpha|cjk|numeric|armenian|georgian|hebrew/.test(styleType)
+            ? 'numbered'
+            : 'bullet';
+    }
 
     // Whitespace collapsing is a property of the whole inline flow, not of one
     // DOM node: a boundary space that one sibling owns must still survive next
@@ -433,11 +449,7 @@ EXTRACTION_JS = """
                 kind: isListTag(parent) ? parentTag : '',
                 level: listLevel(el),
                 index: parent ? Array.from(parent.children).indexOf(el) + 1 : 1,
-                // ``list-style-type: none`` stays unmarked, exactly as the
-                // released literal-prefix measurement left it unmarked.
-                marker: parentTag === 'ol'
-                    ? 'numbered'
-                    : (getComputedStyle(el).listStyleType === 'none' ? 'none' : 'bullet'),
+                marker: listMarker(el, parentTag),
             };
             try {
                 const ms = getComputedStyle(el, '::marker');
@@ -501,6 +513,18 @@ EXTRACTION_JS = """
             naturalWidth: isImg ? (el.naturalWidth || 0) : 0,
             naturalHeight: isImg ? (el.naturalHeight || 0) : 0,
             borderRadius: style.borderRadius,
+            // A preset geometry the Canonical Author shape surface keeps as a
+            // PowerPoint preset rather than inferring from CSS.  A block box is
+            // a rect and a border-radius is a roundRect, but an ellipse or a
+            // right arrow has no CSS declaration that means it, so the emitted
+            // object names the preset and the lowering reads it here.
+            shapeGeometry: el.getAttribute('data-shape-geometry'),
+            // Present exactly when this element came from the V0.4.x
+            // PPTX-to-Author-HTML projection.  A projected object's text
+            // formatting is a reading of a source deck the product was asked to
+            // reproduce, which the lowering treats differently from a value an
+            // author wrote by hand.
+            projectedFrom: el.getAttribute('data-projection-id'),
             borderColor: hasBorder ? style.borderColor : null,
             borderWidth: hasBorder ? parseFloat(style.borderWidth) : 0,
             borderStyle: hasBorder ? style.borderStyle : null,

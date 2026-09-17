@@ -1,15 +1,21 @@
 """OfficeCLI-backed PowerPoint object capture.
 
-This module is the private reader half of the experimental V0.4.1 projection
+This module is the private reader half of the experimental V0.4.2 projection
 seam.  It turns one source ``.pptx`` plus an explicit slide selection into the
 PowerPoint Object Capture: slide bounds, paint-ordered slide-owned objects,
 text structure, geometry, picture sources, native tables, and the exact
 capability boundaries OfficeCLI reports.
 
-The reader never writes to the source deck.  Its only inputs are the deck path
-and the selected slide numbers, so an OfficeHTML export is never a hidden
-runtime prerequisite.  Everything it returns is either read from an OfficeCLI
-command or read out of the source package's own parts.
+The reader never writes to the source deck.  Its only inputs are the deck path,
+the selected slide numbers, and the caller's ``source_key`` -- the stable
+identity the projection uses to keep two decks' identical object paths apart --
+so an OfficeHTML export is never a hidden runtime prerequisite.  Everything it
+returns is either read from an OfficeCLI command or read out of the source
+package's own parts.
+
+One capture covers exactly one source deck.  A multi-source run calls this
+function once per distinct deck and keeps the results keyed by ``source_key``;
+nothing here discovers slides or reads a deck the caller did not name.
 
 Two OfficeCLI readback facts drive the design:
 
@@ -18,14 +24,15 @@ Two OfficeCLI readback facts drive the design:
   being parsed by position.
 * ``effective.<property>.src`` names where a resolved value came from.  A
   source outside the shape's own tree (``/master[...]``, ``/layout[...]``,
-  ``/theme/...``) is the machine-readable base-only signal this probe needs; it
-  is recorded as :class:`BaseOnlyClaim` rather than being silently baked in.
+  ``/theme/...``) is the machine-readable base-only signal this projection needs;
+  it is recorded as :class:`BaseOnlyClaim` rather than being silently baked in.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 import base64
+import dataclasses
 from functools import lru_cache
 import json
 import posixpath
@@ -49,9 +56,9 @@ _QUALIFIED_LENGTH_RE = re.compile(
 _HEX_COLOR_RE = re.compile(r"^#?(?P<hex>[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 _OWNED_SOURCE_PREFIX = "/shape"
 
-# Object kinds whose native semantics this probe cannot express as a canonical
-# editable Author object.  They are only ever emitted as object-local locked
-# visual proxies.
+# Object kinds whose native semantics this projection cannot express as a
+# canonical editable Author object.  They are only ever emitted as object-local
+# locked visual proxies.
 NON_CANONICAL_KINDS = frozenset(
     {
         "chart",
@@ -72,10 +79,31 @@ CONTAINER_KINDS = frozenset({"group"})
 
 # Geometry presets whose native shape the canonical Author object surface can
 # reproduce as an independent editable PowerPoint object.  ``roundRect`` is a
-# rect with a corner radius; every other preset (arrows, ellipses, callouts,
-# stars, custom paths) has no canonical equivalent, so it may only be emitted
-# as a locked visual proxy.
-CANONICAL_GEOMETRIES = {"rect": None, "roundRect": None}
+# rect with a corner radius, ``ellipse`` and ``rightArrow`` are the two simple
+# presets V0.4.2 admits on top of the V0.4.1 surface; every other preset
+# (callouts, chevrons, stars, other arrows, custom paths) still has no canonical
+# equivalent, so it may only be emitted as a locked visual proxy.
+CANONICAL_GEOMETRIES = {
+    "rect": None,
+    "roundRect": None,
+    "ellipse": None,
+    "rightArrow": None,
+}
+
+# The presets this slice admits beyond the V0.4.1 surface, declared once because
+# two rules read the same set:
+#
+# * their native geometry cannot be *implied* by a CSS declaration the way a
+#   rect (a block box) and a roundRect (``border-radius``) can, so the emitted
+#   object declares it explicitly for the shape lowering path; and
+# * the canonical object surface already carries the CSS ``transform`` a browser
+#   and the OfficeCLI lowering both round-trip, so these are also the presets
+#   whose own in-plane rotation the surface can express.
+#
+# ``rect`` and ``roundRect`` are deliberately outside this set: their V0.4.1
+# behaviour -- including ``rotation_not_supported`` for a rotated object -- is
+# unchanged by this slice.
+ADMITTED_PRESET_GEOMETRIES = frozenset({"ellipse", "rightArrow"})
 
 # A base-only claim only matters for a property the projection actually
 # renders *and* cannot faithfully preserve.  Master paragraph-layout defaults
@@ -103,17 +131,44 @@ ALIGNMENT_DEFAULT = "left"
 class PptxReadError(RuntimeError):
     """The source deck could not be read into a PowerPoint Object Capture."""
 
+    # A stable, machine-readable failure class for the projection seam: every
+    # read failure that is not a missing slide means the named source could not
+    # be read at all.
+    code = "unreadable_source"
+
 
 class MissingSlideError(PptxReadError):
     """A requested slide number does not exist in the source deck."""
 
-    def __init__(self, slide_number: int, slide_count: int) -> None:
-        super().__init__(
+    code = "missing_page"
+
+    def __init__(
+        self, slide_number: int, slide_count: int, source: str | None = None
+    ) -> None:
+        message = (
             f"Selected slide {slide_number} does not exist; the source deck has "
             f"{slide_count} slide(s)."
         )
+        if source:
+            message = f"{message} Source: {source}"
+        super().__init__(message)
         self.slide_number = slide_number
         self.slide_count = slide_count
+        self.source = source
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the failure as one structured, machine-readable diagnostic."""
+        payload: dict[str, Any] = {
+            "code": self.code,
+            "severity": "error",
+            "message": str(self),
+            "blocking": True,
+            "source_slide": self.slide_number,
+            "slide_count": self.slide_count,
+        }
+        if self.source:
+            payload["source_path"] = self.source
+        return payload
 
 
 @dataclass(frozen=True)
@@ -275,9 +330,35 @@ class CapturedObject:
     raw_format: Mapping[str, Any]
     text: str
     paragraphs: tuple[CapturedParagraph, ...]
+    # The object's resolved opacity, and the alpha its own fill and outline
+    # tokens carry.  OfficeCLI writes a semi-transparent fill as an eight-digit
+    # hex token *and* reports ``opacity``, so both halves are read: the plain
+    # colour is what the ledger records, and the alpha is what the canonical
+    # declaration has to carry for the value to survive the round trip.
+    opacity: float = 1.0
+    fill_alpha: float = 1.0
+    line_alpha: float = 1.0
+    # A mirrored object's native transform.  A mirror is not an in-plane
+    # rotation, so it is never representable by the canonical ``transform``.
+    mirrored: bool = False
+    # A paint-less container's own child coordinate space: OfficeCLI reports the
+    # group's ``a:chOff``/``a:chExt`` as ``childOffset``/``childExtent``, which
+    # is the only declaration of the space its children's rectangles are in.
+    child_offset_pt: tuple[float, float] | None = None
+    child_extent_pt: tuple[float, float] | None = None
     picture: CapturedPicture | None = None
     table: CapturedTable | None = None
     children: tuple["CapturedObject", ...] = ()
+    # The stable identity of the deck this object was captured from.  Two decks
+    # routinely report the same ``source_object`` path for different objects, so
+    # ``(source_key, source_slide, source_object)`` -- never the path alone -- is
+    # what identifies a captured object.
+    source_key: str = ""
+    # The container that owns this object, when it is not slide-owned.  An owned
+    # object is represented by its container's own representation and is never
+    # emitted as a top-level sibling.
+    owner: str | None = None
+    owner_kind: str | None = None
 
     @property
     def has_text(self) -> bool:
@@ -325,6 +406,22 @@ class CapturedObject:
             "explicit_properties": sorted(self.explicit_properties),
             "fingerprint": self.fingerprint(),
         }
+        if self.source_key:
+            data["source_key"] = self.source_key
+        if abs(self.rotation_deg) > 0.01 or self.mirrored:
+            data["transform"] = {
+                "rotation_deg": self.rotation_deg,
+                "mirrored": self.mirrored,
+            }
+        if self.opacity < 0.999 or self.fill_alpha < 0.999 or self.line_alpha < 0.999:
+            data["alpha"] = {
+                "opacity": round(self.opacity, 4),
+                "fill": round(self.fill_alpha, 4),
+                "line": round(self.line_alpha, 4),
+            }
+        if self.owner is not None:
+            data["owner"] = self.owner
+            data["owner_kind"] = self.owner_kind
         if self.fill is not None:
             data["fill"] = self.fill
         if self.line_color is not None or self.line_width_pt:
@@ -360,9 +457,12 @@ class CapturedSlide:
     height_pt: float
     background: str | None
     objects: tuple[CapturedObject, ...]
+    # Which deck this page came from.  ``source_slide`` is always the original
+    # page number in that deck, never a position in the caller's selection.
+    source_key: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "source_slide": self.source_slide,
             "layout": self.layout,
             "layout_type": self.layout_type,
@@ -372,6 +472,9 @@ class CapturedSlide:
             "object_count": len(self.objects),
             "objects": [item.as_dict() for item in self.objects],
         }
+        if self.source_key:
+            payload["source_key"] = self.source_key
+        return payload
 
 
 @dataclass(frozen=True)
@@ -383,16 +486,18 @@ class CapturedPresentation:
     slide_count: int
     officecli_version: str
     slides: tuple[CapturedSlide, ...]
+    source_key: str = ""
 
     def slide(self, number: int) -> CapturedSlide:
         for item in self.slides:
             if item.source_slide == number:
                 return item
-        raise MissingSlideError(number, self.slide_count)
+        raise MissingSlideError(number, self.slide_count, self.source_path)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "source_path": self.source_path,
+            "source_key": self.source_key,
             "slide_size_pt": list(self.slide_size_pt),
             "slide_count": self.slide_count,
             "officecli_version": self.officecli_version,
@@ -446,7 +551,9 @@ def parse_color(value: Any) -> str | None:
     """Return ``#RRGGBB`` for a plain hex fill or line, else ``None``.
 
     A theme token (``accent1``, ``text1+lumMod65``), a gradient, a pattern, or
-    ``none`` is not a plain color and must not be reported as one.
+    ``none`` is not a plain color and must not be reported as one.  An
+    eight-digit token is a plain color *with* an alpha byte; the byte is read
+    separately by :func:`alpha_of` so the colour claim stays six digits.
     """
     if value is None:
         return None
@@ -458,6 +565,191 @@ def parse_color(value: Any) -> str | None:
         return None
     raw = match.group("hex").upper()
     return f"#{raw[:6]}"
+
+
+#: The drawingml namespace, for reading a deck's own colour scheme.
+_A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+#: A colour-scheme entry's name to the slot it fills.  PowerPoint names the two
+#: text and two background slots by their light/dark pair as well as by their
+#: semantic role, and a run may declare either spelling.
+_SCHEME_ALIASES: Mapping[str, str] = {
+    "tx1": "dk1",
+    "bg1": "lt1",
+    "tx2": "dk2",
+    "bg2": "lt2",
+}
+
+
+def theme_color_scheme(pptx_path: str | Path) -> dict[str, str]:
+    """Return a deck's own colour scheme as ``{token: "#RRGGBB"}``.
+
+    A run whose colour is a *theme token* rather than a colour is not a colour the
+    projection can write: OfficeCLI reports ``color = accent1`` and does not
+    resolve it, so the projection used to emit no colour at all and the rebuilt
+    deck painted the token's slot with OfficeCLI's default instead.  On the
+    synthetic probe deck that turned an accent-coloured body black, and inside a
+    mixed body it made one run inherit the previous run's colour -- two silent
+    colour losses, found by the acceptance gate's style readback.
+
+    The scheme lives in the deck itself, so it is read from the deck: the theme
+    part's ``a:clrScheme``, where each slot holds either an ``a:srgbClr/@val`` or a
+    ``a:sysClr/@lastClr``.  A token carrying a modifier (``text1+lumMod65``) is not
+    resolvable this way and is deliberately absent from the result, so the caller
+    records it as a base-only claim rather than inventing a value for it.
+    """
+    path = Path(pptx_path)
+    if not path.is_file():
+        return {}
+    scheme: dict[str, str] = {}
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = sorted(
+                name
+                for name in archive.namelist()
+                if re.fullmatch(r"ppt/theme/theme\d+\.xml", name)
+            )
+            if not names:
+                return {}
+            root = ElementTree.fromstring(archive.read(names[0]))
+    except (OSError, KeyError, ValueError, ElementTree.ParseError):
+        return {}
+    for scheme_node in root.iter(f"{{{_A_NS}}}clrScheme"):
+        for slot in scheme_node:
+            tag = str(slot.tag).rsplit("}", 1)[-1]
+            for child in slot:
+                child_tag = str(child.tag).rsplit("}", 1)[-1]
+                value = (
+                    child.attrib.get("val")
+                    if child_tag == "srgbClr"
+                    else child.attrib.get("lastClr")
+                    if child_tag == "sysClr"
+                    else None
+                )
+                parsed = parse_color(value)
+                if parsed:
+                    scheme[tag] = parsed
+                    break
+    for alias, slot in _SCHEME_ALIASES.items():
+        if slot in scheme:
+            scheme.setdefault(alias, scheme[slot])
+    return scheme
+
+
+def _resolve_run_colors(
+    paragraphs: Sequence[CapturedParagraph], scheme: Mapping[str, str]
+) -> tuple[CapturedParagraph, ...]:
+    """Resolve every run's scheme colour against the deck's own scheme.
+
+    A run whose colour is already a plain colour is untouched, and a token the
+    scheme does not hold is left unresolved so it still reports as a base-only
+    claim rather than as a colour nobody measured.
+
+    Both spellings are resolved, and the second is the one that mattered: a plain
+    token (``accent1``) *and* an expression (``accent2+lumMod75`` -- a shade of a
+    scheme colour).  Resolving only the first left every shaded run colour unknown,
+    so a proxy rebuilt those runs black while the plain-hex runs beside them kept
+    theirs: the independent review found four such cells on src1 page 30, whose
+    orange feature lines paint black.
+    """
+    if not scheme:
+        return tuple(paragraphs)
+    resolved: list[CapturedParagraph] = []
+    for paragraph in paragraphs:
+        runs = tuple(
+            dataclasses.replace(run, color=resolve_paint_expression(declared, scheme))
+            if run.color is None
+            and (declared := _declared_run_color(run)) is not None
+            and resolve_paint_expression(declared, scheme) is not None
+            else run
+            for run in paragraph.runs
+        )
+        resolved.append(
+            paragraph if runs == paragraph.runs else dataclasses.replace(paragraph, runs=runs)
+        )
+    return tuple(resolved)
+
+
+def _declared_run_color(run: CapturedRun) -> str | None:
+    """Return the colour token or expression a run declares, if it declares one."""
+    value = run.properties.get("color")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def alpha_of(value: Any) -> float:
+    """Return the opacity a colour token itself carries, or ``1.0``.
+
+    OfficeCLI encodes a semi-transparent solid fill as an eight-digit hex token
+    (``#D9666680``) or as ``rgba(...)``.  Reading it here keeps the plain-colour
+    claim of :func:`parse_color` and the alpha claim separate, so neither is
+    silently invented for the other.
+    """
+    if value is None:
+        return 1.0
+    text = str(value).strip()
+    if not text:
+        return 1.0
+    match = _HEX_COLOR_RE.match(text)
+    if match is not None:
+        raw = match.group("hex")
+        if len(raw) == 8:
+            return int(raw[6:8], 16) / 255.0
+        return 1.0
+    match = re.fullmatch(r"rgba?\(([^)]*)\)", text, re.IGNORECASE)
+    if match is not None:
+        parts = [part.strip() for part in match.group(1).split(",")]
+        if len(parts) == 4:
+            try:
+                return max(0.0, min(1.0, float(parts[3])))
+            except ValueError:
+                return 1.0
+    return 1.0
+
+
+def _length_pair(value: Any) -> tuple[float, float] | None:
+    """Return an OfficeCLI ``x,y`` length pair in points, or ``None``.
+
+    OfficeCLI reports a container's child coordinate space as one comma-separated
+    pair per property (``childOffset``, ``childExtent``).  Unlike its single
+    lengths -- which carry a unit (``11638401emu``, ``1.5pt``) -- this pair is
+    reported as bare EMU, so a member with no unit is read as EMU rather than
+    being discarded as unqualified.
+    """
+    if value is None:
+        return None
+    parts = [part for part in re.split(r"[,\s]+", str(value).strip()) if part]
+    if len(parts) != 2:
+        return None
+    members: list[float] = []
+    for part in parts:
+        if _QUALIFIED_LENGTH_RE.match(part) is not None:
+            members.append(length_to_points(part))
+            continue
+        try:
+            members.append(float(part) / EMU_PER_POINT)
+        except ValueError:
+            return None
+    return (members[0], members[1])
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"true", "1", "yes", "h", "v"}
+
+
+def _opacity(value: Any, default: float = 1.0) -> float:
+    if value is None:
+        return default
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _is_default_alignment(value: Any) -> bool:
@@ -514,6 +806,27 @@ def _run_officecli(*args: str, check: bool = True, attempts: int = 6) -> str:
     if not check:
         return ""
     raise PptxReadError(f"{' '.join(command)} failed: {last}")
+
+
+def _close_resident(document: str | Path) -> None:
+    """Ask OfficeCLI to drop its resident handle on one document.
+
+    A deck this process created is kept open by OfficeCLI's resident process, and a
+    handle that outlives the step that needed it is what makes the *next* step fail
+    for no visible reason -- on Windows, a directory the run then wants to remove
+    cannot be removed at all.  Failures are ignored: the caller is finishing with
+    the document either way, and a close that cannot run is not an error the caller
+    can act on.
+    """
+    try:
+        subprocess.run(
+            [_officecli_executable(), "close", str(document)],
+            capture_output=True,
+            timeout=OFFICECLI_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
 
 
 def _run_officecli_json(*args: str) -> Any:
@@ -634,8 +947,98 @@ def _resolved_font_family(sources: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
-def _paragraphs(node: Mapping[str, Any]) -> tuple[CapturedParagraph, ...]:
-    """Read the paragraph/run structure OfficeCLI exposes for a text body."""
+def _slide_line_breaks(
+    pptx_path: Path, slide_number: int
+) -> tuple[tuple[tuple[int, ...], tuple[int, ...]], ...]:
+    """Read every text body's intra-paragraph line breaks out of the slide part.
+
+    OfficeCLI's readback drops ``<a:br/>``: it reports the paragraph as its two
+    runs with nothing between them, so the *characters* survive the read while
+    the break that separates them does not.  The break is source truth the reader
+    must not lose, because without it the projection cannot tell a hard break
+    from two runs that are simply adjacent -- and would publish the two authored
+    lines as one line of run-together text.
+
+    The break is therefore read from the package's own slide part, which is a
+    document this reader already reads for picture media.  Each entry is the
+    run-length layout of a paragraph that declares a break, paired with the
+    zero-based run index each break follows.  The layout is the paragraph's own
+    identity here: it is a partition of the paragraph's characters, so it is the
+    one thing the readback and the source part state identically, and it is
+    checked against the runs before anything is restored.
+    """
+    path = f"ppt/slides/slide{slide_number}.xml"
+    try:
+        with zipfile.ZipFile(pptx_path) as archive:
+            raw = archive.read(path)
+    except (KeyError, OSError, zipfile.BadZipFile):
+        # A part this reader cannot open simply contributes no break evidence;
+        # the capture then reads exactly as it did before this evidence existed.
+        return ()
+    try:
+        root = ElementTree.fromstring(raw)
+    except ElementTree.ParseError:
+        return ()
+    found: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
+    for body in _text_bodies(root):
+        for paragraph in body:
+            positions = _paragraph_break_positions(paragraph)
+            if positions:
+                found.append((_paragraph_run_lengths(paragraph), positions))
+    return tuple(found)
+
+
+def _text_bodies(root: Any) -> Iterator[Any]:
+    """Yield every ``p:txBody`` of one slide part, in document order."""
+    for node in root.iter():
+        if _local_name(node.tag) == "txBody":
+            yield node
+
+
+def _paragraph_run_lengths(paragraph: Any) -> tuple[int, ...]:
+    """Return the length of each run of one paragraph, in document order."""
+    lengths: list[int] = []
+    for child in paragraph:
+        name = _local_name(child.tag)
+        if name not in {"r", "fld"}:
+            continue
+        lengths.append(
+            sum(
+                len(str(node.text or ""))
+                for node in child.iter()
+                if _local_name(node.tag) == "t"
+            )
+        )
+    return tuple(lengths)
+
+
+def _paragraph_break_positions(paragraph: Any) -> tuple[int, ...]:
+    """Return the run index each ``<a:br/>`` of one paragraph follows."""
+    positions: list[int] = []
+    index = 0
+    for child in paragraph:
+        name = _local_name(child.tag)
+        if name == "br":
+            positions.append(index)
+        elif name in {"r", "fld"}:
+            index += 1
+    return tuple(positions)
+
+
+def _paragraphs(
+    node: Mapping[str, Any],
+    *,
+    breaks: Sequence[tuple[tuple[int, ...], tuple[int, ...]]] = (),
+) -> tuple[CapturedParagraph, ...]:
+    """Read the paragraph/run structure OfficeCLI exposes for a text body.
+
+    ``breaks`` pairs a paragraph's run-length layout with the run index each of
+    its own ``<a:br/>`` elements follows, read from the source part because
+    OfficeCLI's readback drops the break itself.  A paragraph whose layout
+    matches one of them is re-partitioned on its breaks, so the two lines a hard
+    break separates are two paragraphs of the projection -- which is the one
+    separator the Canonical Author paragraph orthography has.
+    """
     fmt = dict(node.get("format") or {})
     text_children = [
         child for child in _children(node) if str(child.get("type")) == "paragraph"
@@ -655,10 +1058,13 @@ def _paragraphs(node: Mapping[str, Any]) -> tuple[CapturedParagraph, ...]:
     result: list[CapturedParagraph] = []
     for paragraph in text_children:
         paragraph_format = dict(paragraph.get("format") or {})
-        runs = tuple(
-            _run_manifest(run, {**fmt, **paragraph_format}, first_run_format)
-            for run in _children(paragraph)
-            if str(run.get("type")) == "run"
+        runs = _with_line_breaks(
+            tuple(
+                _run_manifest(run, {**fmt, **paragraph_format}, first_run_format)
+                for run in _children(paragraph)
+                if str(run.get("type")) == "run"
+            ),
+            breaks,
         )
         text = _text_of(paragraph)
         if not text:
@@ -691,6 +1097,84 @@ def _paragraphs(node: Mapping[str, Any]) -> tuple[CapturedParagraph, ...]:
     return tuple(result)
 
 
+def _with_line_breaks(
+    runs: tuple[CapturedRun, ...],
+    breaks: Sequence[tuple[tuple[int, ...], tuple[int, ...]]] | None,
+) -> tuple[CapturedRun, ...]:
+    """Return ``runs`` with PowerPoint's hard break restored between them.
+
+    The break is put back where the source declares it -- after the run the
+    source's own run index names -- so the paragraph's own characters are
+    unchanged and the one thing the readback lost is the one thing this puts
+    back.
+
+    The two sides count runs differently: the source part's paragraph is split
+    into runs by OfficeCLI's own readback, which can divide one authored run's
+    characters across several runs.  The paragraph's *text* is what both sides
+    state identically, so a recorded break is matched by its paragraph's whole
+    text and the break's character offset inside it, and the run that owns that
+    offset is the run the break follows.  The recorded position is used directly
+    when the layouts do agree, and a paragraph that matches no recorded break is
+    left exactly as it was read -- which is what keeps a body of ordinary
+    adjacent runs adjacent.
+    """
+    if not breaks:
+        return runs
+    text = "".join(run.text for run in runs)
+    if not text:
+        return runs
+    layout = tuple(len(run.text) for run in runs)
+    for recorded, positions in breaks:
+        if recorded == layout:
+            return _break_after_indices(runs, positions)
+        if sum(recorded) != len(text):
+            continue
+        offsets: set[int] = set()
+        for index in positions:
+            if index < len(recorded):
+                # A break at run index N follows the first N runs, so its
+                # character offset is the sum of their lengths.
+                offsets.add(sum(recorded[:index]))
+        if not offsets:
+            continue
+        return _break_after_offsets(runs, offsets)
+    return runs
+
+
+def _break_after_indices(
+    runs: tuple[CapturedRun, ...], positions: Sequence[int]
+) -> tuple[CapturedRun, ...]:
+    """Append the hard break to the run at each recorded index."""
+    wanted = set(positions)
+    return tuple(
+        dataclasses.replace(run, text=run.text + _HARD_BREAK)
+        if index in wanted
+        else run
+        for index, run in enumerate(runs, start=1)
+    )
+
+
+def _break_after_offsets(
+    runs: tuple[CapturedRun, ...], offsets: set[int]
+) -> tuple[CapturedRun, ...]:
+    """Append the hard break to the run that owns each character offset."""
+    restored: list[CapturedRun] = []
+    consumed = 0
+    for run in runs:
+        consumed += len(run.text)
+        restored.append(
+            dataclasses.replace(run, text=run.text + _HARD_BREAK)
+            if consumed in offsets
+            else run
+        )
+    return tuple(restored)
+
+
+# PowerPoint's intra-paragraph line break.  It is a character in a text body and
+# never a character of the document's text: the projection re-partitions on it.
+_HARD_BREAK = "\x0b"
+
+
 def _number(value: Any) -> float:
     try:
         return float(value)
@@ -709,12 +1193,16 @@ def _split_intra_paragraph_breaks(
     that break: every run's text is split in source order, so each side keeps
     exactly the characters it owned, and the run formatting is preserved.  Only
     the paragraph count changes, and the projection report records that.
+
+    The break is looked for in the paragraph's *runs*, not in its aggregate text:
+    the aggregate text OfficeCLI reports is the runs concatenated, so a paragraph
+    whose break this reader restored onto a run would otherwise look unbroken.
     """
-    if not any("\x0b" in paragraph.text for paragraph in paragraphs):
+    if not _carries_hard_break(paragraphs):
         return tuple(paragraphs)
     reordered: list[CapturedParagraph] = []
     for paragraph in paragraphs:
-        if "\x0b" not in paragraph.text:
+        if not any("\x0b" in run.text for run in paragraph.runs):
             reordered.append(paragraph)
             continue
         pieces: list[list[CapturedRun]] = [[]]
@@ -785,6 +1273,7 @@ def _base_only_claims(
     fmt: Mapping[str, Any],
     *,
     has_text: bool,
+    paragraphs: Sequence[CapturedParagraph] = (),
 ) -> tuple[BaseOnlyClaim, ...]:
     """Return the resolved properties the slide object does not own.
 
@@ -798,6 +1287,14 @@ def _base_only_claims(
     * an alignment equal to the canonical default changes nothing;
     * a plain text property the projection writes explicitly is preserved, not
       reconstructed, so it is not a base-only claim.
+
+    A run whose *declared* colour is a theme token is the same class of claim and
+    OfficeCLI does not mark it: it reports ``color = accent1`` with no
+    ``effective.color.src``, so the marker loop above sees nothing.  A token the
+    deck's own colour scheme does not hold cannot be written by this projection,
+    and the colour used to be dropped outright -- the rebuilt body was painted
+    OfficeCLI's default, or, inside a mixed body, inherited the preceding run's
+    colour.  Both were silent losses; this records the claim instead.
     """
     claims: list[BaseOnlyClaim] = []
     for key, value in fmt.items():
@@ -819,6 +1316,17 @@ def _base_only_claims(
         claims.append(
             BaseOnlyClaim(property=prop, value=str(resolved), source=str(value))
         )
+    if has_text:
+        unresolved = {
+            str(run.properties.get("color")).strip()
+            for paragraph in paragraphs
+            for run in paragraph.runs
+            if run.color is None and run.properties.get("color") is not None
+        }
+        for token in sorted(unresolved):
+            claims.append(
+                BaseOnlyClaim(property="color", value=token, source=token)
+            )
     claims.sort(key=lambda item: item.property)
     return tuple(claims)
 
@@ -1158,12 +1666,23 @@ def _table_evidence(
     )
 
 
+def _carries_hard_break(paragraphs: Sequence[CapturedParagraph]) -> bool:
+    """Whether any paragraph's runs still carry a restored hard break."""
+    return any(
+        "\x0b" in run.text for paragraph in paragraphs for run in paragraph.runs
+    )
+
+
 def _captured_object(
     node: Mapping[str, Any],
     *,
     slide_number: int,
     pptx_path: Path,
     capture_pictures: bool,
+    source_key: str = "",
+    owner: str | None = None,
+    owner_kind: str | None = None,
+    line_breaks: Sequence[tuple[tuple[int, ...], tuple[int, ...]]] | None = None,
 ) -> CapturedObject:
     fmt = dict(node.get("format") or {})
     source_object = str(node.get("path") or "")
@@ -1171,14 +1690,18 @@ def _captured_object(
     bounds = tuple(
         length_to_points(fmt.get(key)) for key in ("x", "y", "width", "height")
     )
-    paragraphs = _split_intra_paragraph_breaks(_paragraphs(node))
+    paragraphs = _split_intra_paragraph_breaks(
+        _paragraphs(node, breaks=line_breaks)
+    )
+    # A themed colour is a colour the deck paints, so it is resolved from the
+    # deck's own scheme before anything is emitted: a token left unresolved is
+    # then a real base-only claim rather than a silent loss of colour.
+    paragraphs = _resolve_run_colors(paragraphs, theme_color_scheme(pptx_path))
     text = _text_of(node)
-    if not text and paragraphs:
-        text = "\n".join(paragraph.text for paragraph in paragraphs)
-    elif "\x0b" in text:
-        # The reader may keep the intra-paragraph break in the aggregate text
-        # while the paragraph list has already been re-partitioned on it; the
-        # paragraph list is the authority for the projected text.
+    if not text or "\x0b" in text or _carries_hard_break(paragraphs):
+        # The paragraph list is the authority for the projected text: the
+        # aggregate text OfficeCLI reports is the runs concatenated, so it
+        # carries no hard break even where the source declares one.
         text = "\n".join(paragraph.text for paragraph in paragraphs)
     has_text = bool(text.strip() or any(paragraph.runs for paragraph in paragraphs))
 
@@ -1195,12 +1718,19 @@ def _captured_object(
     elif kind == "table":
         table = _table_evidence(node, slide_number, source_object)
     if kind in CONTAINER_KINDS:
+        # An owned child is captured with its container's identity so the
+        # projection can record ownership instead of inventing a second
+        # top-level object for paint the container already carries.
         children = tuple(
             _captured_object(
                 child,
                 slide_number=slide_number,
                 pptx_path=pptx_path,
                 capture_pictures=capture_pictures,
+                source_key=source_key,
+                owner=source_object,
+                owner_kind=kind,
+                line_breaks=line_breaks,
             )
             for child in _children(node)
         )
@@ -1223,14 +1753,23 @@ def _captured_object(
         line_width_pt=length_to_points(fmt.get("lineWidth")),
         rotation_deg=_rotation_degrees(fmt),
         explicit_properties=frozenset(fmt),
-        base_only=_base_only_claims(fmt, has_text=has_text),
+        base_only=_base_only_claims(fmt, has_text=has_text, paragraphs=paragraphs),
         opaque_properties=fmt,
         raw_format=fmt,
         text=text,
         paragraphs=paragraphs,
+        opacity=_opacity(fmt.get("opacity")),
+        fill_alpha=alpha_of(fmt.get("fill")),
+        line_alpha=alpha_of(fmt.get("line")),
+        mirrored=_truthy(fmt.get("flipH")) or _truthy(fmt.get("flipV")),
+        child_offset_pt=_length_pair(fmt.get("childOffset")),
+        child_extent_pt=_length_pair(fmt.get("childExtent")),
         picture=picture,
         table=table,
         children=children,
+        source_key=source_key,
+        owner=owner,
+        owner_kind=owner_kind,
     )
 
 
@@ -1273,6 +1812,206 @@ class ObjectIsolationError(PptxReadError):
     """One object could not be rendered on its own."""
 
 
+class ContainerReconciliationError(ObjectIsolationError):
+    """A container's children could not be placed inside its own rectangle.
+
+    This is narrower than a general isolation failure: the container was
+    rebuilt, rendered and *measured*, and no reading of its children -- the
+    declared group transform or the rectangles OfficeCLI reports -- put visible
+    paint inside the container's own rectangle.  It is its own failure class
+    because it is its own source condition, and the ledger reports it with its
+    own reason code.
+    """
+
+
+# How far a proxy pixel may sit from the reconstruction deck's own background
+# and still count as "the background".  OfficeCLI's renderer antialiases an
+# object's edge, so the test is one of paint versus no paint, not of an exact
+# colour.
+PROXY_BACKGROUND_TOLERANCE = 6
+
+# The same "is this pixel paint?" decision, as a 256-entry lookup table: PIL
+# applies a list-valued ``point`` in C, where a callable would cost one Python
+# call per pixel per channel over a full-slide raster.
+_PAINT_LUT = [255 if value > PROXY_BACKGROUND_TOLERANCE else 0 for value in range(256)]
+
+# OfficeCLI's screenshot draws a chrome line along the raster's own edge, which
+# is viewer furniture rather than slide paint.  Both the background sampler and
+# the paint-extent measurement start this far inside the raster.
+_RASTER_INSET_PX = 3
+
+
+def _carries_other_than(image: Any, background: tuple[int, int, int]) -> bool:
+    """Return whether an image holds any paint that is not ``background``.
+
+    The histogram is bucketed rather than scanned pixel by pixel: an image with
+    more distinct colours than it has pixels cannot exist, so a complete colour
+    count is always available and the test never has to iterate a large raster.
+    """
+    counts = image.getcolors(image.width * image.height + 1)
+    if counts is None:  # pragma: no cover - unreachable for a finite raster
+        return True
+    return any(
+        max(abs(channel - expected) for channel, expected in zip(colour, background))
+        > PROXY_BACKGROUND_TOLERANCE
+        for _count, colour in counts
+    )
+
+
+def _painted_extent(
+    rgb: Any, background: tuple[int, int, int]
+) -> tuple[int, int, int, int] | None:
+    """Return the bounding box of the raster's paint, or ``None`` for none.
+
+    "Paint" is the same per-channel test :func:`_carries_other_than` applies, so
+    the two gates agree on what counts; a full-slide raster is measured through
+    a difference image and a bounding box rather than a pixel loop.
+    """
+    from PIL import Image, ImageChops
+
+    reference = Image.new("RGB", rgb.size, background)
+    mask = Image.new("L", rgb.size, 0)
+    for band in ImageChops.difference(rgb, reference).split():
+        mask = ImageChops.lighter(mask, band.point(_PAINT_LUT))
+    return mask.getbbox()
+
+
+def _render_background(
+    rgb: Any,
+    bounds_pt: tuple[float, float, float, float],
+    pixels_per_point: float,
+    guard_px: int,
+) -> tuple[int, int, int] | None:
+    """Return the reconstruction render's bare background colour, or ``None``.
+
+    The deck holds nothing but the placement under test, so any pixel outside
+    the container's own rectangle is bare background -- provided the placement
+    is one that keeps its paint inside, which is exactly what the caller is
+    measuring.  A placement that strays outside can therefore cover at most a
+    minority of the samples: the modal colour of the four points just outside
+    the rectangle's corners is taken, and when the rectangle reaches all of them
+    the raster's own inset corners stand in.  OfficeCLI's screenshot draws a
+    one-pixel chrome line along the raster edge, so an un-inset corner is not
+    the slide's background at all.  When the rectangle leaves no such point at
+    all, no honest judgement can be made, so ``None`` is returned and the caller
+    does not gate on paint.
+    """
+    left = int(round(bounds_pt[0] * pixels_per_point)) - guard_px
+    top = int(round(bounds_pt[1] * pixels_per_point)) - guard_px
+    right = left + int(round(bounds_pt[2] * pixels_per_point)) + guard_px * 2
+    bottom = top + int(round(bounds_pt[3] * pixels_per_point)) + guard_px * 2
+    inset = _RASTER_INSET_PX
+    outside = (
+        (left - inset, top - inset),
+        (right + inset, top - inset),
+        (left - inset, bottom + inset),
+        (right + inset, bottom + inset),
+    )
+    fallback = (
+        (inset, inset),
+        (rgb.width - 1 - inset, inset),
+        (inset, rgb.height - 1 - inset),
+        (rgb.width - 1 - inset, rgb.height - 1 - inset),
+    )
+    for group in (outside, fallback):
+        samples = [
+            _rgb_triple(rgb.getpixel((x, y)))
+            for x, y in group
+            if 0 <= x < rgb.width
+            and 0 <= y < rgb.height
+            and (x < left or x >= right or y < top or y >= bottom)
+        ]
+        if samples:
+            # The modal sample survives one candidate landing on a stray
+            # antialiased edge without inventing a background that is not there.
+            return max(set(samples), key=samples.count)
+    return None
+
+
+def _drop_render_background(
+    cropped: Any,
+    blank_reference: Path | None,
+    box: tuple[int, int, int, int],
+) -> Any:
+    """Make the reconstruction's own background transparent in one cropped proxy.
+
+    ``cropped`` is a crop of a render of a blank slide carrying exactly one
+    object; ``blank_reference`` is a render of the same blank slide carrying
+    nothing.  A pixel the two agree on is a pixel the *object* did not paint, so it
+    becomes transparent and the proxy composites over whatever the source object
+    really sat on.  Everything else -- every glyph, stroke, fill and antialiased
+    edge -- is kept exactly as rendered.
+
+    The test is exact equality on the RGB triple.  A tolerance would erase paint
+    that merely resembles the background, and the case that matters most is a white
+    glyph on a coloured panel: a proxy that keeps an opaque white box over a pink
+    band destroys the band, and a proxy that drops a white glyph destroys the text.
+    Only pixels *identical* to the empty render are safely called background.
+
+    Returns the crop unchanged when there is no usable reference, so a run without
+    one behaves exactly as every earlier run did.
+    """
+    from PIL import Image, ImageChops
+
+    if blank_reference is None or not Path(blank_reference).is_file():
+        return cropped
+    try:
+        with Image.open(blank_reference) as reference:
+            blank = reference.convert("RGB")
+            if blank.width < box[2] or blank.height < box[3]:
+                return cropped
+            blank_crop = blank.crop(box)
+    except (OSError, ValueError):
+        return cropped
+    if blank_crop.size != cropped.size:
+        return cropped
+
+    painted = Image.new("L", cropped.size, 0)
+    for band in ImageChops.difference(cropped.convert("RGB"), blank_crop).split():
+        painted = ImageChops.lighter(painted, band.point(_NONZERO_LUT))
+    if painted.getbbox() is None:
+        # The object painted nothing at all.  The proxy is entirely background,
+        # and the blank-proxy gate is the thing that decides what that means.
+        return cropped
+    rgba = cropped.convert("RGBA")
+    rgba.putalpha(ImageChops.multiply(rgba.split()[-1], painted))
+    return rgba
+
+
+#: Maps a channel difference to "differs" (255) or "identical" (0).
+_NONZERO_LUT = [0] + [255] * 255
+
+
+def _rgb_triple(pixel: Any) -> tuple[int, int, int]:
+    return (int(pixel[0]), int(pixel[1]), int(pixel[2]))
+
+
+def _raster_rgb(raster: Path) -> Any:
+    """Open one render as RGB.
+
+    The raster is a screenshot the caller has already written and validated; the
+    returned image owns its pixels independently of the file handle, so callers
+    may hold it while the file is closed.
+
+    A published proxy is an RGBA image in which the pixels the *reconstruction*
+    contributed nothing to are transparent, so that a proxy composites over the
+    paint it really sits on.  Every measurement below is a comparison against the
+    render's bare background, and a transparent pixel *is* that background, so it
+    is flattened onto white -- the colour a fresh reconstruction renders -- before
+    anything is measured.  Without this, transparent pixels would be read as black
+    and every blank proxy would measure as fully painted.
+    """
+    from PIL import Image
+
+    with Image.open(raster) as image:
+        if "A" in image.getbands():
+            rgba = image.convert("RGBA")
+            flattened = Image.new("RGB", rgba.size, (255, 255, 255))
+            flattened.paste(rgba, mask=rgba.split()[-1])
+            return flattened
+        return image.convert("RGB")
+
+
 # Properties an object's own paint is reproduced from when it is rebuilt into a
 # fresh deck for its proxy.  ``crop`` is picture-specific; ``src`` is supplied
 # separately because it is a file path, not a read-back property.
@@ -1281,17 +2020,761 @@ class ObjectIsolationError(PptxReadError):
 # space.
 _CONTAINER_KINDS_WITHOUT_PAINT = frozenset({"group", "diagram", "smartart"})
 
+# Object kinds whose proxy paint is *reconstructed* -- from the object's own
+# stroke, or from a container's children -- rather than read back from a single
+# object's geometry and fill.  For these, a render that carries no paint at all
+# is a failed representation, never a legitimate blank proxy, so the crop is
+# gated on actually showing something.
+_RECONSTRUCTED_PAINT_KINDS = _CONTAINER_KINDS_WITHOUT_PAINT | {"connector"}
+
+# Object kinds a container's proxy can be reconstructed from.  Anything else
+# (a table, a chart, an OLE object) has no rebuild path, so the container is
+# reported as unreconciled rather than published with a hole in it.
+_RECONSTRUCTABLE_MEMBER_KINDS = frozenset(
+    {"shape", "textbox", "connector", "picture"}
+)
+
+# OfficeCLI's ``add`` names a connector's stroke ``line`` while its readback
+# names the same value ``color``; a connector's preset is ``shape`` on both
+# sides.  Bridging the two spellings is what lets a connector -- and a container
+# built from connectors -- be reconstructed at all.
+#
+# The same text properties are carried by a text-bearing object's own proxy: an
+# object whose visible content is its text is not represented by an image of its
+# bare rectangle.  A base-only text object is exactly that case -- its text
+# colour is inherited, which is why it cannot be declared natively, and the
+# inherited colour is not reproducible here, so the proxy carries the object's
+# own text and its slide-owned text properties.  ``wrap`` is one of them and is
+# load-bearing: a title authored with wrapping off is painted on one line that
+# is allowed to overflow its own box, so reconstructing it with OfficeCLI's
+# default wrapping on would re-break the line and the proxy would then show a
+# clipped fragment of the object instead of the object.
+#
+# ``lineSpacing`` is load-bearing in the same way and for the same reason.  A
+# text body's *empty* paragraphs are lines too: reconstructing a body whose
+# leading blank lines are spaced at 0.57x with OfficeCLI's default spacing makes
+# those two lines several times taller, which pushes the text the object really
+# paints far outside its own rectangle -- and the proxy is then a crop of where
+# the text is not.  Composing the object with its own line spacing is what keeps
+# the reconstruction's layout the source's layout.
+#
+# ``valign`` places the body vertically the way the source does.  OfficeCLI's
+# default centres a body that is taller than its box, which splits the same
+# overflow half above and half below the rectangle; the source states ``top`` for
+# a body whose lines run down from the top of its box, and the proxy is otherwise
+# the right paint in the wrong place.
+#
+# ``size`` is the one property here the reconstruction resolves from the
+# *readback* rather than from the slide alone, because its absence is a
+# geometry error rather than a colour one: OfficeCLI's ``add`` paints a body of
+# undeclared size at its own 18pt default, and a source body whose size is
+# resolved from the master or declared per run is then painted at the wrong
+# scale -- measured at 9.0-10.5pt against a reconstruction's 18pt on page 8 of
+# the acceptance corpus.  :func:`painted_text_size` takes the object's own
+# reported value for it, so nothing is invented, and a slide-owned size still
+# wins outright.
+_TEXTUAL_KINDS = frozenset({"shape", "textbox"})
+_TEXT_PROPERTIES = (
+    "size",
+    "font",
+    "color",
+    "align",
+    "bold",
+    "italic",
+    "underline",
+    "wrap",
+    "lineSpacing",
+    "valign",
+)
+
+# How a text-bearing proxy's reconstruction is authored to fit the object's own
+# rectangle.
+#
+# The reconstruction is always composed with ``autoFit: none``.  Left to itself
+# OfficeCLI fits a body to its box -- shrinking and re-wrapping the text -- and a
+# proxy of a body the source draws at full size must not be a picture of text the
+# source does not paint.  With the fit off, the body is drawn at its authored
+# size and the crop decides what of it is shown, exactly as the source page does.
+_PROXY_AUTOFIT = "none"
+
+
+# How far past its declared rectangle a proxy's crop may reach before the
+# expansion is refused.
+#
+# An expansion is only worth having while it is the *object's* own overflow: a
+# line that hangs a little below the box the source drew it in.  A reconstruction
+# whose substituted font metrics lay the body out several times taller than the
+# box turns the same mechanism into a proxy that stands over the objects below it
+# and buries a page the source shows clean, which is a worse representation than
+# the clipped one it replaced.  The limit is one line's worth of slack beyond the
+# declared rectangle -- enough for a single overflowing line at any size this
+# projection handles -- and a body that needs more than that is reporting a
+# layout mismatch rather than an object that overflows.
+_PROXY_EXPANSION_SLACK_PX = 64.0
+
+
+def _expansion_limit(declared_px: float) -> float:
+    """Return how far a proxy's crop may reach past its declared rectangle."""
+    return declared_px + _PROXY_EXPANSION_SLACK_PX
+
+
+@dataclass(frozen=True)
+class ProxyGeometry:
+    """Where one published proxy image actually sits on the reconstruction render.
+
+    A proxy is cropped out of the isolated render at the union of the object's
+    *declared* rectangle and the rectangle its paint actually occupies, because
+    PowerPoint paints a no-autofit line outside its own box and the source page
+    shows that overflow.  The crop rectangle is therefore not always the declared
+    one, and the emitted element has to be placed by what the image really is
+    rather than by where the object was declared.
+
+    ``rect_px`` is ``(left, top, width, height)`` in the reconstruction render's
+    own pixels, ``origin_px`` is the same rectangle's top-left corner expressed in
+    the declared rectangle's pixel origin -- which is exactly the offset the DOM
+    has to apply to an image drawn at the declared bounds -- and ``clamped`` is
+    true when the measured paint reached the render's own edge, so the crop could
+    not have covered all of it even in principle.
+    """
+
+    rect_px: tuple[int, int, int, int]
+    origin_px: tuple[int, int]
+    clamped: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "rect_px": list(self.rect_px),
+            "origin_px": list(self.origin_px),
+            "clamped": self.clamped,
+        }
+
+
+@dataclass(frozen=True)
+class ContainerMember:
+    """One object of a paint-less container's own visible content.
+
+    ``bounds_pt`` is the member's rectangle *in the slide's coordinate space*
+    under one candidate reading of the source, so the reconstruction deck can
+    place it where that reading says the container shows it.
+    """
+
+    source_object: str
+    source_kind: str
+    bounds_pt: tuple[float, float, float, float]
+    properties: Mapping[str, Any] = field(default_factory=dict)
+    text: str = ""
+    # The size the member's own runs paint at, when they state one.  A member is
+    # reconstructed by the same rule as a single-object proxy, so it carries the
+    # same evidence for it.
+    painted_size_pt: float = 0.0
+    picture: CapturedPicture | None = None
+    # The extracted media file a picture member is rebuilt from.  It is written
+    # by the caller that owns the proxy work directory, not by the reader.
+    media_path: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source_object": self.source_object,
+            "source_kind": self.source_kind,
+            "bounds_pt": [round(value, 4) for value in self.bounds_pt],
+            "has_text": bool(self.text),
+            "picture": self.picture.as_dict() if self.picture is not None else None,
+        }
+
+
+# The two readings of a paint-less container's children.  ``declared`` is the
+# DrawingML group transform; ``reported`` is OfficeCLI's own rectangles.  They
+# are tried in this order and the first one whose *measured* paint lands inside
+# the container's own rectangle is what gets published.
+CONTAINER_PLACEMENT_DECLARED = "declared"
+CONTAINER_PLACEMENT_REPORTED = "reported"
+# The one thing a non-container object is rebuilt from: itself.
+_PLACEMENT_SINGLE_OBJECT = "object"
+
+# How far outside the container's own rectangle a reconstructed placement's
+# paint may still reach and be accepted as "inside" it: OfficeCLI's renderer
+# antialiases an edge by a pixel, and the rectangle itself is rounded to whole
+# device pixels.
+CONTAINER_PAINT_TOLERANCE_PX = 2
+
+
+@dataclass(frozen=True)
+class ContainerPlacement:
+    """One candidate placement of a paint-less container's children.
+
+    ``label`` names the mapping that produced ``members``, and is what a
+    refusal is reported against:
+
+    * :data:`CONTAINER_PLACEMENT_DECLARED` -- the DrawingML group transform
+      ``off + (child - chOff) * ext/chExt``, computed only when the source
+      declares ``a:chOff``/``a:chExt`` (OfficeCLI reports those as
+      ``childOffset``/``childExtent``); and
+    * :data:`CONTAINER_PLACEMENT_REPORTED` -- the children's rectangles exactly
+      as OfficeCLI reports them, which is the same reading every non-container
+      object in this projection gets.
+
+    A candidate is a candidate: nothing here decides that it is right.  The
+    renderer rebuilds one, renders it, and measures where its paint lands.
+    """
+
+    label: str
+    members: tuple[ContainerMember, ...]
+
+
+@dataclass(frozen=True)
+class ContainerPlacements:
+    """Every candidate placement of a container's children, in trial order.
+
+    ``reason`` is set exactly when no candidate can even be *built*: the
+    container owns no object, reports a degenerate rectangle, or owns a nested
+    container or an object with no reconstruction path.  A container whose
+    candidates are all built but whose renders all fail the measured paint test
+    is a different failure, and is reported by the renderer that ran them.
+
+    ``unreconciled`` separates the two refusal causes, because they are
+    different source conditions: a statement about the container's own content
+    or child coordinate space (reported with the container-specific reason
+    code), versus a container that cannot be isolated at all.
+    """
+
+    placements: tuple[ContainerPlacement, ...] = ()
+    reason: str | None = None
+    unreconciled: bool = False
+
+
+def container_child_transform(
+    container: CapturedObject,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Return a container's declared child transform, or ``None``.
+
+    A container's children are addressed in the container's own child coordinate
+    space; PowerPoint records that space as ``a:chOff``/``a:chExt`` and
+    OfficeCLI reads it back as ``childOffset``/``childExtent``.  Without it there
+    is no declared candidate at all -- only the rectangles OfficeCLI reports,
+    which is what :func:`container_placements` then falls back to.
+    """
+    offset = container.child_offset_pt
+    extent = container.child_extent_pt
+    if offset is None or extent is None:
+        return None
+    if extent[0] <= 0 or extent[1] <= 0:
+        return None
+    return offset, extent
+
+
+def map_child_bounds(
+    bounds_pt: tuple[float, float, float, float],
+    *,
+    child_offset: tuple[float, float],
+    child_extent: tuple[float, float],
+    container_bounds: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """Map a child rectangle out of a container's child space onto the slide.
+
+    OfficeCLI reports a group's own rectangle in slide coordinates and its
+    children's rectangles in the group's child coordinates, so the two are
+    related by the affine map PowerPoint itself applies::
+
+        slide = group_off + (child - chOff) * group_ext / chExt
+    """
+    left = container_bounds[0] + (
+        (bounds_pt[0] - child_offset[0]) * container_bounds[2] / child_extent[0]
+    )
+    top = container_bounds[1] + (
+        (bounds_pt[1] - child_offset[1]) * container_bounds[3] / child_extent[1]
+    )
+    width = bounds_pt[2] * container_bounds[2] / child_extent[0]
+    height = bounds_pt[3] * container_bounds[3] / child_extent[1]
+    return (left, top, width, height)
+
+
+def _container_member(
+    descendant: CapturedObject,
+    bounds_pt: tuple[float, float, float, float],
+) -> ContainerMember:
+    """Return one of a container's children as a member placed at ``bounds_pt``."""
+    return ContainerMember(
+        source_object=descendant.source_object,
+        source_kind=descendant.source_kind,
+        bounds_pt=bounds_pt,
+        properties=descendant.opaque_properties,
+        text=descendant.text,
+        painted_size_pt=painted_run_size_pt(descendant.paragraphs),
+        picture=descendant.picture,
+    )
+
+
+def container_placements(container: CapturedObject) -> ContainerPlacements:
+    """Return the candidate placements of a container's own visible content.
+
+    A paint-less container has no geometry, fill, or line of its own: what is
+    visible about it is exactly its children.  Reconstructing the container
+    therefore means reconstructing *those*, and the only open question is where
+    they go.
+
+    That question is not answered by a rule, because OfficeCLI does not follow
+    one consistently: a group that declares ``a:chOff``/``a:chExt`` is rendered
+    through the DrawingML transform, while one that declares none is rendered
+    with its children's rectangles displaced by the group's own offset -- which
+    is neither the transform nor the rectangles it reports.  So both readings of
+    the source are returned, in a fixed order, and the renderer keeps the first
+    one whose *measured* paint lands inside the container's own rectangle:
+
+    1. :data:`CONTAINER_PLACEMENT_DECLARED` -- the DrawingML group transform,
+       when the source declares the child space at all; then
+    2. :data:`CONTAINER_PLACEMENT_REPORTED` -- the children's rectangles exactly
+       as OfficeCLI reports them.
+
+    The refusals here are statements about the source, never fallbacks: a
+    container that owns nothing, or owns something with no reconstruction path,
+    produces no candidate and no image.
+    """
+    if not container.children:
+        return ContainerPlacements(
+            reason=(
+                f"{container.source_kind} {container.source_object} owns no "
+                "objects, so it has no visible content to reconstruct."
+            )
+        )
+    if container.bounds_pt[2] <= 0 or container.bounds_pt[3] <= 0:
+        return ContainerPlacements(
+            reason=(
+                f"{container.source_kind} {container.source_object} reports a "
+                f"degenerate rectangle {container.bounds_pt}, so its visible "
+                "extent cannot be cropped."
+            )
+        )
+    descendants = tuple(_walk_descendants(container))
+    for descendant in descendants:
+        if descendant.source_kind in _CONTAINER_KINDS_WITHOUT_PAINT:
+            return ContainerPlacements(
+                reason=(
+                    f"{container.source_kind} {container.source_object} owns a "
+                    f"nested {descendant.source_kind} "
+                    f"{descendant.source_object}; a nested container's own child "
+                    "space would have to be composed with the outer one, which "
+                    "this slice does not attempt."
+                ),
+                unreconciled=True,
+            )
+        if descendant.source_kind not in _RECONSTRUCTABLE_MEMBER_KINDS:
+            return ContainerPlacements(
+                reason=(
+                    f"{container.source_kind} {container.source_object} owns "
+                    f"{descendant.source_kind} {descendant.source_object}, which "
+                    "has no reconstruction path, so the container's visible "
+                    "content could not be reproduced completely."
+                ),
+                unreconciled=True,
+            )
+    placements: list[ContainerPlacement] = []
+    transform = container_child_transform(container)
+    if transform is not None:
+        child_offset, child_extent = transform
+        placements.append(
+            ContainerPlacement(
+                label=CONTAINER_PLACEMENT_DECLARED,
+                members=tuple(
+                    _container_member(
+                        descendant,
+                        map_child_bounds(
+                            descendant.bounds_pt,
+                            child_offset=child_offset,
+                            child_extent=child_extent,
+                            container_bounds=container.bounds_pt,
+                        ),
+                    )
+                    for descendant in descendants
+                ),
+            )
+        )
+    placements.append(
+        ContainerPlacement(
+            label=CONTAINER_PLACEMENT_REPORTED,
+            members=tuple(
+                _container_member(descendant, descendant.bounds_pt)
+                for descendant in descendants
+            ),
+        )
+    )
+    return ContainerPlacements(placements=tuple(placements))
+
+
+def _walk_descendants(obj: CapturedObject) -> Iterator[CapturedObject]:
+    for child in obj.children:
+        yield child
+        yield from _walk_descendants(child)
+
+
 
 _REBUILD_PROPERTIES = (
     "geometry",
     "fill",
     "line",
     "lineWidth",
+    # A dashed outline is a *visible* property of the stroke, and the readback and
+    # the write path agree on its name.  Leaving it out made every dashed line in
+    # the corpus render solid: the independent visual review saw three horizontal
+    # row separators and four vertical ones on src1 page 30 as wrong, and the audit
+    # measured the proxies at 99-100% coverage against the source's 56-58%.
+    "lineDash",
     "adj",
     "rotation",
     "opacity",
     "crop",
 )
+
+
+def rebuild_keys(object_kind: str) -> tuple[str, ...]:
+    """Return the readback properties an object's reconstruction carries.
+
+    A connector is the one kind whose ``add`` spelling differs from its
+    readback: OfficeCLI names its preset ``shape`` on both sides but names its
+    stroke ``line`` on input and ``color`` on output, so it is rebuilt through
+    a different key set and its stroke is bridged by
+    :func:`connector_stroke`.
+    """
+    if object_kind == "connector":
+        # ``lineDash`` is carried for the same reason every other kind carries it:
+        # the seven dashed separators on src1 page 30 are connectors, and a
+        # reconstruction without it paints them solid.
+        return ("shape", "lineDash", "lineWidth")
+    return _REBUILD_PROPERTIES
+
+
+# Text properties whose ``none`` is a declared value rather than the absence of
+# one.  Everywhere else ``none`` in a readback means the property is not
+# authored, which is why it is not written back.
+_NONE_IS_A_VALUE = frozenset({"autoFit"})
+
+
+def painted_text_size(
+    properties: Mapping[str, Any], painted_size_pt: float = 0.0
+) -> str | None:
+    """Return the size a body's own readback says its text is painted at.
+
+    Only ever consulted for a body the *slide* declares no ``size`` for, and
+    only from values OfficeCLI reported for this object -- never from this
+    projection's opinion of what the size ought to be.
+
+    Two reported values can be that size, and the size a run carries comes
+    first because it is the finer statement of the two:
+
+    * the size the body's **runs** are painted at.  OfficeCLI suppresses the
+      object-level ``size`` whenever its runs disagree about it, so a body of
+      mixed run sizes reports no ``size`` at all and the runs are then the only
+      statement of what is painted.  Measured on page 8 of the acceptance
+      corpus: such a body resolves ``effective.size`` to 18pt from its master
+      while its runs paint 9.0-10.5pt, so a reconstruction built from the
+      object-level value alone paints the text at nearly twice its size.
+    * otherwise the object-level ``effective.size`` -- the value OfficeCLI
+      resolved from the master, layout, or theme for a body whose runs declare
+      nothing.  Measured on page 6: ``/slide[19]/shape[@id=2]`` owns no size,
+      and 18pt is what both its runs and the master resolve to.
+
+    A body that reports neither is left to OfficeCLI's own default, exactly as
+    before: nothing is invented for it.
+    """
+    if painted_size_pt > 0:
+        return f"{painted_size_pt:g}pt"
+    resolved = properties.get("effective.size")
+    if resolved is None:
+        return None
+    text = str(resolved).strip()
+    if not text or text.lower() == "none":
+        return None
+    return text
+
+
+def painted_run_size_pt(paragraphs: Sequence[CapturedParagraph]) -> float:
+    """Return the size a body's own runs paint most of its text at, or ``0``.
+
+    OfficeCLI suppresses the object-level ``size`` when a body's runs disagree
+    about it, so such a body states its painted size only run by run, and a
+    reconstruction states exactly one size for the whole body.  The one that
+    reproduces the body's own layout -- its line breaks, and therefore where its
+    lines end up -- is the size most of its characters are drawn at: measured on
+    page 8 of the acceptance corpus, a cell whose two heading lines are 10.5pt
+    and whose remaining five lines are 9.5pt breaks its last line exactly as the
+    source does only at 9.5pt, and at 10.5pt that line grows by a word and runs
+    under the product picture beside it.
+
+    A tie is resolved to the smaller size, because over-painting a line is what
+    makes a body overflow the crop while under-painting it only makes the line
+    narrower than the source's.
+    """
+    weights: dict[float, int] = {}
+    for paragraph in paragraphs:
+        for run in paragraph.runs:
+            if run.font_size_pt <= 0:
+                continue
+            weights[run.font_size_pt] = (
+                weights.get(run.font_size_pt, 0) + len(run.text)
+            )
+    if not weights:
+        return 0.0
+    return max(weights, key=lambda size: (weights[size], -size))
+
+
+def _add_text_paint(
+    rebuild: dict[str, str],
+    text: Any,
+    properties: Mapping[str, Any],
+    *,
+    painted_size_pt: float = 0.0,
+) -> None:
+    """Add the text that *is* a text-bearing object's paint to its reconstruction.
+
+    One rule for both reconstructions that carry text -- a container's
+    text-bearing member and a text-bearing object's own proxy -- so the two can
+    never drift into disagreeing about what a text object's visible content is.
+    The text properties are set only where the object's own readback supplies
+    them, so an inherited value is never invented as if the slide owned it.
+
+    A body the slide declares no ``size`` for is the one exception, and it is
+    not an exception to that rule: the size is still taken from the object's own
+    readback -- see :func:`painted_text_size`.  It has to be, because the size is
+    the one text property whose *absence* changes the reconstruction's geometry
+    rather than only its appearance.  OfficeCLI's ``add`` paints a body of
+    undeclared size at its own default, and where the source's size is resolved
+    from the master or declared per run that default is a different size, so the
+    proxy becomes a picture of text the source does not paint -- and the crop,
+    whose expansion past the declared rectangle is bounded, cuts the difference
+    off at the proxy's own edge.  Carrying the painted size is what makes the
+    reconstruction's layout the source's layout.
+
+    ``none`` is a real value for ``autoFit`` -- it is the source saying the box
+    does *not* fit its text -- so where a reconstruction carries the authored
+    setting it is written back like any other value instead of being read as "not
+    declared".
+    """
+    body = str(text or "")
+    if body:
+        rebuild["text"] = body
+    for key in _TEXT_PROPERTIES:
+        value = properties.get(key)
+        if value is None:
+            continue
+        property_text = str(value).strip()
+        if not property_text:
+            continue
+        if property_text.lower() == "none" and key not in _NONE_IS_A_VALUE:
+            continue
+        rebuild.setdefault(key, property_text)
+    if "size" not in rebuild:
+        painted = painted_text_size(properties, painted_size_pt)
+        if painted is not None:
+            rebuild["size"] = painted
+    # The body is asked to fit the object's own rectangle: see ``_PROXY_AUTOFIT``.
+    rebuild["autoFit"] = _PROXY_AUTOFIT
+
+
+_GRADIENT_STOP_RE = re.compile(r"#[0-9a-fA-F]{6,8}")
+
+
+def proxy_paint_value(
+    key: str,
+    value: Any,
+    properties: Mapping[str, Any],
+    scheme: Mapping[str, str] | None = None,
+) -> str | None:
+    """Return an OfficeCLI-acceptable colour for a proxy's ``fill``/``line``.
+
+    OfficeCLI's readback names a non-solid paint by its *kind* -- a gradient
+    shape reports ``fill=gradient`` and carries the stops in a separate
+    ``gradient`` property -- but its write path only accepts an actual colour
+    token, so writing the readback value straight back fails with
+    ``Invalid color value: 'gradient'`` and the whole projection is refused.
+
+    Such an object is not canonical-editable either way: a gradient is outside
+    the canonical Author fill surface, so it is classified ``locked-visual-proxy``
+    and only ever appears through an object-local proxy.  The proxy therefore
+    reproduces the object's *representative* paint -- the first gradient stop --
+    which keeps the proxy local to the object and honest about not reproducing
+    the gradient, instead of failing the run.
+
+    A theme *expression* (``accent2+lumMod20+lumOff80``) is resolved against the
+    deck's own scheme when one is supplied, because it names a real colour rather
+    than a paint this surface cannot write: dropping it painted a filled cell
+    white.
+
+    Returns ``None`` when the paint cannot be rendered at all, in which case the
+    caller omits the property rather than writing an invalid token.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in {"none", "transparent"}:
+        return text
+    if parse_color(text) is not None:
+        return text
+    resolved = resolve_paint_expression(text, scheme)
+    if resolved is not None:
+        return resolved
+    if text.lower() in {"gradient", "gradfill"} or "gradient" in properties:
+        stops = _GRADIENT_STOP_RE.findall(str(properties.get("gradient", "")))
+        for stop in stops:
+            parsed = parse_color(stop)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def resolve_paint_expression(
+    value: Any, scheme: Mapping[str, str] | None
+) -> str | None:
+    """Resolve a DrawingML colour *expression* against a deck's colour scheme.
+
+    OfficeCLI reports a scheme fill as the expression the file declares --
+    ``accent2+lumMod20+lumOff80`` -- and that is neither a colour its write path
+    accepts nor a gradient, so the fill used to be dropped and the proxy painted
+    without it.  Measured on src1 page 30: the source's brand header cells are
+    ``schemeClr accent2 lumMod=20000 lumOff=80000``, a peach fill, and the rebuilt
+    cells came out white.
+
+    The maths is DrawingML's own: the scheme colour is converted to HSL and its
+    luminance becomes ``L * lumMod + lumOff``, with hue and saturation unchanged.
+    ``#ED7D31`` under ``lumMod 20% / lumOff 80%`` is ``(251, 229, 214)``, which is
+    the peach the source paints.
+
+    Returns ``None`` when the token is not a scheme entry this deck holds, or when
+    the expression carries a modifier this function does not model -- so an
+    unmodelled expression is refused rather than approximated.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    plain = parse_color(text)
+    if plain is not None:
+        return plain
+    if scheme is None:
+        return None
+    parts = text.split("+")
+    base = scheme.get(parts[0].strip())
+    if base is None:
+        return None
+    luma_mod = 1.0
+    luma_off = 0.0
+    for modifier in parts[1:]:
+        token = modifier.strip()
+        match = re.fullmatch(r"(lumMod|lumOff)(\d+)", token, re.IGNORECASE)
+        if match is None:
+            return None
+        raw = int(match.group(2))
+        # OfficeCLI's *token* states the value as a percentage -- ``lumMod20`` is
+        # the XML's ``val="20000"`` -- while the XML itself states thousandths of a
+        # percent.  Reading the token as the XML number made a 20% modulation a
+        # 0.02% one, which paints black.
+        amount = raw / 100.0 if raw <= 100 else raw / 100000.0
+        if match.group(1).lower() == "lummod":
+            luma_mod = amount
+        else:
+            luma_off = amount
+    if luma_mod == 1.0 and luma_off == 0.0:
+        return base
+    return _shift_luminance(base, luma_mod, luma_off)
+
+
+def _shift_luminance(colour: str, luma_mod: float, luma_off: float) -> str:
+    """Return ``colour`` with DrawingML's luminance transform applied.
+
+    Hue and saturation are preserved and only the HSL lightness moves, which is
+    what ``lumMod``/``lumOff`` mean: a tint or a shade of the same colour rather
+    than a blend towards white or black.
+    """
+    import colorsys
+
+    hex_text = str(colour).lstrip("#")
+    red, green, blue = (
+        int(hex_text[0:2], 16) / 255.0,
+        int(hex_text[2:4], 16) / 255.0,
+        int(hex_text[4:6], 16) / 255.0,
+    )
+    hue, lightness, saturation = colorsys.rgb_to_hls(red, green, blue)
+    shifted = min(1.0, max(0.0, lightness * luma_mod + luma_off))
+    red, green, blue = colorsys.hls_to_rgb(hue, shifted, saturation)
+    return "#{:02X}{:02X}{:02X}".format(
+        round(red * 255), round(green * 255), round(blue * 255)
+    )
+
+
+def run_range_sets(
+    name: str, paragraphs: Sequence[CapturedParagraph]
+) -> list[dict[str, str]]:
+    """Return the ``set`` props that give every run of a rebuilt body its own format.
+
+    An ``add`` states one formatting for the whole body, so a body whose runs differ
+    -- one red word in a black sentence, a bold lead-in, an orange feature line --
+    could only ever be rebuilt in one of those formats.  OfficeCLI addresses a run
+    by character range, the same way the New Deck compiler writes every run it
+    emits, so the reconstruction now does the same after the body exists.  Without
+    it the six feature-line cells on src1 page 30 and the two-line subtitle on src1
+    page 2 were rebuilt black where the source paints them red and orange.
+
+    The offsets mirror the compiler's own arithmetic exactly, because the same
+    OfficeCLI has to accept both: a run contributes its length in **UTF-16 code
+    units**, and a paragraph break is part of the body's text rather than part of
+    the addressable range -- so it advances nothing.  A property is written for
+    every run, including the off-states, so a run can reset a value it inherited
+    from the body or from the run before it; omitting one silently flattens mixed
+    formatting.
+
+    Returns an empty list for a body with nothing to say: no runs, or one run whose
+    format the body already carries.
+    """
+    commands: list[dict[str, str]] = []
+    offset = 0
+    for paragraph in paragraphs:
+        for run in paragraph.runs:
+            text = str(run.text or "")
+            if not text:
+                continue
+            length = _officecli_range_length(text)
+            if not length:
+                continue
+            props: dict[str, str] = {
+                "range": f"{offset}:{offset + length}",
+            }
+            if run.font_family:
+                props["font"] = str(run.font_family)
+            if run.font_size_pt and run.font_size_pt > 0:
+                props["size"] = f"{run.font_size_pt:g}pt"
+            if run.color:
+                props["color"] = str(run.color)
+            props["bold"] = "true" if run.bold else "false"
+            props["italic"] = "true" if run.italic else "false"
+            props["underline"] = str(run.underline or "none")
+            commands.append(props)
+            offset += length
+    if len(commands) <= 1:
+        # One run is the body's own formatting, which the ``add`` already carries.
+        return []
+    return commands
+
+
+def _officecli_range_length(text: str) -> int:
+    """Return the character count OfficeCLI's range setter addresses.
+
+    UTF-16 code units, with a paragraph break excluded: OfficeCLI carries the break
+    in the body's text rather than in the addressable scope.  This is the same
+    arithmetic the New Deck compiler uses, so both writers agree.
+    """
+    visible = text.replace("\r", "").replace("\n", "")
+    return len(visible.encode("utf-16-le")) // 2
+
+
+def connector_stroke(properties: Mapping[str, Any]) -> str | None:
+    """Return a connector's stroke value under either OfficeCLI spelling."""
+    for key in ("line", "color"):
+        value = properties.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text.lower() != "none":
+            return text
+    return None
 
 
 class IsolatedRenderer:
@@ -1320,6 +2803,15 @@ class IsolatedRenderer:
         self.source_path = Path(source_path).expanduser().resolve()
         self.work_dir = Path(work_dir).expanduser().resolve()
         self.work_dir.mkdir(parents=True, exist_ok=True)
+        # The reference render of an *empty* reconstruction deck, made once per
+        # renderer.  Every proxy is a crop of a render of the same blank slide
+        # plus one object, so the difference between the two is exactly what that
+        # object painted -- which is what a proxy should carry and nothing else.
+        self._blank_reference_path: Path | None = None
+        # The deck's own colour scheme, read once: a scheme *expression* names a
+        # real colour, and a reconstruction that does not resolve it paints the
+        # shape unfilled.
+        self._scheme: dict[str, str] | None = None
         node = _run_officecli_json("get", str(self.source_path), "/", "--depth", "0")
         root_format = dict(node.get("format") or {})
         self.slide_width_pt = length_to_points(root_format.get("slideWidth"))
@@ -1342,98 +2834,338 @@ class IsolatedRenderer:
         destination: str | Path,
         media_path: str | Path | None = None,
         guard_px: int = 2,
-    ) -> Path:
-        """Rebuild ``source_object`` alone and crop it to ``bounds_pt``.
+        placements: Sequence[ContainerPlacement] = (),
+        text: str = "",
+        painted_size_pt: float = 0.0,
+        paragraphs: Sequence[CapturedParagraph] = (),
+    ) -> tuple[Path, ProxyGeometry]:
+        """Rebuild ``source_object`` alone and crop it to what it paints.
 
-        ``properties`` is the object's OfficeCLI ``format`` mapping, and
-        ``media_path`` is the extracted picture payload when the object is a
-        picture.  Both come from the same read that produced ``bounds_pt``.
+        ``properties`` is the object's OfficeCLI ``format`` mapping, ``text`` is
+        its own captured text, and ``media_path`` is the extracted picture
+        payload when the object is a picture.  All three come from the same read
+        that produced ``bounds_pt``.  ``text`` is passed separately because
+        OfficeCLI reports an object's text as its own field rather than as one of
+        its ``format`` properties.  ``painted_size_pt`` is the size the object's
+        own runs paint at, for a body the slide declares no ``size`` for: see
+        :func:`painted_text_size`.
+
+        The published image is cropped at the union of the object's declared
+        rectangle and its measured painted extent, so a no-autofit line that
+        overflows its own box is kept whole, and the returned
+        :class:`ProxyGeometry` carries where that crop really is so the emitter
+        can place the image by its real geometry rather than by the declared
+        rectangle.
+
+        A paint-less container has no paint of its own, so ``placements`` carries
+        the candidate readings of its visible content: its own children, each
+        candidate placed by a different mapping of the source.  The
+        reconstruction is then the same technique extended from one object to a
+        set of them, except that a container's candidates are tried in order --
+        each is rebuilt as the *only* content of the fresh deck and rendered,
+        and only one whose measured paint lands inside the container's own
+        rectangle is published.  When none does, the container is reported as
+        unreconciled rather than represented by an invented image.
         """
         target = Path(destination)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        if object_kind in _CONTAINER_KINDS_WITHOUT_PAINT:
-            # A container's own shape has no geometry, fill, or line: all of its
-            # visible content belongs to its children, and OfficeCLI reports
-            # those in the group's own child coordinate space, which needs the
-            # DrawingML group transform to map back onto the slide.  Rebuilding
-            # the container alone renders nothing, so say so instead of
-            # publishing a blank proxy as if it represented the object.
-            raise ObjectIsolationError(
-                f"{object_kind!r} has no paint of its own; its visible content "
-                "belongs to its children, which cannot be rebuilt into the slide's "
-                "coordinate space without the group transform."
-            )
         token = _CANONICAL_TOKEN.get(object_kind)
-        if token is None:
-            raise ObjectIsolationError(
-                f"{object_kind!r} has no canonical OfficeCLI element to rebuild."
+        is_container = object_kind in _CONTAINER_KINDS_WITHOUT_PAINT
+        if is_container:
+            if not placements:
+                # The container's own shape has no geometry, fill, or line: all
+                # of its visible content belongs to its children, and OfficeCLI
+                # reports those in the container's own child coordinate space.
+                # With no candidate placement there is nothing to rebuild, so say
+                # so instead of publishing a blank proxy as if it represented
+                # the object.
+                raise ObjectIsolationError(
+                    f"{object_kind!r} has no paint of its own; its visible content "
+                    "belongs to its children, which cannot be rebuilt into the slide's "
+                    "coordinate space without the group transform."
+                )
+            trials: tuple[tuple[str, Sequence[ContainerMember]], ...] = tuple(
+                (placement.label, placement.members) for placement in placements
             )
-        rebuild = self._rebuild_properties(
-            object_kind, bounds_pt, properties, media_path=media_path
-        )
+        else:
+            if token is None:
+                raise ObjectIsolationError(
+                    f"{object_kind!r} has no canonical OfficeCLI element to rebuild."
+                )
+            trials = ((_PLACEMENT_SINGLE_OBJECT, ()),)
 
         stem = f"isolated-{slide_number:03d}-{abs(hash(source_object)) % 10**8:08d}"
-        deck = self.work_dir / f"{stem}.pptx"
-        raster = self.work_dir / f"{stem}.png"
-        deck.unlink(missing_ok=True)
-        raster.unlink(missing_ok=True)
+        isolated = False
+        geometry: ProxyGeometry | None = None
+        refusals: list[str] = []
         try:
-            _run_officecli("create", str(deck))
-            commands: list[dict[str, Any]] = [
-                {
-                    "command": "set",
-                    "path": "/",
-                    "props": {
-                        "slideWidth": f"{self.slide_width_pt:g}pt",
-                        "slideHeight": f"{self.slide_height_pt:g}pt",
-                    },
-                },
-                {
-                    "command": "add",
-                    "parent": "/",
-                    "type": "slide",
-                    "props": {"name": "isolated"},
-                },
-                {
-                    "command": "add",
-                    "parent": "/slide[1]",
-                    "type": token,
-                    "props": rebuild,
-                },
-            ]
-            _run_officecli("batch", str(deck), "--commands", json.dumps(commands))
-            _run_officecli("close", str(deck))
-
-            rendered = _run_officecli_json(
-                "get", str(deck), "/slide[1]", "--depth", "0"
-            )
-            present = list(_children(rendered))
-            if len(present) != 1:
-                raise ObjectIsolationError(
-                    f"The rebuild for {source_object} produced "
-                    f"{[str(item.get('path')) for item in present]} instead of exactly "
-                    "one object."
+            # A container has one candidate per reading of its children; every
+            # other kind has exactly one thing to rebuild, and its single trial
+            # either produces the proxy or raises.  Each trial gets its own deck
+            # and raster: a rejected candidate has been rendered -- and so has
+            # been opened by the viewer -- and a file another resident still
+            # holds cannot be reused, let alone removed.
+            for label, members in trials:
+                deck = self.work_dir / f"{stem}-{label}.pptx"
+                raster = deck.with_suffix(".png")
+                target.unlink(missing_ok=True)
+                deck.unlink(missing_ok=True)
+                raster.unlink(missing_ok=True)
+                try:
+                    additions = (
+                        [
+                            (
+                                member.source_kind,
+                                self._member_properties(member, scheme=self._scheme_map()),
+                            )
+                            for member in members
+                        ]
+                        if is_container
+                        else [
+                            (
+                                object_kind,
+                                self._rebuild_properties(
+                                    object_kind, bounds_pt, properties,
+                                    media_path=media_path,
+                                    text=text,
+                                    painted_size_pt=painted_size_pt,
+                                    scheme=self._scheme_map(),
+                                ),
+                            )
+                        ]
+                    )
+                    self._rebuild_isolated(
+                        deck,
+                        additions,
+                        source_object=source_object,
+                        # Only a single-object reconstruction has the object's own
+                        # paragraphs to range over.  A container's members each
+                        # carry their own text, and applying the container's ranges
+                        # to a member would format one member's characters by
+                        # another object's runs, so a container's members keep the
+                        # object-level formatting their own properties state.
+                        run_sets=(
+                            {}
+                            if is_container
+                            else {
+                                str(rebuild.get("name") or ""): run_range_sets(
+                                    str(rebuild.get("name") or ""), paragraphs
+                                )
+                                for _, rebuild in additions
+                            }
+                        ),
+                    )
+                    self._screenshot(deck, 1, raster)
+                    if is_container:
+                        refusal = self._placement_refusal(
+                            raster, bounds_pt, guard_px=guard_px
+                        )
+                        if refusal is not None:
+                            refusals.append(f"its {label} placement {refusal}")
+                            continue
+                    # The render's bare background is sampled once for both gates
+                    # that need it: the crop measures the object's painted extent
+                    # against it, and the blank-proxy gate asks whether the crop
+                    # carries any paint at all.
+                    background = _render_background(
+                        _raster_rgb(raster),
+                        bounds_pt,
+                        pixels_per_point,
+                        guard_px,
+                    )
+                    crop = self._crop(
+                        raster,
+                        bounds_pt,
+                        slide_width_pt=self.slide_width_pt,
+                        pixels_per_point=pixels_per_point,
+                        guard_px=guard_px,
+                        destination=target,
+                        background=background,
+                        blank_reference=self._blank_reference(),
+                    )
+                    if object_kind in _RECONSTRUCTED_PAINT_KINDS:
+                        self._assert_visible_paint(
+                            raster, target, bounds_pt, object_kind=object_kind,
+                            source_object=source_object,
+                            pixels_per_point=pixels_per_point,
+                            guard_px=guard_px,
+                            background=background,
+                        )
+                    geometry = crop
+                    isolated = True
+                    # The first candidate whose measured paint lands inside the
+                    # container is the representation; a later reading never gets
+                    # to replace it.
+                    break
+                finally:
+                    _run_officecli("close", str(deck), check=False, attempts=2)
+                    deck.unlink(missing_ok=True)
+                    raster.unlink(missing_ok=True)
+            if not isolated:
+                # Only a container reaches this: its trials are all candidates,
+                # and every one of them was measured and refused.
+                raise ContainerReconciliationError(
+                    f"{object_kind} {source_object} is not represented: "
+                    + "; ".join(refusals)
+                    + ". No candidate placement of its children puts visible "
+                    "content inside the container's own rectangle, and an "
+                    "invented or out-of-bounds image is never published as a "
+                    "representation of it."
                 )
-
-            self._screenshot(deck, 1, raster)
-            self._crop(
-                raster,
-                bounds_pt,
-                slide_width_pt=self.slide_width_pt,
-                pixels_per_point=pixels_per_point,
-                guard_px=guard_px,
-                destination=target,
-            )
         finally:
-            _run_officecli("close", str(deck), check=False, attempts=2)
-            deck.unlink(missing_ok=True)
-            raster.unlink(missing_ok=True)
-        if not target.is_file():
+            if not isolated:
+                # A render that did not survive every gate leaves no image
+                # behind: a rejected proxy must not stay on disk looking like a
+                # published one.
+                target.unlink(missing_ok=True)
+        if not target.is_file() or geometry is None:
             raise ObjectIsolationError(
                 f"Isolated render produced no image for {source_object}."
             )
-        return target
+        return target, geometry
+
+    def _rebuild_isolated(
+        self,
+        deck: Path,
+        additions: Sequence[tuple[str, Mapping[str, str]]],
+        *,
+        source_object: str,
+        run_sets: Mapping[str, Sequence[Mapping[str, str]]] | None = None,
+    ) -> None:
+        """Rebuild one placement as the only content of a fresh deck.
+
+        ``run_sets`` carries per-run formatting to apply *after* the body exists:
+        an ``add`` can state one formatting for the whole body, and a body whose
+        runs differ needs a range per run.  The reconstruction used to carry only
+        the object-level properties, so a cell whose feature line is red or orange
+        was rebuilt black -- the independent review found six such cells on src1
+        page 30 and the subtitle on src1 page 2, and the audit confirmed the loss in
+        both files.
+        """
+        deck.unlink(missing_ok=True)
+        _run_officecli("create", str(deck))
+        commands: list[dict[str, Any]] = [
+            {
+                "command": "set",
+                "path": "/",
+                "props": {
+                    "slideWidth": f"{self.slide_width_pt:g}pt",
+                    "slideHeight": f"{self.slide_height_pt:g}pt",
+                },
+            },
+            {
+                "command": "add",
+                "parent": "/",
+                "type": "slide",
+                "props": {"name": "isolated"},
+            },
+        ]
+        for member_kind, rebuild in additions:
+            member_token = _CANONICAL_TOKEN.get(member_kind)
+            if member_token is None:
+                raise ObjectIsolationError(
+                    f"{member_kind!r} has no canonical OfficeCLI element to "
+                    f"rebuild for {source_object}."
+                )
+            commands.append(
+                {
+                    "command": "add",
+                    "parent": "/slide[1]",
+                    "type": member_token,
+                    "props": dict(rebuild),
+                }
+            )
+            name = str(rebuild.get("name") or "")
+            for props in (run_sets or {}).get(name, ()):
+                commands.append(
+                    {
+                        "command": "set",
+                        "path": f"/slide[1]/shape[@name={name}]",
+                        "props": dict(props),
+                    }
+                )
+        _run_officecli("batch", str(deck), "--commands", json.dumps(commands))
+        _run_officecli("close", str(deck))
+
+        rendered = _run_officecli_json("get", str(deck), "/slide[1]", "--depth", "0")
+        present = list(_children(rendered))
+        if len(present) != len(additions):
+            raise ObjectIsolationError(
+                f"The rebuild for {source_object} produced "
+                f"{[str(item.get('path')) for item in present]} instead of exactly "
+                f"{len(additions)} object(s)."
+            )
+
+    def _placement_refusal(
+        self,
+        raster: Path,
+        bounds_pt: tuple[float, float, float, float],
+        *,
+        guard_px: int,
+    ) -> str | None:
+        """Return why one candidate placement is not a representation, or ``None``.
+
+        The reconstruction deck holds the container's children and nothing else,
+        so the paint in its render *is* those children, wherever the candidate
+        put them.  It is measured rather than taken from the candidate's own
+        rectangles, because those rectangles are exactly what is in doubt: the
+        placement is accepted only when its paint is non-empty and lands inside
+        the container's own rectangle, within the antialiasing tolerance.
+
+        When the container's rectangle leaves no sample point outside itself,
+        there is no honest background to measure against, so no judgement is
+        made here -- the blank-proxy gate downstream cannot judge either.
+        """
+        from PIL import Image
+
+        with Image.open(raster) as image:
+            rgb = image.convert("RGB")
+            if self.slide_width_pt <= 0:
+                raise ObjectIsolationError(
+                    "The slide's point width must be positive to scale a proxy."
+                )
+            factor = rgb.width / self.slide_width_pt
+            background = _render_background(rgb, bounds_pt, factor, guard_px)
+            if background is None:
+                return None
+            # The raster's own edge is viewer chrome, not slide paint, so the
+            # extent is measured one inset in and mapped back out afterwards.
+            inset = _RASTER_INSET_PX
+            field = rgb.crop(
+                (inset, inset, rgb.width - inset, rgb.height - inset)
+            )
+            extent = _painted_extent(field, background)
+        if extent is None:
+            return "painted no visible paint"
+        extent = (
+            extent[0] + inset,
+            extent[1] + inset,
+            extent[2] + inset,
+            extent[3] + inset,
+        )
+        left = int(round(bounds_pt[0] * factor))
+        top = int(round(bounds_pt[1] * factor))
+        right = left + int(round(bounds_pt[2] * factor))
+        bottom = top + int(round(bounds_pt[3] * factor))
+        tolerance = CONTAINER_PAINT_TOLERANCE_PX
+        if (
+            extent[0] < left - tolerance
+            or extent[1] < top - tolerance
+            or extent[2] > right + tolerance
+            or extent[3] > bottom + tolerance
+        ):
+            painted = (
+                round(extent[0] / factor, 4),
+                round(extent[1] / factor, 4),
+                round((extent[2] - extent[0]) / factor, 4),
+                round((extent[3] - extent[1]) / factor, 4),
+            )
+            return (
+                f"painted {painted} on the slide, outside the container's own "
+                f"rectangle {tuple(round(value, 4) for value in bounds_pt)}"
+            )
+        return None
 
     @staticmethod
     def _rebuild_properties(
@@ -1442,8 +3174,21 @@ class IsolatedRenderer:
         properties: Mapping[str, Any],
         *,
         media_path: str | Path | None,
+        text: str = "",
+        painted_size_pt: float = 0.0,
+        scheme: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
-        """Return the OfficeCLI ``add`` props that reproduce the object's paint."""
+        """Return the OfficeCLI ``add`` props that reproduce the object's paint.
+
+        A text-bearing object's paint is its text, so a ``shape`` or ``textbox``
+        proxy carries the object's own text and text properties exactly as a
+        container's text-bearing member does.  Without them the proxy is an image
+        of the object's bare rectangle: the paint the object is *for* is dropped
+        from the rebuilt deck, which is the one thing a locked visual proxy may
+        never do.  The inherited value that made the object base-only in the
+        first place -- a theme colour, typically -- is still not reproduced, and
+        the object is still reported as base-only scope evidence for it.
+        """
         rebuild: dict[str, str] = {
             "name": "isolated-object",
             "x": f"{bounds_pt[0]:g}pt",
@@ -1451,18 +3196,45 @@ class IsolatedRenderer:
             "width": f"{bounds_pt[2]:g}pt",
             "height": f"{bounds_pt[3]:g}pt",
         }
-        for key in _REBUILD_PROPERTIES:
+        for key in rebuild_keys(object_kind):
             value = properties.get(key)
             if value is None:
                 continue
-            text = str(value).strip()
-            if not text:
+            # ``value`` is the property's own text.  It is deliberately NOT
+            # called ``text``: the object's captured text is a separate argument
+            # of this method, and reusing the name for a property value silently
+            # replaced the object's text with whatever the last property happened
+            # to be -- which is how a text proxy once came out as the word
+            # "rect" instead of the words it was supposed to represent.
+            value_text = str(value).strip()
+            if not value_text:
                 continue
             # ``none`` is a real value for fill and line, but OfficeCLI rejects
             # it for a length or a geometry.
-            if text.lower() == "none" and key not in {"fill", "line"}:
+            if value_text.lower() == "none" and key not in {"fill", "line"}:
                 continue
-            rebuild[key] = text
+            if key in {"fill", "line"}:
+                # A non-solid paint (a gradient, say) is named by kind in the
+                # readback and is not a colour OfficeCLI accepts on write, so the
+                # proxy carries the object's representative stop instead.
+                paint = proxy_paint_value(
+                    key, value_text, properties, scheme=scheme
+                )
+                if paint is None:
+                    continue
+                rebuild[key] = paint
+                continue
+            rebuild[key] = value_text
+        if object_kind == "connector":
+            # The stroke a connector read back as ``color`` is written back as
+            # ``line``; without it the rebuilt connector has no paint at all.
+            stroke = connector_stroke(properties)
+            if stroke is not None:
+                rebuild["line"] = stroke
+        if object_kind in _TEXTUAL_KINDS:
+            _add_text_paint(
+                rebuild, text, properties, painted_size_pt=painted_size_pt
+            )
         if object_kind == "picture":
             if not media_path:
                 raise ObjectIsolationError(
@@ -1470,6 +3242,106 @@ class IsolatedRenderer:
                 )
             rebuild["src"] = str(media_path)
         return rebuild
+
+    @staticmethod
+    def _member_properties(
+        member: ContainerMember, *, scheme: Mapping[str, str] | None = None
+    ) -> dict[str, str]:
+        """Return the ``add`` props that reproduce one container member.
+
+        A container member is rebuilt from its own readback, exactly as a
+        single-object proxy is.  The two kind-specific differences are that a
+        connector's stroke is written as ``line`` rather than the ``color`` its
+        readback reports, and that a text-bearing member carries its text so the
+        container's visible content is not silently reduced to its shapes.
+        """
+        bounds_pt = member.bounds_pt
+        rebuild: dict[str, str] = {
+            "name": f"isolated-member-{abs(hash(member.source_object)) % 10**8:08d}",
+            "x": f"{max(0.0, bounds_pt[0]):g}pt",
+            "y": f"{max(0.0, bounds_pt[1]):g}pt",
+            "width": f"{max(0.0, bounds_pt[2]):g}pt",
+            "height": f"{max(0.0, bounds_pt[3]):g}pt",
+        }
+        properties = member.properties
+        for key in rebuild_keys(member.source_kind):
+            value = properties.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            if text.lower() == "none" and key not in {"fill", "line"}:
+                continue
+            if key in {"fill", "line"}:
+                # Same rule as a single-object proxy: a paint named by kind in
+                # the readback becomes the member's representative colour so the
+                # container's reconstruction still renders.
+                paint = proxy_paint_value(key, text, properties, scheme=scheme)
+                if paint is None:
+                    continue
+                rebuild[key] = paint
+                continue
+            rebuild[key] = text
+        if member.source_kind == "connector":
+            stroke = connector_stroke(properties)
+            if stroke is not None:
+                rebuild["line"] = stroke
+        if member.source_kind in _TEXTUAL_KINDS:
+            _add_text_paint(
+                rebuild,
+                member.text,
+                properties,
+                painted_size_pt=member.painted_size_pt,
+            )
+        if member.source_kind == "picture":
+            if not member.media_path:
+                raise ObjectIsolationError(
+                    f"A container's picture member {member.source_object} needs its "
+                    "own media to rebuild from."
+                )
+            rebuild["src"] = str(member.media_path)
+        return rebuild
+
+    @staticmethod
+    def _assert_visible_paint(
+        raster: Path,
+        cropped: Path,
+        bounds_pt: tuple[float, float, float, float],
+        *,
+        object_kind: str,
+        source_object: str,
+        pixels_per_point: float,
+        guard_px: int,
+        background: tuple[int, int, int] | None = None,
+    ) -> None:
+        """Refuse a reconstructed proxy that carries no paint at all.
+
+        A container is represented by its children and a connector by its own
+        stroke, so a reconstruction of either that comes out as bare slide
+        background is not a representation of the object: publishing it would
+        paint an empty rectangle where the source has content.  The background
+        is read from a point of the render that is *outside* the object's own
+        rectangle, so an object that genuinely fills the slide is never judged
+        against itself.
+        """
+        from PIL import Image
+
+        if background is None:
+            background = _render_background(
+                _raster_rgb(raster), bounds_pt, pixels_per_point, guard_px
+            )
+        if background is None:
+            return
+        with Image.open(cropped) as crop_image:
+            painted = _carries_other_than(crop_image.convert("RGB"), background)
+        if painted:
+            return
+        raise ContainerReconciliationError(
+            f"The isolated reconstruction of {object_kind} {source_object} carries no "
+            "visible paint, so it is not a representation of the object; a blank "
+            "image is never published as a proxy."
+        )
 
     @staticmethod
     def _screenshot(deck: Path, slide_number: int, raster: Path) -> None:
@@ -1506,6 +3378,80 @@ class IsolatedRenderer:
             f"{last_error or 'no image was produced'}"
         )
 
+    def _scheme_map(self) -> dict[str, str]:
+        """Return the deck's colour scheme, read once and cached."""
+        if self._scheme is None:
+            self._scheme = theme_color_scheme(self.source_path)
+        return self._scheme
+
+    def _blank_reference(self) -> Path | None:
+        """Render an empty reconstruction deck once, and cache it.
+
+        Every proxy is a crop of a render of the same blank slide plus exactly one
+        object, so the *difference* between the two renders is what that object
+        painted.  That difference is what a proxy has to carry: a proxy that also
+        carries the render's white background is composited over whatever the
+        source object sat on, and an opaque white box appears where the source
+        paints a coloured panel.  Two live examples were found by the independent
+        visual review -- a callout band reduced to a sliver, and two product
+        photos on white boxes over a lavender panel.
+
+        The comparison is exact, pixel for pixel, against a render made by the same
+        renderer at the same viewport width of the same kind of deck.  It has to be
+        exact: a tolerance would eventually erase paint that merely resembles the
+        background, and a white glyph on a coloured panel is exactly that case.
+
+        Returns ``None`` when the reference cannot be rendered, in which case the
+        proxy keeps its opaque background -- the behaviour every earlier run had --
+        rather than failing the object outright.
+        """
+        if self._blank_reference_path is not None:
+            return self._blank_reference_path
+        deck = self.work_dir / "blank-reference.pptx"
+        raster = deck.with_suffix(".png")
+        try:
+            deck.unlink(missing_ok=True)
+            raster.unlink(missing_ok=True)
+            # The same construction the reconstructions use, so the reference is the
+            # same slide with the same size and the same viewport width: the blank
+            # deck has to be comparable pixel for pixel or the comparison is
+            # meaningless.
+            _run_officecli("create", str(deck))
+            _run_officecli(
+                "batch",
+                str(deck),
+                "--commands",
+                json.dumps(
+                    [
+                        {
+                            "command": "set",
+                            "path": "/",
+                            "props": {
+                                "slideWidth": f"{self.slide_width_pt:g}pt",
+                                "slideHeight": f"{self.slide_height_pt:g}pt",
+                            },
+                        },
+                        {
+                            "command": "add",
+                            "parent": "/",
+                            "type": "slide",
+                            "props": {"name": "blank-reference"},
+                        },
+                    ],
+                    ensure_ascii=False,
+                ),
+            )
+            self._screenshot(deck, 1, raster)
+        except Exception:  # noqa: BLE001 - an optimisation, never a failure
+            return None
+        finally:
+            # OfficeCLI keeps the deck resident, and a resident handle on a file
+            # this run then wants to remove is what makes a later step fail for no
+            # visible reason.
+            _close_resident(deck)
+        self._blank_reference_path = raster if raster.is_file() else None
+        return self._blank_reference_path
+
     @staticmethod
     def _crop(
         raster: Path,
@@ -1515,8 +3461,10 @@ class IsolatedRenderer:
         pixels_per_point: float,
         guard_px: int,
         destination: Path,
-    ) -> None:
-        """Crop the target's rectangle out of an isolated slide render.
+        background: tuple[int, int, int] | None = None,
+        blank_reference: Path | None = None,
+    ) -> ProxyGeometry:
+        """Crop the target's painted rectangle out of an isolated slide render.
 
         The render's own density is measured from the raster and the slide's
         point width, and it must reach ``pixels_per_point`` -- the density the
@@ -1524,6 +3472,20 @@ class IsolatedRenderer:
         upscaled in the DOM, so it is a hard failure rather than a silently
         softened proxy.  The only tolerance is whole-pixel rounding of the
         render; a raster that merely clears some lower floor is not accepted.
+
+        The crop is the union of the object's declared rectangle and the
+        rectangle its paint actually occupies, because PowerPoint paints a
+        no-autofit line outside its own box: a text object whose content
+        overflows its declared rectangle is *supposed* to show that overflow, and
+        cropping to the declared rectangle would slice those lines mid-glyph.
+        The deck holds nothing but this object, so a wider crop can only ever add
+        more of the object's own paint.
+
+        The union never shrinks below the declared rectangle plus the guard band,
+        so an object whose paint is entirely inside its own rectangle keeps
+        exactly the geometry it had before.  When the measured paint reaches the
+        render's own edge the crop is clamped and says so: an expansion that
+        would leave the slide is recorded rather than silently swallowed.
         """
         from PIL import Image
 
@@ -1553,10 +3515,48 @@ class IsolatedRenderer:
                     "A proxy rectangle must be positive; got "
                     f"{width}x{height} for bounds {bounds_pt}."
                 )
-            crop_left = max(0, left)
-            crop_top = max(0, top)
-            crop_right = max(crop_left + 1, min(left + width, raster_width))
-            crop_bottom = max(crop_top + 1, min(top + height, raster_height))
+            declared_right = left + width
+            declared_bottom = top + height
+            crop_left, crop_top = left, top
+            crop_right, crop_bottom = declared_right, declared_bottom
+            escaped = False
+            extent = IsolatedRenderer._painted_extent(
+                rgb, bounds_pt, factor, guard_px, background
+            )
+            if extent is not None:
+                # The declared rectangle is already the floor, so paint inside it
+                # -- including the object's own antialiased edge -- changes
+                # nothing.  Only paint that reaches past it widens the crop, and
+                # only while the reach is the object's own overflow rather than a
+                # reconstruction whose layout has drifted: see
+                # :data:`_PROXY_EXPANSION_SLACK_PX`.
+                if (
+                    extent[2] - extent[0] <= _expansion_limit(width)
+                    and extent[3] - extent[1] <= _expansion_limit(height)
+                ):
+                    escaped = (
+                        extent[0] < crop_left
+                        or extent[1] < crop_top
+                        or extent[2] > crop_right
+                        or extent[3] > crop_bottom
+                    )
+                    crop_left = min(crop_left, extent[0])
+                    crop_top = min(crop_top, extent[1])
+                    crop_right = max(crop_right, extent[2])
+                    crop_bottom = max(crop_bottom, extent[3])
+            clamped = (
+                escaped
+                and (
+                    crop_left < 0
+                    or crop_top < 0
+                    or crop_right > raster_width
+                    or crop_bottom > raster_height
+                )
+            )
+            crop_left = max(0, crop_left)
+            crop_top = max(0, crop_top)
+            crop_right = max(crop_left + 1, min(crop_right, raster_width))
+            crop_bottom = max(crop_top + 1, min(crop_bottom, raster_height))
             cropped = rgb.crop((crop_left, crop_top, crop_right, crop_bottom))
             if cropped.width < 2 or cropped.height < 2:
                 raise ObjectIsolationError(
@@ -1564,7 +3564,54 @@ class IsolatedRenderer:
                     f"{cropped.width}x{cropped.height}px; the object's rectangle "
                     "is not fully inside the rendered slide."
                 )
+            cropped = _drop_render_background(
+                cropped, blank_reference, (crop_left, crop_top, crop_right, crop_bottom)
+            )
             cropped.save(destination, format="PNG")
+        return ProxyGeometry(
+            rect_px=(
+                crop_left,
+                crop_top,
+                crop_right - crop_left,
+                crop_bottom - crop_top,
+            ),
+            origin_px=(crop_left - left, crop_top - top),
+            clamped=clamped,
+        )
+
+    @staticmethod
+    def _painted_extent(
+        rgb: Any,
+        bounds_pt: tuple[float, float, float, float],
+        factor: float,
+        guard_px: int,
+        background: tuple[int, int, int] | None,
+    ) -> tuple[int, int, int, int] | None:
+        """Return where this render's paint actually is, in raster pixels.
+
+        The render holds the target object and nothing else, so its paint *is*
+        the object -- wherever the object's own overflow put it.  The background
+        to measure against is the same bare-render background the container
+        placement gate samples, and when the declared rectangle leaves no honest
+        sample point the measurement is simply not made.
+        """
+        if background is None:
+            background = _render_background(rgb, bounds_pt, factor, guard_px)
+        if background is None:
+            return None
+        # The raster's own edge is viewer chrome rather than slide paint, so the
+        # extent is measured one inset in and mapped back out afterwards.
+        inset = _RASTER_INSET_PX
+        field = rgb.crop((inset, inset, rgb.width - inset, rgb.height - inset))
+        extent = _painted_extent(field, background)
+        if extent is None:
+            return None
+        return (
+            extent[0] + inset,
+            extent[1] + inset,
+            extent[2] + inset,
+            extent[3] + inset,
+        )
 
 
 def _nested_pictures(obj: CapturedObject) -> tuple[CapturedObject, ...]:
@@ -1587,12 +3634,19 @@ def _nested_pictures(obj: CapturedObject) -> tuple[CapturedObject, ...]:
 def capture_presentation(
     pptx_path: str | Path,
     slide_numbers: Sequence[int],
+    *,
+    source_key: str = "",
 ) -> CapturedPresentation:
     """Capture the selected slides of one source PPTX through OfficeCLI.
 
     The source deck is only ever read: no OfficeCLI write command is issued
     against it, and every requested slide must exist before anything is
-    captured.
+    captured.  ``source_key`` is the caller's stable identity for this deck and
+    is stamped onto every captured page and object, because two decks can report
+    the same ``source_object`` path.
+
+    Capture is per deck and never discovers pages: the requested numbers are the
+    only slides read, in the order given.
     """
     path = Path(pptx_path).expanduser()
     if not path.is_file():
@@ -1617,7 +3671,7 @@ def capture_presentation(
         raise PptxReadError(f"OfficeCLI found no slides in {path}.")
     for number in requested:
         if number > slide_count:
-            raise MissingSlideError(number, slide_count)
+            raise MissingSlideError(number, slide_count, str(path.resolve()))
 
     width_pt = length_to_points(root_format.get("slideWidth"))
     height_pt = length_to_points(root_format.get("slideHeight"))
@@ -1635,6 +3689,7 @@ def capture_presentation(
             "get", str(path), f"/slide[{number}]", "--depth", "5"
         )
         slide_format = dict(node.get("format") or {})
+        line_breaks = _slide_line_breaks(path, number)
         objects = tuple(
             sorted(
                 (
@@ -1643,6 +3698,8 @@ def capture_presentation(
                         slide_number=number,
                         pptx_path=path,
                         capture_pictures=True,
+                        source_key=source_key,
+                        line_breaks=line_breaks,
                     )
                     for child in _children(node)
                 ),
@@ -1658,6 +3715,7 @@ def capture_presentation(
                 height_pt=height_pt,
                 background=_slide_background(slide_format),
                 objects=objects,
+                source_key=source_key,
             )
         )
     return CapturedPresentation(
@@ -1666,13 +3724,19 @@ def capture_presentation(
         slide_count=slide_count,
         officecli_version=officecli_version(),
         slides=tuple(slides),
+        source_key=source_key,
     )
 
 
 __all__ = [
+    "ADMITTED_PRESET_GEOMETRIES",
     "ALIGNMENT_DEFAULT",
     "BaseOnlyClaim",
     "CANONICAL_GEOMETRIES",
+    "CONTAINER_KINDS",
+    "CONTAINER_PAINT_TOLERANCE_PX",
+    "CONTAINER_PLACEMENT_DECLARED",
+    "CONTAINER_PLACEMENT_REPORTED",
     "CapturedObject",
     "CapturedParagraph",
     "CapturedPicture",
@@ -1681,20 +3745,35 @@ __all__ = [
     "CapturedSlide",
     "CapturedTable",
     "CapturedTableCell",
+    "ContainerMember",
+    "ContainerPlacement",
+    "ContainerPlacements",
+    "ContainerReconciliationError",
     "EMU_PER_POINT",
+    "IsolatedRenderer",
     "MissingSlideError",
     "NON_CANONICAL_KINDS",
     "OFFICECLI_TIMEOUT_SECONDS",
     "ObjectIsolationError",
-    "PptxReadError",
+    "PROXY_BACKGROUND_TOLERANCE",
     "PROXY_DENSITY_TOLERANCE",
+    "PptxReadError",
+    "ProxyGeometry",
     "SCREENSHOT_RENDER",
     "SCREENSHOT_VIEWPORT_WIDTH",
     "VISIBLE_BASE_ONLY_PROPERTIES",
+    "alpha_of",
     "capture_presentation",
+    "connector_stroke",
+    "container_child_transform",
+    "container_placements",
     "length_to_points",
+    "map_child_bounds",
     "nested_pictures",
     "officecli_version",
+    "painted_run_size_pt",
+    "painted_text_size",
     "parse_color",
     "points_to_emu",
+    "rebuild_keys",
 ]

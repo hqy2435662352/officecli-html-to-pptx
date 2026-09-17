@@ -1,0 +1,21 @@
+# Line-ending policy for files whose bytes are semantically load-bearing.
+#
+# The repository is developed on Windows and validated on Linux, and git's
+# `core.autocrlf` default would rewrite these on checkout.  For the hook scripts
+# that is a correctness problem, not a cosmetic one: a POSIX shell script whose
+# shebang line ends in CRLF does not run, so a hook that works on the development
+# machine would fail on a Linux clone -- which is exactly the environment the
+# acceptance track uses.
+
+.githooks/* text eol=lf
+*.sh text eol=lf
+
+# The published acceptance bundle is hashed, and the hashes are the point: the
+# artifact manifest lists a sha256 per document, so a checkout that rewrote line
+# endings would produce a bundle whose own manifest disagrees with it.  A clean
+# checkout failed on exactly that before this rule existed -- the manifest was
+# written from LF bytes on the development machine and then verified against CRLF
+# bytes in the clone.  These documents are written with LF and checked out with LF,
+# so their digests are the same in every checkout.
+acceptance/v0.4.2/*.md text eol=lf
+acceptance/v0.4.2/*.json text eol=lf

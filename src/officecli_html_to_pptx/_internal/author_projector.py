@@ -1,9 +1,11 @@
-"""The V0.4.1 PPTX-to-Canonical-Author-HTML projection seam.
+"""The V0.4.2 PPTX-to-Canonical-Author-HTML projection seam.
 
-This is the one experimental high-level seam the V0.4.1 probe exposes::
+This is the one experimental high-level seam the V0.4.2 slice exposes::
 
-    source PPTX + selected source slide numbers
-      -> Canonical Author HTML
+    explicit ordered selected pages (source PPTX + source page, one or more decks)
+      -> one Canonical Author HTML document
+       + per-source provenance
+       + a per-object disposition ledger
        + source map
        + projection report
        + structured diagnostics
@@ -14,22 +16,37 @@ behind this boundary.  The PPTX is the only required presentation input: an
 OfficeCLI OfficeHTML export is never read, and no OfficeHTML profile, contract,
 or document is produced by this module.
 
+The caller-facing entry point accepts two spellings of the same selection:
+
+* the V0.4.1 single-deck shape, ``(deck, [1, 2], out, proxy_dir=...)``; and
+* an explicit :class:`PageSelection` (or any sequence of :class:`SelectedPage` /
+  ``(deck, page)`` pairs), ``(selection, out, proxy_dir=...)``.
+
+The selection is authoritative: no deck is scanned, no page is chosen
+automatically, and the emitted pages appear in exactly the caller's order.
+
 Design commitments this module holds to:
 
 * **Clean fixed-coordinate Author DOM.**  One ``.slide`` per selected source
-  slide at the current ``1920x1080`` Author canvas, one canonical object per
+  page at the current ``1920x1080`` Author canvas, one canonical object per
   supported source object, and no OfficeCLI viewer wrapper, sidebar, or script.
 * **Slide-derived normalization.**  The pixel-per-point factor is derived from
   the source PPTX's own slide bounds, so the standard ``960pt x 540pt`` slide
   becomes exactly ``2px/pt``.  CSS physical-unit conversion is never used.
-* **Honest classification.**  Every selected-slide source object receives
-  exactly one disposition: ``canonical-editable``, ``locked-visual-proxy``,
-  ``base-only-semantic``, ``unsupported``, or ``unresolved``.  A visually
+* **Honest classification.**  Every slide-owned source object of every selected
+  page receives exactly one disposition -- ``canonical-editable``,
+  ``locked-visual-proxy``, ``base-only-semantic``, ``unsupported``, or
+  ``unresolved`` -- and exactly one entry in the disposition ledger.  A visually
   present object is never declared editable when its PowerPoint semantics were
   not preserved, and whole-slide screenshot fallback is never used.
 * **Named source identity.**  Every emitted object carries non-authoritative
-  source metadata bound to the source PPTX SHA-256, and the mapping is
-  one-to-one in both directions.
+  source metadata bound to its source PPTX's SHA-256 and to a stable per-source
+  key, so two decks that report the same object path stay distinguishable.
+* **Proved source immutability.**  Every distinct source is hashed before it is
+  captured and hashed again after staging, immediately before publication; a
+  source that changed in between blocks the run and publishes nothing.
+* **One atomic publication.**  All artifacts are staged beside the destination
+  and moved into place only once every check has passed.
 """
 
 from __future__ import annotations
@@ -43,6 +60,7 @@ import tempfile
 from typing import Any, Iterable, Mapping, Sequence
 
 from .pptx_reader import (
+    ADMITTED_PRESET_GEOMETRIES,
     ALIGNMENT_DEFAULT,
     CANONICAL_GEOMETRIES,
     CONTAINER_KINDS,
@@ -53,27 +71,37 @@ from .pptx_reader import (
     CapturedPresentation,
     CapturedSlide,
     CapturedTable,
+    ContainerMember,
+    ContainerPlacement,
+    ContainerReconciliationError,
     IsolatedRenderer,
     MissingSlideError,
     PptxReadError,
+    ProxyGeometry,
     capture_presentation,
+    container_placements,
+    painted_run_size_pt,
 )
-from ..contract import check_contract
+from ..contract import LIST_LEVELS, check_contract
 
-PROJECTION_SCHEMA_VERSION = 1
-SOURCE_MAP_SCHEMA_VERSION = 1
-PROJECTION_REPORT_SCHEMA_VERSION = 1
+PROJECTION_SCHEMA_VERSION = 2
+SOURCE_MAP_SCHEMA_VERSION = 2
+PROJECTION_REPORT_SCHEMA_VERSION = 2
 AUTHOR_CANVAS_WIDTH_PX = 1920.0
 AUTHOR_CANVAS_HEIGHT_PX = 1080.0
 DEFAULT_CANVAS_PT = (960.0, 540.0)
+# Two source decks are allowed to disagree with the Author canvas by no more
+# than this; anything larger is a blocking diagnostic rather than a silent
+# rescale.  The canvas itself must still normalize onto the Author canvas.
+CANVAS_TOLERANCE_PX = 0.5
 # A locked visual proxy is cropped out of the source slide raster with this
 # many extra device pixels on each side, so the object's own antialiased edge
 # stays inside the image and the emitted element can be offset back to the
 # exact source bounds by the same amount.
 PROXY_GUARD_PX = 2
 
-# Disposition vocabulary.  Every selected-slide source object receives exactly
-# one of these, and the counts are the review surface of the whole probe.
+# Disposition vocabulary.  Every slide-owned source object receives exactly
+# one of these, and the counts are the review surface of the whole slice.
 DISPOSITION_CANONICAL = "canonical-editable"
 DISPOSITION_LOCKED = "locked-visual-proxy"
 DISPOSITION_BASE_ONLY = "base-only-semantic"
@@ -87,16 +115,109 @@ DISPOSITIONS = (
     DISPOSITION_UNRESOLVED,
 )
 
+# ``unsupported`` and ``unresolved`` block the run: an object the projection
+# cannot represent, or whose source identity it cannot establish, must never be
+# published as if it were a finished projection.
+BLOCKING_DISPOSITIONS = frozenset(
+    {DISPOSITION_UNSUPPORTED, DISPOSITION_UNRESOLVED}
+)
+
 # A locked proxy or an inherited listing is never counted as a native
 # round-trip success.
 NATIVE_DISPOSITIONS = frozenset({DISPOSITION_CANONICAL})
 PROXY_DISPOSITIONS = frozenset({DISPOSITION_LOCKED, DISPOSITION_BASE_ONLY})
+
+# Machine-readable reason codes.  A ledger entry that is not
+# ``canonical-editable`` always carries one of these, so a reviewer reads a
+# stable code and never has to parse prose.
+REASON_NON_CANONICAL_KIND = "non_canonical_kind"
+REASON_PICTURE_SOURCE_MISSING = "picture_source_missing"
+REASON_PICTURE_BASE_ONLY = "picture_base_only"
+REASON_TABLE_CELLS_MERGED = "table_cells_merged"
+REASON_TABLE_COLUMN_WIDTHS_MISMATCH = "table_column_widths_mismatch"
+REASON_TABLE_COLUMN_WIDTH_INVALID = "table_column_width_invalid"
+REASON_TABLE_ROW_HEIGHT_INVALID = "table_row_height_invalid"
+REASON_TABLE_CELL_MATRIX_MISMATCH = "table_cell_matrix_mismatch"
+REASON_TABLE_BASE_ONLY = "table_base_only"
+REASON_GEOMETRY_MISSING = "geometry_missing"
+REASON_GEOMETRY_NOT_CANONICAL = "geometry_not_canonical"
+REASON_ROTATION_UNSUPPORTED = "rotation_not_supported"
+REASON_FILL_NOT_SOLID = "fill_not_solid"
+REASON_LINE_NOT_SOLID = "line_not_solid"
+REASON_TEXT_BASE_ONLY = "text_base_only"
+# A body whose *paragraph layout* the canonical orthography cannot express: an
+# inter-paragraph spacing, or an empty paragraph whose line the rebuild sizes from
+# the wrong run.  Distinct from ``text_base_only``, which is about a text
+# *property* the slide does not own; this one is about the paragraph structure
+# itself, and it is why such a body is represented by its own object-local paint
+# rather than by an editable rebuild that would paint it wrong.
+REASON_TEXT_PARAGRAPH_LAYOUT_BASE_ONLY = "text_paragraph_layout_base_only"
+# A list item whose level is above 0.  The Contract's declared list surface is
+# top-level-only (``LIST_LEVELS == (0,)``), and a flat emission does not merely
+# lose an indent: PowerPoint continues an automatic number at level 0, so the
+# source's "1." came out as "2.".  Refused rather than emitted at the wrong level.
+REASON_LIST_LEVEL_NOT_SUPPORTED = "list_level_not_supported"
+REASON_KIND_UNMAPPED = "kind_not_mapped"
+REASON_PROXY_ASSETS_UNAVAILABLE = "proxy_assets_unavailable"
+REASON_PROXY_ISOLATION_UNAVAILABLE = "proxy_isolation_unavailable"
+REASON_CONTAINER_OWNED = "container_owned_object"
+REASON_CONTAINER_REPRESENTATION_UNAVAILABLE = "container_representation_unavailable"
+# A container whose children cannot be represented inside its own rectangle:
+# neither the declared group transform nor OfficeCLI's own reported rectangles
+# puts visible paint there, or the container owns a nested container or an
+# object with no reconstruction path.  The container is reported with this code
+# rather than represented by a fabricated proxy.
+REASON_CONTAINER_CHILD_SPACE_UNRECONCILED = "container_child_space_unreconciled"
+
+REASON_CODES = frozenset(
+    {
+        REASON_NON_CANONICAL_KIND,
+        REASON_PICTURE_SOURCE_MISSING,
+        REASON_PICTURE_BASE_ONLY,
+        REASON_TABLE_CELLS_MERGED,
+        REASON_TABLE_COLUMN_WIDTHS_MISMATCH,
+        REASON_TABLE_COLUMN_WIDTH_INVALID,
+        REASON_TABLE_ROW_HEIGHT_INVALID,
+        REASON_TABLE_CELL_MATRIX_MISMATCH,
+        REASON_TABLE_BASE_ONLY,
+        REASON_GEOMETRY_MISSING,
+        REASON_GEOMETRY_NOT_CANONICAL,
+        REASON_ROTATION_UNSUPPORTED,
+        REASON_FILL_NOT_SOLID,
+        REASON_LINE_NOT_SOLID,
+        REASON_TEXT_BASE_ONLY,
+        REASON_TEXT_PARAGRAPH_LAYOUT_BASE_ONLY,
+        REASON_LIST_LEVEL_NOT_SUPPORTED,
+        REASON_KIND_UNMAPPED,
+        REASON_PROXY_ASSETS_UNAVAILABLE,
+        REASON_PROXY_ISOLATION_UNAVAILABLE,
+        REASON_CONTAINER_OWNED,
+        REASON_CONTAINER_REPRESENTATION_UNAVAILABLE,
+        REASON_CONTAINER_CHILD_SPACE_UNRECONCILED,
+    }
+)
 
 PROJECTED_KIND_SHAPE = "shape"
 PROJECTED_KIND_TEXTBOX = "textbox"
 PROJECTED_KIND_PICTURE = "picture"
 PROJECTED_KIND_TABLE = "table"
 PROJECTED_KIND_IMAGE = "image"
+
+# The New Deck compiler names an emitted object after the object it actually
+# creates, so a projected kind that is a *canvas* kind rather than a compiled
+# kind has to be translated before it can be used as an emitted name.  A locked
+# proxy is a canvas ``image``: the compiler rebuilds it as one native picture,
+# so its emitted name says ``picture``.  Every other projected kind is already
+# the compiler's own kind word.  Without this map, ``emitted_name`` would name an
+# object the rebuilt deck does not contain, and a readback could only locate the
+# proxy by geometry.
+COMPILED_KIND_BY_PROJECTED_KIND = {
+    PROJECTED_KIND_SHAPE: PROJECTED_KIND_SHAPE,
+    PROJECTED_KIND_TEXTBOX: PROJECTED_KIND_TEXTBOX,
+    PROJECTED_KIND_PICTURE: PROJECTED_KIND_PICTURE,
+    PROJECTED_KIND_TABLE: PROJECTED_KIND_TABLE,
+    PROJECTED_KIND_IMAGE: PROJECTED_KIND_PICTURE,
+}
 
 _INLINE_SEMANTIC = {
     ("bold", "single"): "strong",
@@ -111,12 +232,361 @@ class ProjectionError(RuntimeError):
     A reader failure is re-raised as this type at the seam, so a caller of
     :func:`project_pptx_to_author_html` only needs one exception family whether
     the failure came from reading the source deck or from publishing the
-    result.
+    result.  Every failure carries a stable :attr:`code` plus the structured
+    diagnostics that produced it, so a caller never has to match on prose.
     """
+
+    code = "projection_failed"
+    # Class-level defaults so a subclass that brings its own ``__init__`` (the
+    # missing-page failure reuses the reader's) still answers the whole family's
+    # interface.  They are never mutated.
+    source_key: str | None = None
+    source_path: str | None = None
+    source_slide: int | None = None
+    source_object: str | None = None
+    diagnostics: Sequence["ProjectionDiagnostic"] = ()
+    evidence: Mapping[str, Any] = {}
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        source_key: str | None = None,
+        source_path: str | None = None,
+        source_slide: int | None = None,
+        source_object: str | None = None,
+        diagnostics: Sequence["ProjectionDiagnostic"] = (),
+        **evidence: Any,
+    ) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+        self.source_key = source_key
+        self.source_path = source_path
+        self.source_slide = source_slide
+        self.source_object = source_object
+        self.diagnostics = tuple(diagnostics)
+        self.evidence = dict(evidence)
+
+    def diagnostic(self) -> "ProjectionDiagnostic":
+        """Return this failure as one structured, machine-readable diagnostic."""
+        return ProjectionDiagnostic(
+            code=self.code,
+            severity="error",
+            message=str(self),
+            source_key=self.source_key,
+            source_slide=self.source_slide,
+            source_object=self.source_object,
+            blocking=True,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "code": self.code,
+            "severity": "error",
+            "message": str(self),
+            "blocking": True,
+        }
+        if self.source_key is not None:
+            payload["source_key"] = self.source_key
+        if self.source_path is not None:
+            payload["source_path"] = self.source_path
+        if self.source_slide is not None:
+            payload["source_slide"] = self.source_slide
+        if self.source_object is not None:
+            payload["source_object"] = self.source_object
+        if self.diagnostics:
+            payload["diagnostics"] = [item.as_dict() for item in self.diagnostics]
+        payload.update(self.evidence)
+        return payload
+
+
+class ProjectionSelectionError(ProjectionError):
+    """The requested page selection is not a usable, explicit selection."""
+
+    code = "invalid_selection"
+
+
+class MissingPageError(MissingSlideError, ProjectionSelectionError):
+    """A selected source page does not exist in the deck it was selected from.
+
+    It is both the reader's missing-slide failure and a projection failure, so
+    the seam still raises exactly one exception family without leaking the
+    reader's own DTO to a caller.
+    """
+
+    code = "missing_page"
+
+
+class ProjectionSourceError(ProjectionError):
+    """A selected source could not be read, or the sources disagree."""
+
+    code = "unreadable_source"
+
+
+class SourceChangedError(ProjectionError):
+    """A source PPTX changed between capture and publication."""
+
+    code = "source_changed"
+
+
+class AmbiguousMappingError(ProjectionError):
+    """A source object or an emitted object does not map exactly one-to-one."""
+
+    code = "ambiguous_mapping"
+
+
+class ProjectionBlockedError(ProjectionError):
+    """The projection produced a blocking diagnostic and was not published.
+
+    The blocked run's ledger, source records, and diagnostics travel with the
+    failure so a reviewer can still audit exactly what was classified and why,
+    even though nothing was published.
+    """
+
+    code = "projection_blocked"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostics: Sequence["ProjectionDiagnostic"] = (),
+        ledger: Sequence["DispositionLedgerEntry"] = (),
+        objects: Sequence["ProjectedObject"] = (),
+        sources: Sequence["ProjectionSourceRecord"] = (),
+        selection: Sequence["SelectedPage"] = (),
+        **evidence: Any,
+    ) -> None:
+        super().__init__(
+            message,
+            diagnostics=diagnostics,
+            ledger=ledger,
+            objects=objects,
+            sources=sources,
+            selection=selection,
+            **evidence,
+        )
+        self.diagnostics = tuple(diagnostics)
+        self.ledger = tuple(ledger)
+        self.objects = tuple(objects)
+        self.sources = tuple(sources)
+        self.selection = tuple(selection)
+
+    def as_dict(self) -> dict[str, Any]:
+        payload = super().as_dict()
+        payload["ledger"] = [item.as_dict() for item in self.ledger]
+        payload["sources"] = [item.as_dict() for item in self.sources]
+        return payload
 
 
 class OutputCollisionError(ProjectionError):
     """The requested output destination already exists."""
+
+    code = "output_collision"
+
+
+@dataclass(frozen=True)
+class SelectedPage:
+    """One explicitly selected source page: a source PPTX and its page number.
+
+    The page number is always the page's number *in that deck*, never a position
+    in the caller's list, so a selection can be reordered without changing what
+    it means.
+    """
+
+    source_pptx: str
+    source_slide: int
+
+    def __post_init__(self) -> None:
+        value = self.source_pptx
+        if isinstance(value, bool) or not isinstance(value, (str, Path)):
+            raise ProjectionSelectionError(
+                "A selected page must name a source PPTX path; got "
+                f"{type(value).__name__}.",
+                code="invalid_selection",
+            )
+        path = Path(value).expanduser()
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path.absolute()
+        object.__setattr__(self, "source_pptx", str(resolved))
+        page = self.source_slide
+        if isinstance(page, bool) or not isinstance(page, int):
+            raise ProjectionSelectionError(
+                f"A selected source page must be an integer; got {page!r} for "
+                f"{resolved}.",
+                code="invalid_selection",
+                source_path=str(resolved),
+            )
+        if page < 1:
+            raise ProjectionSelectionError(
+                f"Source page numbers start at 1; got {page} for {resolved}.",
+                code="invalid_selection",
+                source_path=str(resolved),
+                source_slide=page,
+            )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source_path": self.source_pptx,
+            "source_page": self.source_slide,
+        }
+
+
+@dataclass(frozen=True)
+class PageSelection:
+    """An ordered, explicit selection of source pages from one or more decks."""
+
+    pages: tuple[SelectedPage, ...]
+
+    def __init__(self, pages: Iterable[SelectedPage | tuple[str, int]]) -> None:
+        object.__setattr__(self, "pages", tuple(_coerce_page(item) for item in pages))
+
+    def __iter__(self) -> Any:
+        return iter(self.pages)
+
+    def __len__(self) -> int:
+        return len(self.pages)
+
+    def __getitem__(self, index: int) -> SelectedPage:
+        return self.pages[index]
+
+    @property
+    def source_paths(self) -> tuple[str, ...]:
+        """The distinct sources, in first-appearance order."""
+        ordered: list[str] = []
+        for page in self.pages:
+            if page.source_pptx not in ordered:
+                ordered.append(page.source_pptx)
+        return tuple(ordered)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "page_count": len(self.pages),
+            "source_count": len(self.source_paths),
+            "pages": [page.as_dict() for page in self.pages],
+        }
+
+
+def _coerce_page(value: Any) -> SelectedPage:
+    if isinstance(value, SelectedPage):
+        return value
+    if isinstance(value, (tuple, list)) and len(value) == 2:
+        return SelectedPage(value[0], value[1])
+    raise ProjectionSelectionError(
+        "A selection entry must be a SelectedPage or a (source_pptx, page) "
+        f"pair; got {value!r}.",
+        code="invalid_selection",
+    )
+
+
+@dataclass(frozen=True)
+class ProjectionSourceRecord:
+    """One distinct source deck of a projection run, and how it was verified."""
+
+    source_key: str
+    source_path: str
+    source_sha256: str
+    slide_count: int
+    slide_size_pt: tuple[float, float]
+    selected_pages: tuple[int, ...]
+    hash_verified_before_capture: bool
+    hash_verified_before_publication: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source_key": self.source_key,
+            "path": self.source_path,
+            "sha256": self.source_sha256,
+            "slide_count": self.slide_count,
+            "slide_size_pt": list(self.slide_size_pt),
+            "selected_pages": list(self.selected_pages),
+            "hash_verified_before_capture": self.hash_verified_before_capture,
+            "hash_verified_before_publication": self.hash_verified_before_publication,
+        }
+
+
+@dataclass(frozen=True)
+class DispositionLedgerEntry:
+    """One source object's disposition, and the evidence behind it.
+
+    There is exactly one entry per slide-owned source object of every selected
+    page.  ``html_id``/``emitted_ordinal``/``emitted_name`` are ``None`` exactly
+    when the object is not emitted as an object of its own -- an owned child of
+    a container is represented by the container's own representation instead.
+    """
+
+    source_key: str
+    source_path: str
+    source_sha256: str
+    source_page: int
+    source_object: str
+    source_kind: str
+    source_name: str
+    source_fingerprint: str
+    owner: str | None
+    owner_kind: str | None
+    represented_by_container: bool
+    projected_kind: str
+    html_id: str | None
+    emitted_ordinal: int | None
+    emitted_name: str | None
+    disposition: str
+    reason_code: str | None
+    reason: str | None
+    unsupported_properties: tuple[str, ...] = ()
+
+    @property
+    def identity(self) -> tuple[str, int, str]:
+        """The one identity this entry is unique by."""
+        return (self.source_key, self.source_page, self.source_object)
+
+    @property
+    def emitted(self) -> bool:
+        """Whether this object is part of the published canonical/proxy set.
+
+        A blocking disposition (``unsupported`` or ``unresolved``) still keeps
+        its identity in the workbench DOM -- so it can be found and reviewed --
+        but it is never part of what the projection claims to have emitted, and
+        it makes the run blocking.
+        """
+        return (
+            self.html_id is not None
+            and self.disposition not in BLOCKING_DISPOSITIONS
+        )
+
+    @property
+    def blocking(self) -> bool:
+        return self.disposition in BLOCKING_DISPOSITIONS
+
+    def as_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "source_key": self.source_key,
+            "source_path": self.source_path,
+            "source_sha256": self.source_sha256,
+            "source_page": self.source_page,
+            "source_object": self.source_object,
+            "source_kind": self.source_kind,
+            "source_name": self.source_name,
+            "source_fingerprint": self.source_fingerprint,
+            "owner": self.owner,
+            "owner_kind": self.owner_kind,
+            "represented_by_container": self.represented_by_container,
+            "projected_kind": self.projected_kind,
+            "html_id": self.html_id,
+            "emitted_ordinal": self.emitted_ordinal,
+            "emitted_name": self.emitted_name,
+            "disposition": self.disposition,
+            "reason_code": self.reason_code,
+            "reason": self.reason,
+            "emitted": self.emitted,
+            "blocking": self.blocking,
+        }
+        if self.unsupported_properties:
+            payload["unsupported_properties"] = list(self.unsupported_properties)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -141,25 +611,61 @@ class ProjectedObject:
     source_fingerprint: str
     proxy_reason: str | None = None
     proxy_asset: str | None = None
+    # Where the published proxy image actually sits, in the reconstruction
+    # render's own pixels.  It is not always the declared rectangle: the image is
+    # cropped at the union of the declared rectangle and the object's measured
+    # painted extent, so a text object whose line overflows its own box keeps the
+    # overflow instead of being sliced at the box edge.  The emitter places the
+    # image by this geometry, and ``proxy_clamped`` records an expansion that
+    # reached the render's own edge and therefore had to be clamped there.
+    proxy_geometry: ProxyGeometry | None = None
+    proxy_clamped: bool = False
     unsupported_properties: tuple[str, ...] = ()
+    # Which deck this object came from, and the stable identity of that deck.
+    # ``source_slide`` above is the original page number in that deck.
+    source_key: str = ""
+    source_path: str = ""
+    source_file: str = ""
+    source_sha256: str = ""
+    reason_code: str | None = None
+    #: The text formatting the *source object* declares, captured at read time.
+    #:
+    #: Carried here so the acceptance gate can compare the rebuilt PPTX against
+    #: what the source actually declared.  Without it the gate could only re-parse
+    #: the generated HTML, which is the artifact under test -- a style check that
+    #: compares the projection with itself.  Each entry is one paragraph:
+    #: ``{"align", "line_spacing", "space_before_pt", "space_after_pt",
+    #: "runs": ({"font","size","color","bold","italic","underline"}, ...)}``.
+    text_style: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def emitted_name(self) -> str:
         """The object name the New Deck compiler gives this projection slot.
 
         The compiler names every emitted object ``slide-NNN-<kind>-<ordinal>``
-        where NNN is the *output* slide index and the ordinal counts every
-        object that slide emitted before it, so the readback is located from
-        the projection's own identity rather than by geometry or ordinal
+        where NNN is the *output* slide index, ``<kind>`` is the compiled
+        object's own kind word (a locked proxy is compiled as a ``picture``, not
+        as the canvas ``image`` it is drawn with), and the ordinal counts every
+        object that slide emitted before it.  The readback is therefore located
+        from the projection's own identity rather than by geometry or ordinal
         guessing.
         """
         return (
             f"slide-{self.output_slide:03d}-"
-            f"{self.projected_kind}-{self.emitted_ordinal:03d}"
+            f"{COMPILED_KIND_BY_PROJECTED_KIND.get(self.projected_kind, self.projected_kind)}"
+            f"-{self.emitted_ordinal:03d}"
         )
+
+    @property
+    def identity(self) -> tuple[str, int, str]:
+        return (self.source_key, self.source_slide, self.source_object)
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
+            "source_key": self.source_key,
+            "source_path": self.source_path,
+            "source_file": self.source_file,
+            "source_sha256": self.source_sha256,
             "source_slide": self.source_slide,
             "output_slide": self.output_slide,
             "source_object": self.source_object,
@@ -178,12 +684,18 @@ class ProjectedObject:
         }
         if self.reason:
             payload["reason"] = self.reason
+        if self.reason_code:
+            payload["reason_code"] = self.reason_code
         if self.base_only:
             payload["base_only"] = [claim.as_dict() for claim in self.base_only]
         if self.proxy_reason:
             payload["proxy_reason"] = self.proxy_reason
         if self.proxy_asset:
             payload["proxy_asset"] = self.proxy_asset
+        if self.proxy_geometry is not None:
+            payload["proxy_geometry"] = self.proxy_geometry.as_dict()
+        if self.proxy_clamped:
+            payload["proxy_clamped"] = True
         if self.unsupported_properties:
             payload["unsupported_properties"] = list(self.unsupported_properties)
         return payload
@@ -199,6 +711,8 @@ class ProjectionDiagnostic:
     source_slide: int | None = None
     source_object: str | None = None
     blocking: bool = False
+    source_key: str | None = None
+    source_path: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -207,6 +721,10 @@ class ProjectionDiagnostic:
             "message": self.message,
             "blocking": self.blocking,
         }
+        if self.source_key is not None:
+            payload["source_key"] = self.source_key
+        if self.source_path is not None:
+            payload["source_path"] = self.source_path
         if self.source_slide is not None:
             payload["source_slide"] = self.source_slide
         if self.source_object is not None:
@@ -216,7 +734,12 @@ class ProjectionDiagnostic:
 
 @dataclass(frozen=True)
 class ProjectedSlide:
-    """One projected slide: its source identity, canvas, and object list."""
+    """One projected page: its source identity, canvas, and object list.
+
+    ``source_slide`` is the page's original number in its own deck and
+    ``output_slide`` is its 1-based position in the emitted document, which is
+    the caller's selection order.
+    """
 
     source_slide: int
     html_id: str
@@ -224,6 +747,11 @@ class ProjectedSlide:
     height_px: float
     background: str
     objects: tuple[ProjectedObject, ...]
+    output_slide: int = 0
+    source_key: str = ""
+    source_path: str = ""
+    source_file: str = ""
+    source_sha256: str = ""
 
     @property
     def native_objects(self) -> tuple[ProjectedObject, ...]:
@@ -239,10 +767,32 @@ class ProjectedSlide:
             item for item in self.objects if item.disposition in PROXY_DISPOSITIONS
         )
 
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source_key": self.source_key,
+            "source_path": self.source_path,
+            "source_file": self.source_file,
+            "source_sha256": self.source_sha256,
+            "source_slide": self.source_slide,
+            "output_slide": self.output_slide,
+            "html_id": self.html_id,
+            "object_count": len(self.objects),
+            "canonical_editable": len(self.native_objects),
+            "locked_or_base_only": len(self.proxy_objects),
+            "objects": [item.as_dict() for item in self.objects],
+        }
+
 
 @dataclass(frozen=True)
 class ProjectionResult:
-    """The artifact set and structured projection facts of one probe run."""
+    """The artifact set and structured projection facts of one run.
+
+    ``source_path``/``source_sha256``/``source_slide_size_pt``/
+    ``source_slide_count`` describe the *primary* (first) source of a
+    multi-source run and keep the V0.4.1 single-deck reading exact; ``sources``
+    is the authoritative per-source record and ``ledger`` the authoritative
+    per-object classification.
+    """
 
     output_html: str
     html_sha256: str | None
@@ -263,6 +813,9 @@ class ProjectionResult:
     projection_report: Mapping[str, Any]
     diagnostics: tuple[ProjectionDiagnostic, ...]
     published: bool
+    ledger: tuple[DispositionLedgerEntry, ...] = ()
+    sources: tuple[ProjectionSourceRecord, ...] = ()
+    selection: tuple[SelectedPage, ...] = ()
 
     @property
     def blocking(self) -> bool:
@@ -272,9 +825,15 @@ class ProjectionResult:
     def html_path(self) -> Path:
         return Path(self.output_html)
 
+    @property
+    def blocking_dispositions(self) -> tuple[DispositionLedgerEntry, ...]:
+        """The ledger entries that make this projection unacceptable."""
+        return tuple(item for item in self.ledger if item.blocking)
+
     def disposition_counts(self) -> dict[str, int]:
+        """Count dispositions over the ledger, one per slide-owned object."""
         counts = {name: 0 for name in DISPOSITIONS}
-        for item in self.objects:
+        for item in self.ledger:
             counts[item.disposition] = counts.get(item.disposition, 0) + 1
         return counts
 
@@ -312,6 +871,36 @@ def _px(points: float, pixels_per_point: float) -> float:
     return round(points * pixels_per_point, 4)
 
 
+#: One Chromium layout unit: Blink snaps layout to a 1/64 px grid.
+_LAYOUT_UNIT_PX = 1.0 / 64.0
+
+
+def _px_extent(points: float, pixels_per_point: float) -> float:
+    """Return an emitted *width* or *height* in px, biased up by one layout unit.
+
+    A box's own size is re-measured by the browser when the emitted HTML is laid
+    out, and Blink snaps that layout to a 1/64 px grid: a box declared 19.4061px
+    wide is measured at 19.3906px, one unit narrower.  For almost every object that
+    is invisible -- 0.008pt -- but it is not always harmless, and the case that
+    proved it is on src3 pages 2 and 21: a page number's box is 9.7031pt wide, the
+    text fills it exactly, and the rebuilt box came out one layout unit narrower
+    (123,130 EMU against the source's 123,229).  PowerPoint's shrink-to-fit then
+    stopped shrinking and *wrapped* the two digits onto two lines, where the source
+    paints "02" on one.
+
+    So an extent is emitted half a pixel-unit larger than measured, which is enough
+    to survive one snap in either direction and cannot re-wrap anything: a box that
+    is a hair wider than its source is the direction that preserves the source's own
+    line breaks, which is what this projection exists to do.  Position is not
+    biased -- a box that is 0.008pt wider to the right moves nothing.
+
+    The two sides of a box that callers *compare* (a proxy's target rectangle, a
+    table's bounds) keep the unbiased figure in ``bounds_pt``; this only changes the
+    extent written into the emitted CSS and the numbers derived from it.
+    """
+    return round(points * pixels_per_point + _LAYOUT_UNIT_PX, 4)
+
+
 def _style(pairs: Iterable[tuple[str, str]]) -> str:
     return "; ".join(f"{name}: {value}" for name, value in pairs if value)
 
@@ -327,6 +916,48 @@ def _round_rect_radius_px(obj: CapturedObject, pixels_per_point: float) -> float
     width_px = _px(obj.bounds_pt[2], pixels_per_point)
     height_px = _px(obj.bounds_pt[3], pixels_per_point)
     return round(min(width_px, height_px) * 0.16667, 4)
+
+
+def _declared_geometry(obj: CapturedObject) -> str | None:
+    """Return the preset geometry the emitted object must declare, if any.
+
+    A rect is a block box and a roundRect is its ``border-radius``, so the shape
+    lowering path can infer both from CSS.  An ellipse and a rightArrow cannot
+    be inferred that way, so the emitted object names the preset it must be
+    rebuilt as.  ``rect`` and ``roundRect`` declare nothing, which keeps their
+    emitted HTML exactly what V0.4.1 published.
+    """
+    if obj.geometry in ADMITTED_PRESET_GEOMETRIES:
+        return obj.geometry
+    return None
+
+
+def _fill_alpha(obj: CapturedObject) -> float:
+    """Return the opacity a shape's fill really paints at.
+
+    OfficeCLI reports one fill opacity through two spellings at once -- the
+    alpha byte of the fill token (``#D9666680``) and the object's own
+    ``opacity`` -- so the value is the smaller of the two readings, never their
+    product: multiplying them would rebuild a 50% shape at 25%.
+    """
+    return min(obj.fill_alpha, obj.opacity)
+
+
+def _alpha_color(color: str, alpha: float) -> str:
+    """Return ``color`` as a CSS colour carrying ``alpha``.
+
+    The canonical shape surface declares a fill and an outline as CSS colours,
+    and CSS rgba is what makes a PowerPoint alpha value survive the lowering:
+    the compiler reads the alpha back out of the computed colour.  A fully
+    opaque value keeps the plain six-digit form.
+    """
+    if alpha >= 0.999:
+        return color
+    raw = color.lstrip("#")
+    if len(raw) != 6:
+        return color
+    red, green, blue = (int(raw[index : index + 2], 16) for index in (0, 2, 4))
+    return f"rgba({red}, {green}, {blue}, {max(0.0, min(1.0, alpha)):.4f})"
 
 
 def _font_stack(family: str) -> str:
@@ -534,6 +1165,176 @@ def _object_line_height(
     return f"{_px(points, pixels_per_point):g}px" if points > 0 else None
 
 
+def _paragraph_join() -> str:
+    """Return the separator the emitted text body writes between paragraphs.
+
+    One separator, named once, because it is load-bearing in both directions.
+    The Canonical Author paragraph orthography has a paragraph boundary and
+    nothing else, so the compiled deck gets one native paragraph per authored
+    paragraph; and ``<br>`` is the one place ordinary content declares a break,
+    which is how the measured flow turns the boundary into a paragraph.
+
+    Without it two paragraphs' words are simply adjacent: the projection once
+    published the hard-break paragraph's two authored lines as
+    ``Hard break probe linesecond visual line`` in the rebuilt deck, which is
+    text corruption rather than a spacing difference.
+    """
+    return "<br>"
+
+
+def _is_list_object(obj: CapturedObject) -> bool:
+    """Whether this object's whole text body is one PowerPoint list.
+
+    One object is one list only when every paragraph it holds is a list
+    paragraph.  A mixed body -- a list item next to an ordinary paragraph -- has
+    no single native representation, so it keeps the paragraph path rather than
+    dropping the paragraphs that are not items.
+    """
+    return bool(obj.paragraphs) and all(
+        str(paragraph.bullet or "none").lower() not in {"", "none", "false", "no"}
+        for paragraph in obj.paragraphs
+    )
+
+
+def _list_marker_declaration(paragraph: CapturedParagraph) -> str:
+    """Return the ``list-style-type`` that declares this item's own marker.
+
+    The list element carries the marker preset for the items that share it, so
+    only an item that differs has to declare one: an item marked ``none``
+    declares no marker, a numbered item inside an unnumbered list declares
+    ``decimal``, and a bullet declares the bullet preset of its own level.  The
+    declaration is exactly that -- a declaration.  The marker itself is never
+    written as text, and the lowering turns the value into ``a:buChar`` or
+    ``a:buAutoNum``.
+    """
+    marker = str(paragraph.bullet or "none").strip().lower()
+    if marker in {"", "none", "false", "no", "null"}:
+        return "none"
+    if marker == "numbered":
+        return "decimal"
+    return "circle" if paragraph.level > 0 else "disc"
+
+
+def _list_tag(paragraph: CapturedParagraph) -> str:
+    """Return the list element the first item's marker needs: ``ul`` or ``ol``."""
+    marker = str(paragraph.bullet or "").strip().lower()
+    return "ol" if marker == "numbered" else "ul"
+
+
+def _emit_list_html(
+    obj: CapturedObject,
+    *,
+    pixels_per_point: float,
+    inherited_family: str,
+    inherited_size_pt: float,
+    inherited_color: str | None,
+    inherited_bold: bool,
+    inherited_italic: bool,
+) -> str:
+    """Return one Native List Textbox: one list element, one item per paragraph.
+
+    The New Deck list surface is one ``ul``/``ol`` per list object with one item
+    per direct ``li``, and each item's marker and indentation become native
+    paragraph properties.  The projector therefore has to *express* the list --
+    an object whose paragraphs are list paragraphs cannot be emitted as bare
+    text, because the marker is not characters and no run of the body carries it.
+
+    A number in a numbered item is never written as text either: the item's
+    ``list-style-type`` is a declaration, and OfficeCLI writes ``a:buAutoNum``
+    for it, exactly as it writes ``a:buChar`` for a bullet.
+
+    ``margin-left`` carries the item's own indent, which is how a nested item
+    stays indented even though the declared surface is top-level-only and a
+    literally nested list is outside it.
+
+    That indentation is all the surface carries.  A level above 0 is **not**
+    representable: emitting the item flat changes an automatic number, because
+    PowerPoint continues the counter at level 0 -- the source paints "1." on a
+    nested numbered item and the flat rebuild painted "2.".  Declaring the level by
+    nesting is not available either, and that was measured rather than assumed:
+    nesting inside the item above is accepted by a *browser* but the lowering then
+    produced an empty text body for the whole object, because the measurement reads
+    an element's paragraphs from its own flow and a list nested inside an item is
+    not that.  So such a body is refused by :func:`_classify` with a reason, rather
+    than emitted at the wrong level or at no level at all.
+    """
+    parts: list[str] = [f"<{_list_tag(obj.paragraphs[0])}>"]
+    first_style = _paragraph_style(obj.paragraphs[0])
+    if first_style:
+        # One list is one paragraph set, so the list's own alignment and
+        # direction are declared on the group rather than repeated per item.
+        parts[0] = f'<{_list_tag(obj.paragraphs[0])} style="{_esc(first_style, quote=True)}">'
+    for paragraph in obj.paragraphs:
+        declarations: list[tuple[str, str]] = [
+            ("list-style-type", _list_marker_declaration(paragraph)),
+            # The object block declares ``white-space: pre`` so a text body never
+            # soft-wraps where the source did not.  An item is not that case: the
+            # declared list surface re-wraps an item inside the measured list
+            # bounds, so the item takes the ordinary flow back.
+            ("white-space", "normal"),
+        ]
+        indent_px = _px(
+            _LIST_INDENT_PT_PER_LEVEL * max(0, paragraph.level), pixels_per_point
+        )
+        declarations.append(("margin-left", f"{indent_px:g}px"))
+        item_style = _style(declarations)
+        parts.append(
+            f'<li style="{_esc(item_style, quote=True)}">'
+            + _paragraph_runs_html(
+                paragraph,
+                pixels_per_point=pixels_per_point,
+                inherited_family=inherited_family,
+                inherited_size_pt=inherited_size_pt,
+                inherited_color=inherited_color,
+                inherited_bold=inherited_bold,
+                inherited_italic=inherited_italic,
+            )
+            + "</li>"
+        )
+    parts.append(f"</{_list_tag(obj.paragraphs[0])}>")
+    return "".join(parts)
+
+
+# How far one list level indents its items, in points.  A nested list item is
+# indented by its own level rather than by a nested list element, because the
+# declared list surface is one top-level list and a nested one is outside it.
+_LIST_INDENT_PT_PER_LEVEL = 22.0
+
+
+def _paragraph_runs_html(
+    paragraph: CapturedParagraph,
+    *,
+    pixels_per_point: float,
+    inherited_family: str,
+    inherited_size_pt: float,
+    inherited_color: str | None,
+    inherited_bold: bool,
+    inherited_italic: bool,
+) -> str:
+    """Return one paragraph's own runs, in source order."""
+    parts: list[str] = []
+    paragraph_style = _paragraph_style(paragraph)
+    for run in paragraph.runs:
+        style, semantic = _run_style(
+            paragraph,
+            run,
+            pixels_per_point=pixels_per_point,
+            inherited_family=inherited_family,
+            inherited_size_pt=inherited_size_pt,
+            inherited_color=inherited_color,
+            inherited_bold=inherited_bold,
+            inherited_italic=inherited_italic,
+        )
+        element = _run_text_element(run.text, style, semantic)
+        if paragraph_style and semantic:
+            parts.append(
+                f'<span style="{_esc(paragraph_style, quote=True)}">{element}</span>'
+            )
+        else:
+            parts.append(element)
+    return "".join(parts)
+
+
 def _emit_paragraph_html(
     obj: CapturedObject,
     *,
@@ -544,18 +1345,25 @@ def _emit_paragraph_html(
     inherited_bold: bool,
     inherited_italic: bool,
 ) -> str:
+    if _is_list_object(obj):
+        return _emit_list_html(
+            obj,
+            pixels_per_point=pixels_per_point,
+            inherited_family=inherited_family,
+            inherited_size_pt=inherited_size_pt,
+            inherited_color=inherited_color,
+            inherited_bold=inherited_bold,
+            inherited_italic=inherited_italic,
+        )
     parts: list[str] = []
     for index, paragraph in enumerate(obj.paragraphs):
         if index:
-            parts.append("<br>")
-        paragraph_style = _paragraph_style(paragraph)
-        runs = list(paragraph.runs)
-        if not runs:
+            parts.append(_paragraph_join())
+        if not paragraph.runs:
             continue
-        for run in runs:
-            style, semantic = _run_style(
+        parts.append(
+            _paragraph_runs_html(
                 paragraph,
-                run,
                 pixels_per_point=pixels_per_point,
                 inherited_family=inherited_family,
                 inherited_size_pt=inherited_size_pt,
@@ -563,11 +1371,7 @@ def _emit_paragraph_html(
                 inherited_bold=inherited_bold,
                 inherited_italic=inherited_italic,
             )
-            element = _run_text_element(run.text, style, semantic)
-            if paragraph_style and semantic:
-                parts.append(f'<span style="{_esc(paragraph_style, quote=True)}">{element}</span>')
-            else:
-                parts.append(element)
+        )
     return "".join(parts)
 
 
@@ -584,13 +1388,17 @@ def _object_capabilities(obj: CapturedObject) -> dict[str, bool]:
     }
 
 
-def _classify(obj: CapturedObject) -> tuple[str, str | None, tuple[str, ...]]:
-    """Return ``(disposition, reason, unsupported_properties)`` for one object.
+def _classify(
+    obj: CapturedObject,
+) -> tuple[str, str | None, tuple[str, ...], str | None]:
+    """Return ``(disposition, reason, unsupported_properties, reason_code)``.
 
     The classification reads only what OfficeCLI reported.  A value the slide
     does not own is never silently presented as a slide-owned editable object,
     and an object whose native geometry has no canonical equivalent is never
-    declared editable merely because it is visually present.
+    declared editable merely because it is visually present.  Every
+    non-canonical outcome carries a stable machine-readable reason code as well
+    as the human sentence, so the ledger can be audited without parsing prose.
     """
     if obj.source_kind in NON_CANONICAL_KINDS:
         return (
@@ -598,6 +1406,7 @@ def _classify(obj: CapturedObject) -> tuple[str, str | None, tuple[str, ...]]:
             f"OfficeCLI reports {obj.source_kind!r}, which the current Author "
             "object surface cannot reproduce with its native semantics.",
             (),
+            REASON_NON_CANONICAL_KIND,
         )
     if obj.source_kind == "picture":
         if obj.picture is None:
@@ -605,6 +1414,7 @@ def _classify(obj: CapturedObject) -> tuple[str, str | None, tuple[str, ...]]:
                 DISPOSITION_UNRESOLVED,
                 "OfficeCLI reported a picture without a usable embedded source.",
                 (),
+                REASON_PICTURE_SOURCE_MISSING,
             )
         if obj.base_only:
             return (
@@ -612,14 +1422,16 @@ def _classify(obj: CapturedObject) -> tuple[str, str | None, tuple[str, ...]]:
                 "The picture's visible appearance depends on a value the slide "
                 "does not own.",
                 (),
+                REASON_PICTURE_BASE_ONLY,
             )
-        return DISPOSITION_CANONICAL, None, ()
+        return DISPOSITION_CANONICAL, None, (), None
     if obj.source_kind == "table":
         if obj.table is None:
             return (
                 DISPOSITION_UNRESOLVED,
                 "OfficeCLI reported a table without a readable matrix.",
                 (),
+                REASON_TABLE_CELL_MATRIX_MISMATCH,
             )
         merged = [cell for cell in obj.table.cells if cell.merged]
         if merged:
@@ -628,30 +1440,35 @@ def _classify(obj: CapturedObject) -> tuple[str, str | None, tuple[str, ...]]:
                 "Merged table cells are outside the current Author table "
                 f"surface ({len(merged)} merged cell(s)).",
                 ("merged_cells",),
+                REASON_TABLE_CELLS_MERGED,
             )
         if not obj.table.column_widths_pt or len(obj.table.column_widths_pt) != obj.table.columns:
             return (
                 DISPOSITION_UNRESOLVED,
                 "The table's column widths do not match its reported column count.",
                 ("column_widths",),
+                REASON_TABLE_COLUMN_WIDTHS_MISMATCH,
             )
         if any(width <= 0 for width in obj.table.column_widths_pt):
             return (
                 DISPOSITION_UNSUPPORTED,
                 "The table reports a non-positive column width.",
                 ("column_widths",),
+                REASON_TABLE_COLUMN_WIDTH_INVALID,
             )
         if any(value <= 0 for value in obj.table.row_heights_pt):
             return (
                 DISPOSITION_UNSUPPORTED,
                 "The table reports a non-positive row height.",
                 ("row_heights",),
+                REASON_TABLE_ROW_HEIGHT_INVALID,
             )
         if obj.table.rows * obj.table.columns != len(obj.table.cells):
             return (
                 DISPOSITION_UNRESOLVED,
                 "The table's cell count does not match its reported matrix.",
                 ("cell_matrix",),
+                REASON_TABLE_CELL_MATRIX_MISMATCH,
             )
         if obj.base_only:
             return (
@@ -659,8 +1476,9 @@ def _classify(obj: CapturedObject) -> tuple[str, str | None, tuple[str, ...]]:
                 "The table's visible appearance depends on a value the slide "
                 "does not own.",
                 (),
+                REASON_TABLE_BASE_ONLY,
             )
-        return DISPOSITION_CANONICAL, None, ()
+        return DISPOSITION_CANONICAL, None, (), None
     if obj.source_kind in {"shape", "textbox"}:
         if obj.geometry is None:
             return (
@@ -668,6 +1486,7 @@ def _classify(obj: CapturedObject) -> tuple[str, str | None, tuple[str, ...]]:
                 "OfficeCLI reported no geometry preset for this object, so its "
                 "native outline cannot be declared.",
                 ("geometry",),
+                REASON_GEOMETRY_MISSING,
             )
         if obj.geometry not in CANONICAL_GEOMETRIES:
             return (
@@ -675,13 +1494,17 @@ def _classify(obj: CapturedObject) -> tuple[str, str | None, tuple[str, ...]]:
                 f"The {obj.geometry!r} preset has no canonical Author object "
                 "equivalent.",
                 ("geometry",),
+                REASON_GEOMETRY_NOT_CANONICAL,
             )
-        if abs(obj.rotation_deg) > 0.01:
+        if obj.mirrored or (
+            abs(obj.rotation_deg) > 0.01
+            and obj.geometry not in ADMITTED_PRESET_GEOMETRIES
+        ):
             return (
                 DISPOSITION_LOCKED,
-                "A rotated object's native transform is not part of the "
-                "canonical Author object surface.",
+                _transform_reason(obj),
                 ("rotation",),
+                REASON_ROTATION_UNSUPPORTED,
             )
         if obj.fill is None and _declares_fill(obj) and not _fill_is_none(obj):
             return (
@@ -689,6 +1512,7 @@ def _classify(obj: CapturedObject) -> tuple[str, str | None, tuple[str, ...]]:
                 f"The slide fill {obj.opaque_properties.get('fill')!r} is not a "
                 "plain solid color.",
                 ("fill",),
+                REASON_FILL_NOT_SOLID,
             )
         if obj.line_color is None and _declares_line(obj) and not _line_is_none(obj):
             return (
@@ -696,6 +1520,7 @@ def _classify(obj: CapturedObject) -> tuple[str, str | None, tuple[str, ...]]:
                 f"The slide outline {obj.opaque_properties.get('line')!r} is not "
                 "a plain solid color.",
                 ("line",),
+                REASON_LINE_NOT_SOLID,
             )
         if obj.base_only:
             return (
@@ -704,13 +1529,161 @@ def _classify(obj: CapturedObject) -> tuple[str, str | None, tuple[str, ...]]:
                 "slide does not own: "
                 + ", ".join(sorted(obj.base_only_properties)),
                 (),
+                REASON_TEXT_BASE_ONLY,
             )
-        return DISPOSITION_CANONICAL, None, ()
+        paragraph_layout = _paragraph_layout_reason(obj)
+        if paragraph_layout is not None:
+            return (
+                DISPOSITION_BASE_ONLY,
+                paragraph_layout,
+                (),
+                REASON_TEXT_PARAGRAPH_LAYOUT_BASE_ONLY,
+            )
+        list_level = _list_level_reason(obj)
+        if list_level is not None:
+            # A level the *contract* does not declare: the surface now understands
+            # nesting up to ``contract.LIST_LEVELS``, and anything deeper has no
+            # representation at all.
+            return (
+                DISPOSITION_UNSUPPORTED,
+                list_level,
+                ("list_level",),
+                REASON_LIST_LEVEL_NOT_SUPPORTED,
+            )
+        return DISPOSITION_CANONICAL, None, (), None
     return (
         DISPOSITION_LOCKED,
         f"OfficeCLI reports {obj.source_kind!r}, which has no canonical Author "
         "object mapping.",
         (),
+        REASON_KIND_UNMAPPED,
+    )
+
+
+def _list_level_reason(obj: CapturedObject) -> str | None:
+    """Return why a list body's level is outside the declared surface, or ``None``.
+
+    The Author list surface is top-level-only -- ``contract.LIST_LEVELS`` is
+    ``(0,)``, and the Contract checker blocks a nested list as outside it -- so a
+    source item at level 1 has no representation.  Emitting it flat keeps its indent
+    and loses its level, and PowerPoint's automatic number *continues* at level 0:
+    the source paints "1." on a nested numbered item and the flat rebuild painted
+    "2.", which is a change of content rather than of position.
+
+    Declaring the level by nesting the list inside the item above was tried and
+    measured rather than assumed: a browser accepts it, but the lowering then
+    produced an **empty text body** for the whole object -- the measurement reads an
+    element's paragraphs from its own flow, and a list nested inside an item is not
+    that flow.  So the surface cannot express a level today, and widening it is a
+    change to the Contract's declared list surface plus the measurement seam, not a
+    change this projection may make on its own.
+
+    The body is therefore refused.  ``unsupported`` rather than ``base-only``: a
+    locked proxy of a list body carries the item texts but not their markers
+    either, so a picture would be a different wrong answer rather than an honest
+    one.
+    """
+    if not obj.paragraphs:
+        return None
+    deepest = max(LIST_LEVELS)
+    levels = sorted({paragraph.level for paragraph in obj.paragraphs if paragraph.level})
+    if not levels or levels[-1] <= deepest:
+        return None
+    return (
+        "The source body is a list whose items reach level "
+        + ", ".join(str(level) for level in levels)
+        + ", and the declared Author list surface is top-level-only "
+        f"(contract.LIST_LEVELS is {LIST_LEVELS}): an item emitted flat keeps its "
+        "indent but not its level, which changes an automatic number rather than "
+        "only its position."
+    )
+
+
+def _paragraph_layout_reason(obj: CapturedObject) -> str | None:
+    """Return why a body's paragraph layout is not representable, or ``None``.
+
+    The Canonical Author paragraph orthography has one separator and nothing else:
+    a projected body is one element whose paragraphs are its boundaries.  Two
+    things a real deck routinely declares cannot be expressed in it, and both were
+    silently lost before the acceptance gate could see them:
+
+    * **an inter-paragraph spacing.**  The Author Contract emits paragraph spacing
+      for a table cell's paragraphs, because a cell folds its child paragraphs into
+      one body.  A standalone body has no such surface, so a source paragraph the
+      deck spaces 6pt from the one above it is rebuilt flush -- the second
+      paragraph is painted where the source does not paint it.
+    * **an empty paragraph.**  The empty paragraph *is* projected, and OfficeCLI
+      then sizes its line from the run it associates with it, which is the
+      preceding paragraph's first run.  A blank line after a 20pt heading becomes a
+      20pt blank line where the source paints the body's 11pt one, which makes the
+      body taller than the source and can turn an overflow the source already has
+      into a materially worse one.
+
+    Both are outside what this projection can write, and neither may be answered by
+    comparing a representative value: the object is classified base-only and
+    represented by its own object-local paint, which keeps the *appearance* faithful
+    at the cost of editability, with the reason recorded in the ledger.  The cost is
+    real and is the honest one -- an editable rebuild that paints the page
+    differently is not a representation of the page.
+    """
+    if not obj.has_text or len(obj.paragraphs) < 2:
+        return None
+    previous_level = 0
+    for paragraph in obj.paragraphs:
+        # A list level is expressed by nesting, because that is what the
+        # measurement counts.  A jump of more than one step cannot be written
+        # without inventing an intervening empty item, which would add a paragraph
+        # the source does not paint, so the body is classified rather than emitted
+        # at the wrong level.
+        if paragraph.level > previous_level + 1:
+            return (
+                f"The source body's list level jumps from {previous_level} to "
+                f"{paragraph.level} in one step, and the canonical list surface "
+                "expresses a level by nesting, which can only descend one step at "
+                "a time."
+            )
+        previous_level = paragraph.level
+        if paragraph.space_before_pt or paragraph.space_after_pt:
+            return (
+                "The source body declares paragraph spacing ("
+                + ", ".join(
+                    f"{name} {value:g}pt"
+                    for name, value in (
+                        ("space before", paragraph.space_before_pt),
+                        ("space after", paragraph.space_after_pt),
+                    )
+                    if value
+                )
+                + "), and the canonical paragraph orthography carries paragraph "
+                "spacing only for a table cell's paragraphs."
+            )
+        if not paragraph.runs:
+            return (
+                "The source body draws an empty paragraph, whose line height the "
+                "rebuild sizes from the run OfficeCLI associates with it rather "
+                "than from the paragraph itself, so the rebuilt body would be "
+                "taller than the source's."
+            )
+    return None
+
+
+def _transform_reason(obj: CapturedObject) -> str:
+    """Return why an object's own transform keeps it off the canonical surface.
+
+    The canonical Author object surface carries exactly one transform: an
+    in-plane rotation, as ``transform: rotate(<deg>)``.  A mirror is not a
+    rotation, so no rotation reproduces it; and a preset whose transform this
+    slice does not admit keeps the V0.4.1 refusal and its wording.
+    """
+    if obj.mirrored:
+        return (
+            "A mirrored object's native transform is not part of the canonical "
+            "Author object surface: the surface carries an in-plane rotation and "
+            "no mirror."
+        )
+    return (
+        "A rotated object's native transform is not part of the "
+        "canonical Author object surface."
     )
 
 
@@ -734,6 +1707,28 @@ def _line_is_none(obj: CapturedObject) -> bool:
         "none",
         "transparent",
     }
+
+
+# The stroke width PowerPoint gives a shape whose line carries a colour but no
+# explicit width.  OfficeCLI reports such a shape's ``line`` colour and simply
+# omits ``lineWidth``, so reading the readback literally would give every one of
+# them a zero-width -- that is, invisible -- stroke, and the rebuilt deck would
+# silently lose the arrow and outline shapes the source deck paints.
+DEFAULT_LINE_WIDTH_PT = 1.0
+
+
+def _stroke_width_pt(obj: CapturedObject) -> float:
+    """Return the width this object's stroke is actually painted at.
+
+    A declared width is used verbatim.  A shape with no declared width but a
+    declared colour strokes at PowerPoint's default, which is what the source
+    deck draws; treating the missing width as zero would drop the stroke.
+    """
+    if obj.line_width_pt > 0:
+        return obj.line_width_pt
+    if obj.line_color and not _line_is_none(obj):
+        return DEFAULT_LINE_WIDTH_PT
+    return 0.0
 
 
 def _requires_proxy(obj: CapturedObject, disposition: str) -> bool:
@@ -822,6 +1817,63 @@ def _cropped_picture_source(obj: CapturedObject) -> tuple[str, dict[str, Any]]:
     return "data:image/png;base64," + encoded, evidence
 
 
+def _object_identity_attributes(obj: CapturedObject, projected: ProjectedObject) -> list[tuple[str, str]]:
+    """Return the non-authoritative source identity every object carries.
+
+    ``data-source-object`` stays the source's own OfficeCLI path -- the shape
+    the V0.4.1 seam published -- and the source key is added beside it, because
+    two decks can report the very same path for different objects.
+    """
+    return [
+        ("data-source-key", obj.source_key or projected.source_key),
+        ("data-source-slide", str(obj.source_slide)),
+        ("data-source-object", obj.source_object),
+        ("data-source-kind", obj.source_kind),
+        ("data-projection-disposition", projected.disposition),
+        ("data-projection-id", projected.html_id),
+    ]
+
+
+def _proxy_style(projected: ProjectedObject) -> str:
+    """Return the CSS that places one published proxy image.
+
+    The image is cropped at the union of the object's declared rectangle and the
+    object's measured painted extent, so its real rectangle is what the DOM has
+    to draw: placing it at the declared rectangle instead would rescale the crop
+    and move the paint.  The geometry carried out of the renderer is that real
+    rectangle, expressed as an offset from the declared rectangle's own origin
+    plus the crop's pixel size, which is exactly what an absolutely positioned
+    image drawn at the declared bounds needs.
+
+    An object whose paint stayed inside its own rectangle has an offset of
+    ``(-guard, -guard)`` and a size of ``declared + 2 * guard`` -- the geometry
+    this emitter has always written -- so nothing about a proxy that does not
+    overflow changes.
+    """
+    bounds_px = projected.bounds_px
+    geometry = projected.proxy_geometry
+    if geometry is None:
+        left = bounds_px[0] - PROXY_GUARD_PX
+        top = bounds_px[1] - PROXY_GUARD_PX
+        width = bounds_px[2] + PROXY_GUARD_PX * 2
+        height = bounds_px[3] + PROXY_GUARD_PX * 2
+    else:
+        left = bounds_px[0] + geometry.origin_px[0]
+        top = bounds_px[1] + geometry.origin_px[1]
+        width = float(geometry.rect_px[2])
+        height = float(geometry.rect_px[3])
+    return _style(
+        [
+            ("position", "absolute"),
+            ("left", f"{left:g}px"),
+            ("top", f"{top:g}px"),
+            ("width", f"{width:g}px"),
+            ("height", f"{height:g}px"),
+            ("object-fit", "fill"),
+        ]
+    )
+
+
 def _emit_object_html(
     obj: CapturedObject,
     *,
@@ -838,33 +1890,12 @@ def _emit_object_html(
         ("width", f"{bounds_px[2]:g}px"),
         ("height", f"{bounds_px[3]:g}px"),
     )
-    identity = [
-        ("data-source-slide", str(obj.source_slide)),
-        ("data-source-object", obj.source_object),
-        ("data-source-kind", obj.source_kind),
-        ("data-projection-disposition", projected.disposition),
-        ("data-projection-id", projected.html_id),
-    ]
+    identity = _object_identity_attributes(obj, projected)
     attributes = " ".join(
         f'{name}="{_esc(value, quote=True)}"' for name, value in identity
     )
     image_style = _esc(_style([*common, ("object-fit", "fill")]), quote=True)
-    proxy_style = _esc(
-        _style(
-            [
-                (
-                    "position",
-                    "absolute",
-                ),
-                ("left", f"{bounds_px[0] - PROXY_GUARD_PX:g}px"),
-                ("top", f"{bounds_px[1] - PROXY_GUARD_PX:g}px"),
-                ("width", f"{bounds_px[2] + PROXY_GUARD_PX * 2:g}px"),
-                ("height", f"{bounds_px[3] + PROXY_GUARD_PX * 2:g}px"),
-                ("object-fit", "fill"),
-            ]
-        ),
-        quote=True,
-    )
+    proxy_style = _esc(_proxy_style(projected), quote=True)
 
     if projected.projected_kind == PROJECTED_KIND_PICTURE and obj.picture is not None:
         source, _ = _cropped_picture_source(obj)
@@ -931,14 +1962,24 @@ def _emit_shape_html(
     if obj.has_text:
         declarations.append(("white-space", "pre"))
     if obj.fill:
-        declarations.append(("background-color", obj.fill))
-    if obj.line_color and obj.line_width_pt > 0:
-        width_px = _px(obj.line_width_pt, pixels_per_point)
-        declarations.append(("border", f"{width_px:g}px solid {obj.line_color}"))
+        # A PowerPoint alpha is the fill's own opacity, and the canvas has to
+        # carry it or a semi-transparent shape would be rebuilt opaque.
+        declarations.append(
+            ("background-color", _alpha_color(obj.fill, _fill_alpha(obj)))
+        )
+    if obj.line_color and _stroke_width_pt(obj) > 0:
+        width_px = _px(_stroke_width_pt(obj), pixels_per_point)
+        line_color = _alpha_color(obj.line_color, obj.line_alpha)
+        declarations.append(("border", f"{width_px:g}px solid {line_color}"))
     if obj.geometry == "roundRect":
         declarations.append(
             ("border-radius", f"{_round_rect_radius_px(obj, pixels_per_point):g}px")
         )
+    elif obj.geometry == "ellipse":
+        # The preset itself is declared on the element; the radius is what makes
+        # the Author canvas *draw* the ellipse the deck will contain, and CSS
+        # resolves a 50% radius per axis, so a non-square ellipse is one too.
+        declarations.append(("border-radius", "50%"))
     if obj.rotation_deg:
         declarations.append(("transform", f"rotate({obj.rotation_deg:g}deg)"))
     # The shape's own vertical anchor is deliberately not re-created with a
@@ -997,6 +2038,9 @@ def _emit_shape_html(
     attributes = " ".join(
         f'{name}="{_esc(value, quote=True)}"' for name, value in identity
     )
+    geometry = _declared_geometry(obj)
+    if geometry:
+        attributes += f' data-shape-geometry="{_esc(geometry, quote=True)}"'
     if projected.disposition in {DISPOSITION_LOCKED, DISPOSITION_BASE_ONLY}:
         attributes += ' data-projection-locked="true"'
     if projected.reason:
@@ -1018,13 +2062,7 @@ def _emit_table_html(
     bounds_px = projected.bounds_px
     identity = " ".join(
         f'{name}="{_esc(value, quote=True)}"'
-        for name, value in (
-            ("data-source-slide", str(obj.source_slide)),
-            ("data-source-object", obj.source_object),
-            ("data-source-kind", obj.source_kind),
-            ("data-projection-disposition", projected.disposition),
-            ("data-projection-id", projected.html_id),
-        )
+        for name, value in _object_identity_attributes(obj, projected)
     )
     wrapper_style = _style(
         [
@@ -1177,12 +2215,20 @@ def _document_html(
     *,
     source_name: str,
     source_sha256: str,
+    sources: Sequence[ProjectionSourceRecord],
     slides: Sequence[CapturedSlide],
     projected_slides: Sequence[ProjectedSlide],
     object_html: Mapping[str, str],
     canvas_px: tuple[float, float],
     pixels_per_point: float,
 ) -> str:
+    """Return the one Canonical Author document for the whole selection.
+
+    The ``.slide`` sections are written in selection order.  Each carries the
+    provenance of the page it came from -- source key, original page number,
+    source file and fingerprint -- while ``data-slide-number`` stays the
+    emitted, 1-based position the New Deck compiler numbers by.
+    """
     sections: list[str] = []
     for slide, projected in zip(slides, projected_slides):
         objects = "".join(
@@ -1190,8 +2236,11 @@ def _document_html(
         )
         sections.append(
             f'<section class="slide" '
+            f'data-source-key="{_esc(slide.source_key, quote=True)}" '
+            f'data-source-name="{_esc(projected.source_file, quote=True)}" '
+            f'data-source-sha256="{_esc(projected.source_sha256, quote=True)}" '
             f'data-source-slide="{slide.source_slide}" '
-            f'data-slide-number="{slide.source_slide}" '
+            f'data-slide-number="{projected.output_slide}" '
             f'style="position: relative; width: {canvas_px[0]:g}px; '
             f'height: {canvas_px[1]:g}px; overflow: hidden; '
             f'{_slide_background_style(slide)}">'
@@ -1236,6 +2285,8 @@ def _document_html(
         f'<div id="canonical-author-projection" '
         f'data-source-name="{_esc(source_name, quote=True)}" '
         f'data-source-sha256="{_esc(source_sha256, quote=True)}" '
+        f'data-source-count="{len(sources)}" '
+        f'data-selected-page-count="{len(projected_slides)}" '
         f'data-projection-schema="{PROJECTION_SCHEMA_VERSION}" '
         f'data-projection-canvas="{canvas_px[0]:g}x{canvas_px[1]:g}" '
         f'data-projection-pixels-per-point="{pixels_per_point:g}">\n'
@@ -1247,18 +2298,172 @@ def _document_html(
     )
 
 
+def _assert_one_to_one_mapping(build: _ProjectionBuild) -> None:
+    """Refuse a projection whose source/emitted mapping is not one-to-one.
+
+    Publication is the point of no return, so the invariant a reviewer depends
+    on is proved here instead of assumed: exactly one ledger entry per source
+    object, exactly one emitted object per mapped entry, and no identity shared
+    in either direction.  Nothing here guesses a mapping from geometry, order,
+    or object name -- an ambiguity is a blocking failure.
+    """
+    identities: dict[tuple[str, int, str], DispositionLedgerEntry] = {}
+    for entry in build.ledger:
+        if entry.disposition not in DISPOSITIONS:
+            raise AmbiguousMappingError(
+                f"The ledger reports an unknown disposition "
+                f"{entry.disposition!r} for {entry.source_object}.",
+                source_key=entry.source_key,
+                source_slide=entry.source_page,
+                source_object=entry.source_object,
+            )
+        if entry.identity in identities:
+            raise AmbiguousMappingError(
+                "Two ledger entries share the source identity "
+                f"{entry.identity}; a source object must be classified once.",
+                source_key=entry.source_key,
+                source_slide=entry.source_page,
+                source_object=entry.source_object,
+            )
+        if entry.represented_by_container and entry.emitted:
+            raise AmbiguousMappingError(
+                f"{entry.source_object} is owned by {entry.owner} and cannot also "
+                "be emitted as its own object.",
+                source_key=entry.source_key,
+                source_slide=entry.source_page,
+                source_object=entry.source_object,
+            )
+        identities[entry.identity] = entry
+
+    emitted: dict[str, ProjectedObject] = {}
+    for item in build.objects:
+        if item.html_id in emitted:
+            raise AmbiguousMappingError(
+                f"Two emitted objects share the html id {item.html_id!r}.",
+                source_key=item.source_key,
+                source_slide=item.source_slide,
+                source_object=item.source_object,
+            )
+        if item.html_id not in build.object_html:
+            raise AmbiguousMappingError(
+                f"The emitted object {item.html_id!r} has no DOM element.",
+                source_key=item.source_key,
+                source_slide=item.source_slide,
+                source_object=item.source_object,
+            )
+        emitted[item.html_id] = item
+
+    # The DOM is the mapping's other side: every classified object has exactly
+    # one element, and every element belongs to exactly one classified object,
+    # whatever its disposition.  A source object that is not emitted at all (an
+    # owned child) has no element and no entry here.
+    mapped = {entry.html_id: entry for entry in build.ledger if entry.html_id is not None}
+    if set(mapped) != set(emitted):
+        raise AmbiguousMappingError(
+            "The ledger and the emitted document disagree about which source "
+            "objects have an element: "
+            f"ledger-only={sorted(set(mapped) - set(emitted))}, "
+            f"emitted-only={sorted(set(emitted) - set(mapped))}."
+        )
+    for html_id, entry in mapped.items():
+        item = emitted[html_id]
+        if item.identity != entry.identity:
+            raise AmbiguousMappingError(
+                f"The emitted object {html_id!r} maps to {item.identity} but its "
+                f"ledger entry maps to {entry.identity}."
+            )
+        if item.disposition != entry.disposition:
+            raise AmbiguousMappingError(
+                f"The emitted object {html_id!r} is {item.disposition!r} but its "
+                f"ledger entry is {entry.disposition!r}."
+            )
+
+
+def _captured_text_style(obj: CapturedObject) -> tuple[Mapping[str, Any], ...]:
+    """Return the text formatting the source object declares, as plain data.
+
+    This is the evidence side of the acceptance gate's style check.  It is taken
+    from the *captured source object* -- what OfficeCLI read out of the source
+    deck -- rather than from the HTML the projector goes on to emit, so the
+    comparison at the gate has two genuinely independent sides.
+    """
+    paragraphs: list[Mapping[str, Any]] = []
+    for paragraph in obj.paragraphs:
+        paragraphs.append(
+            {
+                "align": str(paragraph.align or ALIGNMENT_DEFAULT).lower(),
+                "line_spacing": paragraph.line_spacing,
+                # The source paragraph's own native spacing before and after it.
+                # Captured because the rebuild writes paragraph spacing only for
+                # a table cell's paragraphs: a standalone text body's spacing is
+                # *not* re-created, and whether that is faithful is something the
+                # gate has to be able to judge from the source's declaration
+                # rather than from the projection's own output.
+                "space_before_pt": float(paragraph.space_before_pt or 0.0),
+                "space_after_pt": float(paragraph.space_after_pt or 0.0),
+                "runs": tuple(
+                    {
+                        "font": run.font_family,
+                        "size": f"{run.font_size_pt:g}pt" if run.font_size_pt else None,
+                        "color": run.color,
+                        "bold": bool(run.bold),
+                        "italic": bool(run.italic),
+                        "underline": str(run.underline or "none").lower(),
+                    }
+                    for run in paragraph.runs
+                ),
+            }
+        )
+    return tuple(paragraphs)
+
+
+def _published_selection(
+    selection: Sequence[SelectedPage],
+    sources: Sequence[ProjectionSourceRecord],
+) -> list[dict[str, Any]]:
+    """Return the selection as it is published, keyed by source identity.
+
+    ``SelectedPage`` carries the path a caller handed in; that is enough when one
+    deck is selected and ambiguous the moment there are three, because
+    ``source-a`` page 2 and ``source-c`` page 2 are different pages.  A reader of
+    the published record has to be able to tell which deck a page came from
+    without re-deriving it, so every entry carries the ``source_key`` the run
+    assigned to that deck -- the same key the ledger uses.
+
+    An unkeyed entry is a defect rather than an omission: it would mean the
+    selection named a deck the run did not capture.
+    """
+    key_by_path = {record.source_path: record.source_key for record in sources}
+    published: list[dict[str, Any]] = []
+    for item in selection:
+        entry = item.as_dict()
+        key = key_by_path.get(item.source_pptx)
+        if key is None:
+            raise ProjectionError(
+                "The selection names a source that was not captured, so the "
+                f"published selection cannot identify it: {item.source_pptx}"
+            )
+        entry["source_key"] = key
+        published.append(entry)
+    return published
+
+
 def _source_map_payload(
     *,
-    source_path: str,
-    source_sha256: str,
-    source_slide_count: int,
+    sources: Sequence[ProjectionSourceRecord],
+    selection: Sequence[SelectedPage],
     canvas_px: tuple[float, float],
     pixels_per_point: float,
     objects: Sequence[ProjectedObject],
     slides: Sequence[ProjectedSlide],
+    ledger: Sequence[DispositionLedgerEntry],
 ) -> dict[str, Any]:
+    primary = sources[0]
     entries = [
         {
+            "source_key": item.source_key,
+            "source_path": item.source_path,
+            "source_sha256": item.source_sha256,
             "source_slide": item.source_slide,
             "source_object": item.source_object,
             "source_kind": item.source_kind,
@@ -1270,6 +2475,7 @@ def _source_map_payload(
             "html_selector": f"#{item.html_id}",
             "projected_kind": item.projected_kind,
             "disposition": item.disposition,
+            "reason_code": item.reason_code,
             "capabilities": dict(item.capabilities),
             "bounds_pt": [round(value, 4) for value in item.bounds_pt],
             "bounds_px": [round(value, 4) for value in item.bounds_px],
@@ -1281,10 +2487,15 @@ def _source_map_payload(
     ]
     return {
         "schema_version": SOURCE_MAP_SCHEMA_VERSION,
+        "sources": [item.as_dict() for item in sources],
+        "selection": _published_selection(selection, sources),
+        # The V0.4.1 single-source reading is preserved: ``source`` is the
+        # primary (first) source, and ``sources`` above is authoritative.
         "source": {
-            "path": source_path,
-            "sha256": source_sha256,
-            "slide_count": source_slide_count,
+            "path": primary.source_path,
+            "sha256": primary.source_sha256,
+            "slide_count": primary.slide_count,
+            "source_key": primary.source_key,
         },
         "canvas": {
             "width_px": canvas_px[0],
@@ -1293,7 +2504,11 @@ def _source_map_payload(
         },
         "slides": [
             {
+                "source_key": slide.source_key,
+                "source_path": slide.source_path,
+                "source_sha256": slide.source_sha256,
                 "source_slide": slide.source_slide,
+                "output_slide": slide.output_slide,
                 "html_id": slide.html_id,
                 "html_selector": f"#{slide.html_id}",
                 "object_count": len(slide.objects),
@@ -1301,35 +2516,39 @@ def _source_map_payload(
             for slide in slides
         ],
         "objects": entries,
+        "ledger": [item.as_dict() for item in ledger],
     }
 
 
 def _projection_report_payload(
     *,
-    source_path: str,
-    source_sha256: str,
-    source_slide_count: int,
-    source_slide_size_pt: tuple[float, float],
+    sources: Sequence[ProjectionSourceRecord],
+    selection: Sequence[SelectedPage],
     canvas_px: tuple[float, float],
     pixels_per_point: float,
     officecli_version: str,
     slides: Sequence[ProjectedSlide],
     objects: Sequence[ProjectedObject],
+    ledger: Sequence[DispositionLedgerEntry],
     diagnostics: Sequence[ProjectionDiagnostic],
     html_sha256: str | None,
 ) -> dict[str, Any]:
     counts = {name: 0 for name in DISPOSITIONS}
-    for item in objects:
+    for item in ledger:
         counts[item.disposition] = counts.get(item.disposition, 0) + 1
     native = counts[DISPOSITION_CANONICAL]
     locks = counts[DISPOSITION_LOCKED] + counts[DISPOSITION_BASE_ONLY]
+    primary = sources[0]
     return {
         "schema_version": PROJECTION_REPORT_SCHEMA_VERSION,
+        "sources": [item.as_dict() for item in sources],
+        "selection": _published_selection(selection, sources),
         "source": {
-            "path": source_path,
-            "sha256": source_sha256,
-            "slide_count": source_slide_count,
-            "slide_size_pt": list(source_slide_size_pt),
+            "path": primary.source_path,
+            "sha256": primary.source_sha256,
+            "slide_count": primary.slide_count,
+            "source_key": primary.source_key,
+            "slide_size_pt": list(primary.slide_size_pt),
         },
         "canvas": {
             "width_px": canvas_px[0],
@@ -1339,13 +2558,29 @@ def _projection_report_payload(
         },
         "officecli_version": officecli_version,
         "selected_slides": [slide.source_slide for slide in slides],
+        "selected_pages": [
+            {
+                "source_key": slide.source_key,
+                "source_path": slide.source_path,
+                "source_file": slide.source_file,
+                "source_sha256": slide.source_sha256,
+                "source_slide": slide.source_slide,
+                "output_slide": slide.output_slide,
+            }
+            for slide in slides
+        ],
         "counts": {
-            "source_objects": len(objects),
+            "source_objects": len(ledger),
+            "dom_objects": len(objects),
+            "emitted_objects": sum(1 for item in ledger if item.emitted),
             "canonical_editable": native,
             "locked_visual_proxy": counts[DISPOSITION_LOCKED],
             "base_only_semantic": counts[DISPOSITION_BASE_ONLY],
             "unsupported": counts[DISPOSITION_UNSUPPORTED],
             "unresolved": counts[DISPOSITION_UNRESOLVED],
+            "container_owned": sum(
+                1 for item in ledger if item.represented_by_container
+            ),
             "native_round_trip": native,
             "excluded_from_native_round_trip": locks
             + counts[DISPOSITION_UNSUPPORTED]
@@ -1353,91 +2588,107 @@ def _projection_report_payload(
         },
         "whole_slide_screenshot_fallback": False,
         "author_html_sha256": html_sha256,
-        "slides": [
-            {
-                "source_slide": slide.source_slide,
-                "html_id": slide.html_id,
-                "object_count": len(slide.objects),
-                "canonical_editable": len(slide.native_objects),
-                "locked_or_base_only": len(slide.proxy_objects),
-                "objects": [item.as_dict() for item in slide.objects],
-            }
-            for slide in slides
-        ],
+        "slides": [slide.as_dict() for slide in slides],
+        "ledger": [item.as_dict() for item in ledger],
         "diagnostics": [item.as_dict() for item in diagnostics],
     }
 
 
-def _unique_html_id(source_slide: int, ordinal: int, source_object: str) -> str:
+def _unique_html_id(
+    source_key: str, source_slide: int, ordinal: int, source_object: str
+) -> str:
+    """Return the emitted object's DOM id.
+
+    The source key is part of the id because two selected decks can report the
+    same object path on the same page number; without it the second object would
+    silently overwrite the first one's element.
+    """
     slug = "".join(
         character if character.isalnum() else "-" for character in source_object
     ).strip("-")
     while "--" in slug:
         slug = slug.replace("--", "-")
-    return f"s{source_slide:03d}-o{ordinal:03d}-{slug or 'object'}"
+    prefix = f"{source_key}-" if source_key else ""
+    return f"{prefix}s{source_slide:03d}-o{ordinal:03d}-{slug or 'object'}"
 
 
-def _build_projection(
-    capture: CapturedPresentation,
-    *,
-    source_sha256: str,
-    proxy_dir: Path | None,
-) -> tuple[
-    list[CapturedSlide],
-    list[ProjectedSlide],
-    dict[str, str],
-    list[ProjectionDiagnostic],
-    float,
-]:
-    """Turn a PowerPoint Object Capture into canonical Author HTML fragments."""
-    width_pt, height_pt = capture.slide_size_pt
-    # The pixels-per-point factor is derived from the source PPTX's own slide
-    # bounds.  The standard 960x540pt widescreen slide therefore becomes
-    # exactly 2px/pt; CSS physical-unit conversion is never used.
+@dataclass(frozen=True)
+class _ProjectionBuild:
+    """The intermediate result of one projection build, before publication."""
+
+    canvas_pt: tuple[float, float]
+    canvas_px: tuple[float, float]
+    pixels_per_point: float
+    pages: tuple[CapturedSlide, ...]
+    slides: tuple[ProjectedSlide, ...]
+    objects: tuple[ProjectedObject, ...]
+    object_html: Mapping[str, str]
+    diagnostics: tuple[ProjectionDiagnostic, ...]
+    ledger: tuple[DispositionLedgerEntry, ...]
+
+    @property
+    def blocking(self) -> bool:
+        return any(item.blocking for item in self.diagnostics)
+
+
+def _canvas_geometry(canvas_pt: tuple[float, float]) -> tuple[float, tuple[float, float]]:
+    """Return ``(pixels_per_point, canvas_px)`` for the shared source canvas.
+
+    The pixels-per-point factor is derived from the source PPTX's own slide
+    bounds, never from a CSS physical unit: the standard ``960x540pt``
+    widescreen slide therefore becomes exactly ``2px/pt``.  A canvas that does
+    not normalize onto the current Author canvas is refused rather than silently
+    snapped, because snapping would contradict the geometry everything else is
+    scaled by.
+    """
+    width_pt, height_pt = canvas_pt
     pixels_per_point = AUTHOR_CANVAS_WIDTH_PX / width_pt
-
-    canvas_px = (
-        _px(width_pt, pixels_per_point),
-        _px(height_pt, pixels_per_point),
-    )
-    if abs(canvas_px[0] - AUTHOR_CANVAS_WIDTH_PX) > 0.5 or abs(
+    canvas_px = (_px(width_pt, pixels_per_point), _px(height_pt, pixels_per_point))
+    if abs(canvas_px[0] - AUTHOR_CANVAS_WIDTH_PX) > CANVAS_TOLERANCE_PX or abs(
         canvas_px[1] - AUTHOR_CANVAS_HEIGHT_PX
-    ) > 0.5:
-        # The Author Contract accepts exactly the 1920x1080 canvas (or the legacy
-        # 960x540), and the New Deck compiler measures against that slide.  A
-        # differently proportioned deck cannot be normalized onto it without
-        # either distorting the layout or discarding the scale factors just
-        # derived from the deck's own bounds.  Refuse it rather than silently
-        # snapping the canvas and contradicting the source geometry.
-        raise ProjectionError(
-            "The source deck's slides are "
+    ) > CANVAS_TOLERANCE_PX:
+        raise ProjectionSourceError(
+            "The source decks' slides are "
             f"{width_pt:g}pt x {height_pt:g}pt, which normalizes to "
             f"{canvas_px[0]:g}px x {canvas_px[1]:g}px at "
             f"{pixels_per_point:g}px/pt and does not match the current Author "
             f"canvas of {AUTHOR_CANVAS_WIDTH_PX:g}px x "
-            f"{AUTHOR_CANVAS_HEIGHT_PX:g}px. This probe is scoped to 16:9 decks; "
-            "a different aspect ratio is its own canvas decision."
+            f"{AUTHOR_CANVAS_HEIGHT_PX:g}px. This seam is scoped to 16:9 decks; "
+            "a different aspect ratio is its own canvas decision.",
+            code="canvas_mismatch",
         )
+    return pixels_per_point, canvas_px
+
+
+def _build_projection(
+    pages: Sequence[tuple[ProjectionSourceRecord, CapturedSlide]],
+    *,
+    canvas_pt: tuple[float, float],
+    proxy_dir: Path | None,
+) -> _ProjectionBuild:
+    """Turn selected PowerPoint pages into canonical Author HTML fragments.
+
+    ``pages`` is already in the caller's selection order, so the emitted
+    document, the source map, the report, and the ledger all read in the same
+    order the caller asked for.
+    """
+    pixels_per_point, canvas_px = _canvas_geometry(canvas_pt)
 
     diagnostics: list[ProjectionDiagnostic] = []
-    # Object-local proxies come from a render in which the target object is the
-    # only object on its slide, so a proxy can never carry a sibling's content.
-    renderer = (
-        IsolatedRenderer(capture.source_path, proxy_dir / "isolated")
-        if proxy_dir is not None
-        else None
-    )
     projected_slides: list[ProjectedSlide] = []
     object_html: dict[str, str] = {}
     html_objects: list[ProjectedObject] = []
+    ledger: list[DispositionLedgerEntry] = []
+    renderers: dict[str, IsolatedRenderer] = {}
 
-    for output_slide, slide in enumerate(capture.slides, start=1):
+    for output_slide, (source, slide) in enumerate(pages, start=1):
         slide_objects: list[ProjectedObject] = []
         for ordinal, obj in enumerate(slide.objects, start=1):
-            disposition, reason, unsupported = _classify(obj)
+            disposition, reason, unsupported, reason_code = _classify(obj)
             proxy_source: str | None = None
             proxy_reason: str | None = None
             proxy_asset: str | None = None
+            proxy_geometry: ProxyGeometry | None = None
             projected_kind = _projected_kind(obj, disposition)
 
             if _requires_proxy(obj, disposition):
@@ -1445,12 +2696,14 @@ def _build_projection(
                 if proxy_dir is None:
                     diagnostics.append(
                         ProjectionDiagnostic(
-                            code="proxy_assets_unavailable",
+                            code=REASON_PROXY_ASSETS_UNAVAILABLE,
                             severity="error",
                             message=(
                                 "An object-local visual proxy is required but no "
                                 "proxy asset directory was provided."
                             ),
+                            source_key=source.source_key,
+                            source_path=source.source_path,
                             source_slide=obj.source_slide,
                             source_object=obj.source_object,
                             blocking=True,
@@ -1458,31 +2711,55 @@ def _build_projection(
                     )
                     disposition = DISPOSITION_UNRESOLVED
                     reason = "No object-local visual representation is available."
+                    reason_code = REASON_PROXY_ASSETS_UNAVAILABLE
                     projected_kind = PROJECTED_KIND_SHAPE
                 else:
                     try:
-                        assert renderer is not None
-                        proxy_source, asset = _isolated_proxy(
+                        renderer = renderers.get(source.source_key)
+                        if renderer is None:
+                            renderer = IsolatedRenderer(
+                                source.source_path,
+                                proxy_dir / f"{source.source_key}-isolated",
+                            )
+                            renderers[source.source_key] = renderer
+                        proxy_source, asset, proxy_geometry = _isolated_proxy(
                             renderer,
                             obj,
                             pixels_per_point=pixels_per_point,
                             destination=proxy_dir
-                            / f"proxy-slide-{obj.source_slide:03d}-{ordinal:03d}.png",
+                            / (
+                                f"proxy-{source.source_key}-slide-"
+                                f"{obj.source_slide:03d}-{ordinal:03d}.png"
+                            ),
                         )
                         proxy_asset = str(asset.resolve())
                     except (PptxReadError, ProjectionError, OSError, ValueError) as exc:
+                        # A container whose children cannot be placed inside its
+                        # own rectangle under any reading of the source is its
+                        # own source condition, so it carries its own reason code
+                        # instead of the generic isolation failure.
+                        unreconciled = isinstance(
+                            exc, ContainerReconciliationError
+                        )
+                        code = (
+                            REASON_CONTAINER_CHILD_SPACE_UNRECONCILED
+                            if unreconciled
+                            else REASON_PROXY_ISOLATION_UNAVAILABLE
+                        )
                         diagnostics.append(
                             ProjectionDiagnostic(
-                                code="proxy_isolation_unavailable",
+                                code=code,
                                 severity="warning",
                                 message=(
                                     "No object-local visual representation could be "
                                     f"produced, so the object is reported unsupported "
                                     f"rather than approximated: {exc}"
                                 ),
+                                source_key=source.source_key,
+                                source_path=source.source_path,
                                 source_slide=obj.source_slide,
                                 source_object=obj.source_object,
-                                blocking=False,
+                                blocking=True,
                             )
                         )
                         disposition = DISPOSITION_UNSUPPORTED
@@ -1491,17 +2768,20 @@ def _build_projection(
                             f"{exc} A composited crop is not object-local and is "
                             "never used as a substitute."
                         )
+                        reason_code = code
                         # The proxy reason is what a reviewer reads, so keep the
                         # explanation instead of clearing it with the proxy.
                         proxy_reason = reason
                         projected_kind = PROJECTED_KIND_SHAPE
 
-            html_id = _unique_html_id(obj.source_slide, ordinal, obj.source_object)
+            html_id = _unique_html_id(
+                source.source_key, obj.source_slide, ordinal, obj.source_object
+            )
             bounds_px = (
                 _px(obj.bounds_pt[0], pixels_per_point),
                 _px(obj.bounds_pt[1], pixels_per_point),
-                _px(obj.bounds_pt[2], pixels_per_point),
-                _px(obj.bounds_pt[3], pixels_per_point),
+                _px_extent(obj.bounds_pt[2], pixels_per_point),
+                _px_extent(obj.bounds_pt[3], pixels_per_point),
             )
             projected = ProjectedObject(
                 source_slide=obj.source_slide,
@@ -1522,7 +2802,15 @@ def _build_projection(
                 source_fingerprint=obj.fingerprint(),
                 proxy_reason=proxy_reason if proxy_source else None,
                 proxy_asset=proxy_asset,
+                proxy_geometry=proxy_geometry if proxy_source else None,
+                proxy_clamped=bool(proxy_geometry and proxy_geometry.clamped),
                 unsupported_properties=unsupported,
+                source_key=source.source_key,
+                source_path=source.source_path,
+                source_file=Path(source.source_path).name,
+                source_sha256=source.source_sha256,
+                reason_code=reason_code,
+                text_style=_captured_text_style(obj),
             )
             object_html[html_id] = _emit_object_html(
                 obj,
@@ -1532,7 +2820,30 @@ def _build_projection(
             )
             slide_objects.append(projected)
             html_objects.append(projected)
-            if disposition in {DISPOSITION_UNSUPPORTED, DISPOSITION_UNRESOLVED}:
+            ledger.append(
+                DispositionLedgerEntry(
+                    source_key=source.source_key,
+                    source_path=source.source_path,
+                    source_sha256=source.source_sha256,
+                    source_page=obj.source_slide,
+                    source_object=obj.source_object,
+                    source_kind=obj.source_kind,
+                    source_name=obj.name,
+                    source_fingerprint=projected.source_fingerprint,
+                    owner=obj.owner,
+                    owner_kind=obj.owner_kind,
+                    represented_by_container=obj.owner is not None,
+                    projected_kind=projected_kind,
+                    html_id=html_id,
+                    emitted_ordinal=ordinal,
+                    emitted_name=projected.emitted_name,
+                    disposition=disposition,
+                    reason_code=reason_code,
+                    reason=reason,
+                    unsupported_properties=unsupported,
+                )
+            )
+            if disposition in BLOCKING_DISPOSITIONS:
                 diagnostics.append(
                     ProjectionDiagnostic(
                         code=(
@@ -1540,47 +2851,132 @@ def _build_projection(
                             if disposition == DISPOSITION_UNSUPPORTED
                             else "unresolved_source_object"
                         ),
-                        severity="warning",
+                        severity="error",
                         message=reason or "The source object was not projected.",
+                        source_key=source.source_key,
+                        source_path=source.source_path,
                         source_slide=obj.source_slide,
                         source_object=obj.source_object,
+                        blocking=True,
+                    )
+                )
+            for child in _walk_children(obj):
+                # A container is represented once.  Its owned children and
+                # connectors are recorded as owned by it and are never emitted
+                # again as top-level siblings on top of that representation.
+                child_disposition, child_code, child_reason = _owned_disposition(
+                    child, container=obj, container_disposition=disposition
+                )
+                ledger.append(
+                    DispositionLedgerEntry(
+                        source_key=source.source_key,
+                        source_path=source.source_path,
+                        source_sha256=source.source_sha256,
+                        source_page=child.source_slide,
+                        source_object=child.source_object,
+                        source_kind=child.source_kind,
+                        source_name=child.name,
+                        source_fingerprint=child.fingerprint(),
+                        owner=child.owner or obj.source_object,
+                        owner_kind=child.owner_kind or obj.source_kind,
+                        represented_by_container=True,
+                        projected_kind=_projected_kind(child, child_disposition),
+                        html_id=None,
+                        emitted_ordinal=None,
+                        emitted_name=None,
+                        disposition=child_disposition,
+                        reason_code=child_code,
+                        reason=child_reason,
+                    )
+                )
+                diagnostics.append(
+                    ProjectionDiagnostic(
+                        code="nested_container_object",
+                        severity="info",
+                        message=(
+                            f"A nested {child.source_kind!r} object is owned "
+                            f"by {obj.source_kind} {obj.source_object} and is "
+                            "represented by that container's own representation "
+                            "rather than emitted again."
+                        ),
+                        source_key=source.source_key,
+                        source_path=source.source_path,
+                        source_slide=child.source_slide,
+                        source_object=child.source_object,
                         blocking=False,
                     )
                 )
-            if obj.children:
-                for child in _walk_children(obj):
-                    diagnostics.append(
-                        ProjectionDiagnostic(
-                            code="nested_container_object",
-                            severity="info",
-                            message=(
-                                f"A nested {child.source_kind!r} object is owned "
-                                f"by {obj.source_kind} {obj.source_object} and is "
-                                "represented by that container's locked proxy."
-                            ),
-                            source_slide=child.source_slide,
-                            source_object=child.source_object,
-                            blocking=False,
-                        )
-                    )
 
         projected_slides.append(
             ProjectedSlide(
                 source_slide=slide.source_slide,
-                html_id=f"slide-{slide.source_slide:03d}",
+                html_id=f"slide-{output_slide:03d}",
                 width_px=canvas_px[0],
                 height_px=canvas_px[1],
                 background=slide.background or "#FFFFFF",
                 objects=tuple(slide_objects),
+                output_slide=output_slide,
+                source_key=source.source_key,
+                source_path=source.source_path,
+                source_file=Path(source.source_path).name,
+                source_sha256=source.source_sha256,
             )
         )
 
+    return _ProjectionBuild(
+        canvas_pt=canvas_pt,
+        canvas_px=canvas_px,
+        pixels_per_point=pixels_per_point,
+        pages=tuple(slide for _, slide in pages),
+        slides=tuple(projected_slides),
+        objects=tuple(html_objects),
+        object_html=object_html,
+        diagnostics=tuple(diagnostics),
+        ledger=tuple(ledger),
+    )
+
+
+def _owned_disposition(
+    child: CapturedObject,
+    *,
+    container: CapturedObject,
+    container_disposition: str,
+) -> tuple[str, str, str]:
+    """Return ``(disposition, reason_code, reason)`` for a container-owned object.
+
+    An owned child has no representation of its own: what is visible of it is
+    inside the container's representation.  So it is never ``canonical``, and it
+    is only non-blocking when the container actually produced a representation.
+    """
+    if container_disposition in {DISPOSITION_LOCKED, DISPOSITION_BASE_ONLY}:
+        return (
+            DISPOSITION_LOCKED,
+            REASON_CONTAINER_OWNED,
+            f"Owned by {container.source_kind} {container.source_object} and "
+            "represented by that container's own locked representation; it is "
+            "not emitted as a separate object of its own.",
+        )
+    if container_disposition == DISPOSITION_UNRESOLVED:
+        return (
+            DISPOSITION_UNRESOLVED,
+            REASON_CONTAINER_REPRESENTATION_UNAVAILABLE,
+            f"Owned by {container.source_kind} {container.source_object}, whose "
+            "own source evidence could not be established, so this object has no "
+            "representation at all.",
+        )
+    if container_disposition == DISPOSITION_UNSUPPORTED:
+        return (
+            DISPOSITION_UNSUPPORTED,
+            REASON_CONTAINER_REPRESENTATION_UNAVAILABLE,
+            f"Owned by {container.source_kind} {container.source_object}, which "
+            "could not be represented at all, so this object has no "
+            "representation either.",
+        )
     return (
-        list(capture.slides),
-        projected_slides,
-        object_html,
-        diagnostics,
-        pixels_per_point,
+        DISPOSITION_LOCKED,
+        REASON_CONTAINER_OWNED,
+        f"Owned by {container.source_kind} {container.source_object} and "
+        "represented by that container rather than emitted as its own object.",
     )
 
 
@@ -1598,6 +2994,10 @@ def _projected_kind(obj: CapturedObject, disposition: str) -> str:
         return PROJECTED_KIND_TABLE
     if disposition in {DISPOSITION_LOCKED, DISPOSITION_BASE_ONLY}:
         return PROJECTED_KIND_IMAGE
+    if _declared_geometry(obj) is not None:
+        # The emitted element names the preset it must be rebuilt as, so it is a
+        # shape whether or not it also carries text -- not a bare textbox.
+        return PROJECTED_KIND_SHAPE
     if obj.has_text and obj.fill is None and (
         obj.line_color is None or obj.line_width_pt <= 0
     ):
@@ -1611,32 +3011,35 @@ def _isolated_proxy(
     *,
     pixels_per_point: float,
     destination: Path,
-) -> tuple[str, Path]:
+) -> tuple[str, Path, ProxyGeometry]:
     """Return a deterministic data URI for one object-local locked proxy.
 
     The proxy comes from a render of the target object *alone* -- rebuilt into a
     fresh deck, so neither a sibling nor the slide's layout and master paint can
     appear in it.  Cropping the composited slide, or culling only the slide's
     siblings from a copy, would both let other paint into the rectangle.
+
+    The image is cropped at the object's *painted* rectangle rather than at its
+    declared one, because PowerPoint paints a no-autofit line outside its box,
+    and the geometry that came back is what the emitter places the image by.
+
+    A paint-less container is the same reconstruction one level down: the fresh
+    deck holds the container's own children, placed by each candidate reading of
+    the source, and the container's rectangle is cropped out of the first
+    candidate whose measured paint actually lands inside it.  A container whose
+    children fit under no reading is reported instead of being published as an
+    invented image.
     """
     import base64
-    import tempfile
+
+    placements, media_paths = _container_placements_for_proxy(obj, destination)
 
     media_path: Path | None = None
     if obj.picture is not None:
-        # OfficeCLI takes a picture source as a path or a data URI; a file keeps
-        # the batch body small and is written outside the source deck.
-        header, _, payload = obj.picture.data_uri.partition(",")
-        suffix = "." + header[5:].split(";", 1)[0].split("/")[-1].replace("+xml", "")
-        handle, name = tempfile.mkstemp(
-            prefix="projection-media-", suffix=suffix, dir=str(destination.parent)
-        )
-        media_path = Path(name)
-        with open(handle, "wb") as stream:
-            stream.write(base64.b64decode(payload))
+        media_path = _extract_media(obj.picture.data_uri, destination.parent)
 
     try:
-        asset = renderer.render(
+        asset, geometry = renderer.render(
             obj.source_slide,
             obj.source_object,
             obj.bounds_pt,
@@ -1646,106 +3049,259 @@ def _isolated_proxy(
             destination=destination,
             media_path=media_path,
             guard_px=PROXY_GUARD_PX,
+            placements=placements,
+            text=obj.text,
+            painted_size_pt=painted_run_size_pt(obj.paragraphs),
+            paragraphs=obj.paragraphs,
         )
     finally:
         if media_path is not None:
             media_path.unlink(missing_ok=True)
+        for path in media_paths:
+            path.unlink(missing_ok=True)
     return (
         "data:image/png;base64," + base64.b64encode(asset.read_bytes()).decode("ascii"),
         asset,
+        geometry,
     )
 
 
+def _container_placements_for_proxy(
+    obj: CapturedObject,
+    destination: Path,
+) -> tuple[tuple[ContainerPlacement, ...], list[Path]]:
+    """Return every candidate placement of a container's children, with media.
+
+    Only a paint-less container has placements.  The candidates are the
+    container's children under each reading of the source -- its declared group
+    transform, and OfficeCLI's own reported rectangles -- in the order the
+    renderer tries them: the renderer publishes the first whose paint actually
+    lands inside the container's own rectangle, and reports the container with
+    its own reason code when none does.
+
+    A container that owns nothing at all, or reports a degenerate rectangle,
+    declares no placement: it keeps the V0.4.1 outcome and fails in the renderer
+    as a proxy-isolation failure.
+    """
+    if obj.source_kind not in CONTAINER_KINDS:
+        return (), []
+    candidates = container_placements(obj)
+    if candidates.reason is not None:
+        if candidates.unreconciled:
+            raise ContainerReconciliationError(candidates.reason)
+        return (), []
+    import dataclasses
+
+    placements: list[ContainerPlacement] = []
+    media_paths: list[Path] = []
+    try:
+        for candidate in candidates.placements:
+            members: list[ContainerMember] = []
+            for member in candidate.members:
+                if member.picture is not None:
+                    path = _extract_media(member.picture.data_uri, destination.parent)
+                    media_paths.append(path)
+                    member = dataclasses.replace(member, media_path=str(path))
+                members.append(member)
+            placements.append(
+                ContainerPlacement(label=candidate.label, members=tuple(members))
+            )
+    except BaseException:
+        for path in media_paths:
+            path.unlink(missing_ok=True)
+        raise
+    return tuple(placements), media_paths
+
+
+def _extract_media(data_uri: str, directory: Path) -> Path:
+    """Write one embedded picture payload to a file the rebuild can read."""
+    import base64
+    import tempfile
+
+    header, _, payload = data_uri.partition(",")
+    suffix = "." + header[5:].split(";", 1)[0].split("/")[-1].replace("+xml", "")
+    handle, name = tempfile.mkstemp(
+        prefix="projection-media-", suffix=suffix, dir=str(directory)
+    )
+    path = Path(name)
+    with open(handle, "wb") as stream:
+        stream.write(base64.b64decode(payload))
+    return path
+
+
+def _looks_like_path(value: Any) -> bool:
+    return isinstance(value, (str, bytes, Path)) or hasattr(value, "__fspath__")
+
+
+def _coerce_pages(source: Any) -> tuple[SelectedPage, ...]:
+    if isinstance(source, PageSelection):
+        return source.pages
+    if isinstance(source, SelectedPage):
+        return (source,)
+    if _looks_like_path(source):
+        raise ProjectionSelectionError(
+            "A source path on its own is not a page selection; name each "
+            "selected page as a (source_pptx, page) pair or a SelectedPage.",
+            code="invalid_selection",
+        )
+    try:
+        items = list(source)
+    except TypeError as exc:
+        raise ProjectionSelectionError(
+            "A page selection must be a PageSelection or a sequence of "
+            f"SelectedPage/(source_pptx, page) entries; got {source!r}.",
+            code="invalid_selection",
+        ) from exc
+    return tuple(_coerce_page(item) for item in items)
+
+
+def _coerce_request(
+    source: Any,
+    source_slide_numbers: Any,
+    output_html: Any,
+) -> tuple[tuple[SelectedPage, ...], Path]:
+    """Accept both selection spellings and return ``(pages, destination)``.
+
+    ``(deck, [1, 2], out)`` is the V0.4.1 single-deck shape and keeps working
+    unchanged.  ``(selection, out)`` is the V0.4.2 multi-deck shape, where the
+    selection is a :class:`PageSelection`, a :class:`SelectedPage`, or any
+    sequence of ``SelectedPage``/``(deck, page)`` entries.  Nothing else is
+    accepted: an ambiguous request is a selection failure, not a guess.
+    """
+    if _looks_like_path(source):
+        if output_html is None:
+            raise ProjectionSelectionError(
+                "The single-deck call shape is (source_pptx, "
+                "source_slide_numbers, output_html); no output destination was "
+                "given.",
+                code="invalid_selection",
+                source_path=str(source),
+            )
+        if source_slide_numbers is None or _looks_like_path(source_slide_numbers):
+            raise ProjectionSelectionError(
+                "The single-deck call shape needs a list of source page numbers "
+                f"in its second argument; got {source_slide_numbers!r}.",
+                code="invalid_selection",
+                source_path=str(source),
+            )
+        try:
+            numbers = list(source_slide_numbers)
+        except TypeError as exc:
+            raise ProjectionSelectionError(
+                "The single-deck call shape needs a list of source page numbers "
+                f"in its second argument; got {source_slide_numbers!r}.",
+                code="invalid_selection",
+                source_path=str(source),
+            ) from exc
+        return (
+            tuple(SelectedPage(source, number) for number in numbers),
+            Path(output_html),
+        )
+    if output_html is not None:
+        raise ProjectionSelectionError(
+            "A selection-based call is (selection, output_html); a third "
+            "positional argument is not part of that shape.",
+            code="invalid_selection",
+        )
+    if source_slide_numbers is None:
+        raise ProjectionSelectionError(
+            "A projection needs an output HTML destination.", code="invalid_selection"
+        )
+    return _coerce_pages(source), Path(source_slide_numbers)
+
+
+def _validate_selection(pages: Sequence[SelectedPage]) -> None:
+    """Refuse an empty, missing, or duplicated selection before anything runs."""
+    if not pages:
+        raise ProjectionSelectionError(
+            "A projection must select at least one source page.",
+            code="invalid_selection",
+        )
+    seen: set[tuple[str, int]] = set()
+    for page in pages:
+        path = Path(page.source_pptx)
+        if not path.is_file():
+            raise ProjectionSelectionError(
+                f"Selected source PPTX does not exist: {path}",
+                code="missing_source",
+                source_path=str(path),
+                source_slide=page.source_slide,
+            )
+        identity = (page.source_pptx, page.source_slide)
+        if identity in seen:
+            raise ProjectionSelectionError(
+                f"Source page {page.source_slide} of {path} is selected more "
+                "than once; every selected page must be a distinct source page, "
+                "because a page is emitted exactly once.",
+                code="duplicate_selection",
+                source_path=str(path),
+                source_slide=page.source_slide,
+            )
+        seen.add(identity)
+
+
+def _selected_sources(
+    pages: Sequence[SelectedPage],
+) -> tuple[list[str], dict[str, list[int]], dict[str, str]]:
+    """Return the distinct source paths, their pages, and their pre-hashes.
+
+    Every distinct source is hashed here, before it is captured, so the run can
+    prove afterwards that the bytes it read are the bytes it published against.
+    """
+    ordered: list[str] = []
+    wanted: dict[str, list[int]] = {}
+    for page in pages:
+        if page.source_pptx not in wanted:
+            ordered.append(page.source_pptx)
+            wanted[page.source_pptx] = []
+        wanted[page.source_pptx].append(page.source_slide)
+    digests = {path: _sha256_file(path) for path in ordered}
+    return ordered, wanted, digests
+
+
 def project_pptx_to_author_html(
-    source_pptx: str | Path,
-    source_slide_numbers: Sequence[int],
-    output_html: str | Path,
+    source: PageSelection | SelectedPage | Sequence[SelectedPage] | str | Path,
+    source_slide_numbers: Sequence[int] | str | Path | None = None,
+    output_html: str | Path | None = None,
     *,
     proxy_dir: str | Path | None = None,
 ) -> ProjectionResult:
-    """Project selected slides of one PPTX into Canonical Author HTML.
+    """Project an explicit ordered selection of source pages into Author HTML.
 
-    This is the one experimental high-level seam of the V0.4.1 probe.  It reads
-    the source PPTX through OfficeCLI, emits the Canonical Author HTML document
-    plus its source map and projection report, and returns the structured
-    projection facts.  The source deck is never modified, and an existing
-    output target is a collision rather than an overwrite.
+    This is the one experimental high-level seam of the V0.4.2 slice.  It reads
+    only the pages the caller selected -- from as many decks as the selection
+    names -- through OfficeCLI, emits one Canonical Author HTML document in
+    exactly the caller's order, writes its source map and projection report, and
+    returns the structured projection facts including the per-object disposition
+    ledger.
+
+    Both call shapes are accepted::
+
+        project_pptx_to_author_html(deck, [1, 3], out, proxy_dir=...)   # V0.4.1
+        project_pptx_to_author_html(selection, out, proxy_dir=...)      # V0.4.2
+
+    The source decks are never modified: each is hashed before capture and again
+    after staging, and a source that changed in between raises
+    :class:`SourceChangedError` without publishing anything.  An existing output
+    target is a collision rather than an overwrite, and a blocking disposition
+    (``unsupported`` or ``unresolved``) raises :class:`ProjectionBlockedError`
+    with the ledger attached rather than publishing a partial projection.
     """
-    source_path = Path(source_pptx).expanduser().resolve()
-    destination = Path(output_html).expanduser().resolve()
-    if not source_path.is_file():
-        raise ProjectionError(f"Source PPTX does not exist: {source_path}")
+    pages, destination = _coerce_request(source, source_slide_numbers, output_html)
+    destination = Path(destination).expanduser().resolve()
     if destination.exists():
         raise OutputCollisionError(
             f"Projection output already exists: {destination}"
         )
     if not destination.parent.is_dir():
         raise ProjectionError(
-            f"Projection output directory does not exist: {destination.parent}"
+            f"Projection output directory does not exist: {destination.parent}",
+            code="invalid_output",
         )
-    proxy_directory = (
-        Path(proxy_dir).expanduser().resolve() if proxy_dir is not None else None
-    )
-    source_sha256 = _sha256_file(source_path)
-
-    if not source_slide_numbers:
-        raise ProjectionError(
-            "A projection must select at least one source slide number."
-        )
-    capture = capture_presentation(source_path, source_slide_numbers)
-    if proxy_directory is not None:
-        proxy_directory.mkdir(parents=True, exist_ok=True)
-
-    slides, projected_slides, object_html, diagnostics, pixels_per_point = (
-        _build_projection(
-            capture,
-            source_sha256=source_sha256,
-            proxy_dir=proxy_directory,
-        )
-    )
-    canvas_px = (
-        projected_slides[0].width_px if projected_slides else AUTHOR_CANVAS_WIDTH_PX,
-        projected_slides[0].height_px if projected_slides else AUTHOR_CANVAS_HEIGHT_PX,
-    )
-    html_text = _document_html(
-        source_name=source_path.name,
-        source_sha256=source_sha256,
-        slides=slides,
-        projected_slides=projected_slides,
-        object_html=object_html,
-        canvas_px=canvas_px,
-        pixels_per_point=pixels_per_point,
-    )
-
-    objects = [item for slide in projected_slides for item in slide.objects]
-    source_map = _source_map_payload(
-        source_path=str(source_path),
-        source_sha256=source_sha256,
-        source_slide_count=capture.slide_count,
-        canvas_px=canvas_px,
-        pixels_per_point=pixels_per_point,
-        objects=objects,
-        slides=projected_slides,
-    )
-    blocking = any(item.blocking for item in diagnostics)
-    html_sha256 = _sha256_text(html_text)
-    report = _projection_report_payload(
-        source_path=str(source_path),
-        source_sha256=source_sha256,
-        source_slide_count=capture.slide_count,
-        source_slide_size_pt=capture.slide_size_pt,
-        canvas_px=canvas_px,
-        pixels_per_point=pixels_per_point,
-        officecli_version=capture.officecli_version,
-        slides=projected_slides,
-        objects=objects,
-        diagnostics=diagnostics,
-        html_sha256=html_sha256,
-    )
-
     # A failed run must not leave a partial result that could be mistaken for a
-    # completed projection, so every owned file is staged beside the output and
-    # published only after all of them exist.
+    # completed projection, and no owned destination is ever overwritten.  All
+    # three owned artifacts are checked before anything is read, so a collision
+    # costs nothing and cannot leave a half-written pair behind.
     source_map_path = destination.with_suffix(".source-map.json")
     report_path = destination.with_suffix(".projection-report.json")
     for owned in (source_map_path, report_path):
@@ -1753,7 +3309,134 @@ def project_pptx_to_author_html(
             raise OutputCollisionError(
                 f"Projection evidence already exists: {owned}"
             )
+    _validate_selection(pages)
+    proxy_directory = (
+        Path(proxy_dir).expanduser().resolve() if proxy_dir is not None else None
+    )
 
+    paths, wanted, digests = _selected_sources(pages)
+    key_by_path = {path: f"src{index}" for index, path in enumerate(paths, start=1)}
+
+    captures: dict[str, CapturedPresentation] = {}
+    for path in paths:
+        key = key_by_path[path]
+        try:
+            captures[key] = capture_presentation(
+                path, wanted[path], source_key=key
+            )
+        except MissingSlideError as error:
+            raise MissingPageError(
+                error.slide_number, error.slide_count, path
+            ) from error
+        except PptxReadError as error:
+            raise ProjectionSourceError(
+                f"Selected source PPTX could not be read: {path}: {error}",
+                code="unreadable_source",
+                source_key=key,
+                source_path=path,
+            ) from error
+
+    records = [
+        ProjectionSourceRecord(
+            source_key=key_by_path[path],
+            source_path=path,
+            source_sha256=digests[path],
+            slide_count=captures[key_by_path[path]].slide_count,
+            slide_size_pt=captures[key_by_path[path]].slide_size_pt,
+            selected_pages=tuple(wanted[path]),
+            hash_verified_before_capture=True,
+            hash_verified_before_publication=False,
+        )
+        for path in paths
+    ]
+    by_key = {record.source_key: record for record in records}
+
+    canvas_sizes = {record.slide_size_pt for record in records}
+    if len(canvas_sizes) > 1:
+        # One document, one Author canvas.  Two decks that disagree about their
+        # slide size cannot share it, and rescaling one of them silently would
+        # contradict every object's own geometry.
+        detail = ", ".join(
+            f"{record.source_key} ({record.source_path}) is "
+            f"{record.slide_size_pt[0]:g}pt x {record.slide_size_pt[1]:g}pt"
+            for record in records
+        )
+        raise ProjectionSourceError(
+            "The selected sources do not share one slide size, so they cannot "
+            f"share the Author canvas: {detail}.",
+            code="canvas_mismatch",
+            diagnostics=tuple(
+                ProjectionDiagnostic(
+                    code="canvas_mismatch",
+                    severity="error",
+                    message=(
+                        f"{record.source_key} reports a "
+                        f"{record.slide_size_pt[0]:g}pt x "
+                        f"{record.slide_size_pt[1]:g}pt slide."
+                    ),
+                    source_key=record.source_key,
+                    source_path=record.source_path,
+                    blocking=True,
+                )
+                for record in records
+            ),
+        )
+    canvas_pt = records[0].slide_size_pt
+
+    selected_pages = [
+        (by_key[key_by_path[page.source_pptx]], captures[key_by_path[page.source_pptx]].slide(page.source_slide))
+        for page in pages
+    ]
+    if proxy_directory is not None:
+        proxy_directory.mkdir(parents=True, exist_ok=True)
+
+    build = _build_projection(
+        selected_pages,
+        canvas_pt=canvas_pt,
+        proxy_dir=proxy_directory,
+    )
+    # Publication is the point of no return: prove the source-to-emitted mapping
+    # is one-to-one before a single artifact is written.
+    _assert_one_to_one_mapping(build)
+
+    canvas_px = build.canvas_px
+    html_text = _document_html(
+        source_name=Path(records[0].source_path).name,
+        source_sha256=records[0].source_sha256,
+        sources=records,
+        slides=build.pages,
+        projected_slides=build.slides,
+        object_html=build.object_html,
+        canvas_px=canvas_px,
+        pixels_per_point=build.pixels_per_point,
+    )
+
+    objects = list(build.objects)
+    source_map = _source_map_payload(
+        sources=records,
+        selection=pages,
+        canvas_px=canvas_px,
+        pixels_per_point=build.pixels_per_point,
+        objects=objects,
+        slides=build.slides,
+        ledger=build.ledger,
+    )
+    html_sha256 = _sha256_text(html_text)
+    report = _projection_report_payload(
+        sources=records,
+        selection=pages,
+        canvas_px=canvas_px,
+        pixels_per_point=build.pixels_per_point,
+        officecli_version=captures[records[0].source_key].officecli_version,
+        slides=build.slides,
+        objects=objects,
+        ledger=build.ledger,
+        diagnostics=build.diagnostics,
+        html_sha256=html_sha256,
+    )
+
+    # Every owned destination is a fresh file: the three collisions were
+    # refused before the first read, so this run owns all three names.
     staging = Path(
         tempfile.mkdtemp(prefix=f".{destination.stem}-projection-", dir=str(destination.parent))
     )
@@ -1765,11 +3448,51 @@ def project_pptx_to_author_html(
         _write_text_exact(staged_html, html_text)
         _json_dump(staged_map, source_map)
         _json_dump(staged_report, report)
-        if blocking:
-            raise ProjectionError(
-                "The projection reported a blocking diagnostic and was not "
-                "published: "
-                + "; ".join(item.message for item in diagnostics if item.blocking)
+        if build.blocking:
+            raise ProjectionBlockedError(
+                "The projection blocked and was not published: "
+                + "; ".join(
+                    item.message for item in build.diagnostics if item.blocking
+                ),
+                diagnostics=build.diagnostics,
+                ledger=build.ledger,
+                objects=build.objects,
+                sources=records,
+                selection=pages,
+            )
+        # Re-hash every distinct source after staging and before the commit: a
+        # deck that changed while it was being read must not be published as if
+        # the evidence described the bytes on disk now.
+        changed = [
+            record
+            for record in records
+            if _sha256_file(record.source_path) != record.source_sha256
+        ]
+        if changed:
+            raise SourceChangedError(
+                "A selected source PPTX changed between capture and publication, "
+                "so the projection was not published: "
+                + ", ".join(
+                    f"{record.source_key} ({record.source_path}) was "
+                    f"{record.source_sha256[:12]}... at capture time"
+                    for record in changed
+                ),
+                diagnostics=tuple(
+                    ProjectionDiagnostic(
+                        code="source_changed",
+                        severity="error",
+                        message=(
+                            f"{record.source_key} ({record.source_path}) no "
+                            "longer has the fingerprint it was captured with."
+                        ),
+                        source_key=record.source_key,
+                        source_path=record.source_path,
+                        blocking=True,
+                    )
+                    for record in changed
+                ),
+                sources=records,
+                selection=pages,
             )
         # "Canonical Author HTML" means the current Author Contract accepts it,
         # so the seam proves that for itself rather than publishing a document
@@ -1784,7 +3507,19 @@ def project_pptx_to_author_html(
                     f"{item.code}: {item.message}"
                     for item in contract.diagnostics
                     if item.blocking
-                )
+                ),
+                code="contract_rejected",
+                diagnostics=tuple(
+                    ProjectionDiagnostic(
+                        code=item.code,
+                        severity=item.severity,
+                        message=item.message,
+                        source_object=item.source_object,
+                        blocking=True,
+                    )
+                    for item in contract.diagnostics
+                    if item.blocking
+                ),
             )
         staged_html.replace(destination)
         staged_map.replace(source_map_path)
@@ -1798,6 +3533,11 @@ def project_pptx_to_author_html(
             for owned in (destination, source_map_path, report_path):
                 owned.unlink(missing_ok=True)
 
+    from dataclasses import replace as _replace
+
+    verified = tuple(
+        _replace(record, hash_verified_before_publication=True) for record in records
+    )
     return ProjectionResult(
         output_html=str(destination),
         html_sha256=_sha256_file(destination),
@@ -1805,42 +3545,59 @@ def project_pptx_to_author_html(
         source_map_sha256=_sha256_file(source_map_path),
         projection_report_path=str(report_path),
         projection_report_sha256=_sha256_file(report_path),
-        source_path=str(source_path),
-        source_sha256=source_sha256,
-        source_slide_size_pt=capture.slide_size_pt,
-        source_slide_count=capture.slide_count,
+        source_path=records[0].source_path,
+        source_sha256=records[0].source_sha256,
+        source_slide_size_pt=canvas_pt,
+        source_slide_count=records[0].slide_count,
         canvas_px=canvas_px,
-        pixels_per_point=pixels_per_point,
-        officecli_version=capture.officecli_version,
-        slides=tuple(projected_slides),
+        pixels_per_point=build.pixels_per_point,
+        officecli_version=captures[records[0].source_key].officecli_version,
+        slides=build.slides,
         objects=tuple(objects),
         source_map=source_map,
         projection_report=report,
-        diagnostics=tuple(diagnostics),
+        diagnostics=build.diagnostics,
         published=True,
+        ledger=build.ledger,
+        sources=verified,
+        selection=tuple(pages),
     )
 
 
 __all__ = [
     "AUTHOR_CANVAS_HEIGHT_PX",
     "AUTHOR_CANVAS_WIDTH_PX",
+    "AmbiguousMappingError",
+    "BLOCKING_DISPOSITIONS",
+    "CANVAS_TOLERANCE_PX",
+    "COMPILED_KIND_BY_PROJECTED_KIND",
     "DISPOSITION_BASE_ONLY",
     "DISPOSITION_CANONICAL",
     "DISPOSITION_LOCKED",
     "DISPOSITION_UNRESOLVED",
     "DISPOSITION_UNSUPPORTED",
     "DISPOSITIONS",
+    "DispositionLedgerEntry",
     "NATIVE_DISPOSITIONS",
     "OutputCollisionError",
     "PROJECTION_SCHEMA_VERSION",
     "PROJECTION_REPORT_SCHEMA_VERSION",
     "PROXY_DISPOSITIONS",
+    "PageSelection",
     "ProjectedObject",
     "ProjectedSlide",
+    "ProjectionBlockedError",
     "ProjectionDiagnostic",
     "ProjectionError",
     "ProjectionResult",
+    "ProjectionSelectionError",
+    "ProjectionSourceError",
+    "ProjectionSourceRecord",
+    "REASON_CODES",
     "SOURCE_MAP_SCHEMA_VERSION",
+    "SelectedPage",
+    "SourceChangedError",
+    "MissingPageError",
     "MissingSlideError",
     "project_pptx_to_author_html",
 ]

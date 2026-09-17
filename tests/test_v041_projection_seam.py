@@ -15,6 +15,14 @@ real 63 MB acceptance deck is never committed and the probes stay narrow.  The
 fixture deliberately contains one supported surface, one unsupported geometry,
 and one container whose native semantics the current Author Contract cannot
 express.
+
+V0.4.2 supersedes exactly one expectation this file used to encode: the locked
+proxy's fixture geometry was an ellipse, and an ellipse is now projected as a
+native canonical shape.  The isolation boundary these tests exist for is
+unchanged, so it is re-pointed at a preset that is still outside the canonical
+surface -- ``chevron`` -- rather than being weakened; the promoted ellipse has
+its own coverage in ``tests/test_v042_native_presets.py``.  Every assertion in
+this file is otherwise exactly as V0.4.1 published it.
 """
 
 from __future__ import annotations
@@ -38,7 +46,12 @@ from officecli_html_to_pptx import (
     ProjectionError,
     project_pptx_to_author_html,
 )
-from officecli_html_to_pptx._internal.pptx_reader import MissingSlideError
+from officecli_html_to_pptx._internal import author_projector as projector
+from officecli_html_to_pptx._internal.pptx_reader import (
+    MissingSlideError,
+    _drop_render_background,
+    _raster_rgb,
+)
 from officecli_html_to_pptx.contract import check_contract
 
 pytestmark = pytest.mark.skipif(
@@ -58,16 +71,20 @@ _PICTURE_URI = "data:image/png;base64," + base64.b64encode(_PICTURE_PNG).decode(
 SUPPORTED_TEXT = "V0.4.1 projection seam 中文 🚀"
 SUPPORTED_SUBTITLE = "Second paragraph"
 BOLD_RUN_TEXT = "Bold run"
-UNSUPPORTED_GEOMETRY = "ellipse"
+# A preset the canonical Author object surface still has no equivalent for.  It
+# was ``ellipse`` until V0.4.2 promoted the ellipse to a native shape; the
+# boundary this file tests is "an unsupported geometry is a locked proxy", so
+# the fixture now uses a preset that is still unsupported.
+UNSUPPORTED_GEOMETRY = "chevron"
 CONTAINER_CHILD_TEXT = "grouped label"
 TABLE_CELLS = (("MODEL", "12K"), ("IDU SIZE", "910x305x195"))
 FIXTURE_SLIDE_COUNT = 1
 
-# The overlay probe: a text-free filled ellipse with three independent
+# The overlay probe: a text-free filled shape with three independent
 # textboxes painted inside its rectangle, which is exactly the arrangement that
 # a composited-raster crop cannot represent without capturing its neighbours.
-OVERLAY_ELLIPSE_BOX = (40.0, 200.0, 120.0, 120.0)
-OVERLAY_ELLIPSE_FILL = "#D96666"
+OVERLAY_SHAPE_BOX = (40.0, 200.0, 120.0, 120.0)
+OVERLAY_SHAPE_FILL = "#D96666"
 OVERLAY_TEXT_LINES = ("In 2026", "9.50", "Million/USD")
 OVERLAY_TEXTBOX_TOP_PT = (215.0, 245.0, 275.0)
 
@@ -172,7 +189,7 @@ def projection_fixture(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "parent": "/slide[1]",
             "type": "shape",
             "props": {
-                "name": "unsupported-ellipse",
+                "name": "unsupported-preset",
                 "geometry": UNSUPPORTED_GEOMETRY,
                 # Deliberately clear of the overlay probe's rectangle, so its own
                 # proxy cannot be judged against another fixture object's paint.
@@ -251,18 +268,18 @@ def projection_fixture(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "parent": "/slide[1]",
             "type": "shape",
             "props": {
-                "name": "overlay-ellipse",
+                "name": "overlay-shape",
                 "geometry": UNSUPPORTED_GEOMETRY,
-                "x": f"{OVERLAY_ELLIPSE_BOX[0]}pt",
-                "y": f"{OVERLAY_ELLIPSE_BOX[1]}pt",
-                "width": f"{OVERLAY_ELLIPSE_BOX[2]}pt",
-                "height": f"{OVERLAY_ELLIPSE_BOX[3]}pt",
-                "fill": OVERLAY_ELLIPSE_FILL,
+                "x": f"{OVERLAY_SHAPE_BOX[0]}pt",
+                "y": f"{OVERLAY_SHAPE_BOX[1]}pt",
+                "width": f"{OVERLAY_SHAPE_BOX[2]}pt",
+                "height": f"{OVERLAY_SHAPE_BOX[3]}pt",
+                "fill": OVERLAY_SHAPE_FILL,
                 "line": "none",
             },
         },
     ]
-    # The three sibling textboxes sit inside the ellipse's rectangle.
+    # The three sibling textboxes sit inside the shape's rectangle.
     for offset, line in zip(OVERLAY_TEXTBOX_TOP_PT, OVERLAY_TEXT_LINES):
         commands.append(
             {
@@ -272,9 +289,9 @@ def projection_fixture(tmp_path_factory: pytest.TempPathFactory) -> Path:
                 "props": {
                     "name": f"overlay-text-{line.replace('/', '-')}",
                     "text": line,
-                    "x": f"{OVERLAY_ELLIPSE_BOX[0] + 10}pt",
+                    "x": f"{OVERLAY_SHAPE_BOX[0] + 10}pt",
                     "y": f"{offset}pt",
-                    "width": f"{OVERLAY_ELLIPSE_BOX[2] - 20}pt",
+                    "width": f"{OVERLAY_SHAPE_BOX[2] - 20}pt",
                     "height": "24pt",
                     "size": "14pt",
                     "font": "Arial",
@@ -427,10 +444,27 @@ def test_supported_run_formatting_is_an_inline_semantic_element(
 
 
 def test_object_bounds_are_normalized_at_the_canvas_factor(projected: Any) -> None:
-    """Every emitted rectangle is the source rectangle at 2 px/pt."""
+    """Every emitted rectangle is the source rectangle at 2 px/pt.
+
+    With one deliberate addition: an *extent* carries one Chromium layout unit more
+    than the measurement.  Blink snaps layout to a 1/64 px grid, so a box declared
+    at exactly its measured width is laid out a unit narrower, and a box whose text
+    fills it then wraps where the source does not -- which is what happened to a
+    page number on src3 pages 2 and 21.  Position is not biased, and the bias is
+    bounded by that one unit, so this test still fails on a wrong scale or a moved
+    object.
+    """
+    bias = projector._LAYOUT_UNIT_PX
+    assert 0 < bias <= 0.02, "the extent bias is one layout unit, not a fudge factor"
     for item in projected.objects:
-        for source_value, emitted_value in zip(item.bounds_pt, item.bounds_px):
-            assert emitted_value == pytest.approx(source_value * 2.0, abs=0.01)
+        # x and y are positions: unbiased.
+        assert item.bounds_px[0] == pytest.approx(item.bounds_pt[0] * 2.0, abs=0.01)
+        assert item.bounds_px[1] == pytest.approx(item.bounds_pt[1] * 2.0, abs=0.01)
+        # width and height are extents: measured, plus one layout unit.
+        for source_value, emitted_value in zip(item.bounds_pt[2:], item.bounds_px[2:]):
+            assert emitted_value == pytest.approx(
+                source_value * 2.0 + bias, abs=0.01
+            ), (item.source_object, source_value, emitted_value)
 
 
 def test_objects_are_emitted_in_source_paint_order(projected: Any) -> None:
@@ -478,13 +512,13 @@ def test_a_native_table_is_one_table_with_row_and_cell_identity(
 def test_an_unsupported_geometry_is_a_locked_proxy_with_a_reason(
     projected: Any,
 ) -> None:
-    """An ellipse is not declared editable merely because it is visible."""
-    ellipse = _object_named(projected, "unsupported-ellipse")
-    assert ellipse.disposition == DISPOSITION_LOCKED
-    assert ellipse.proxy_reason
-    assert UNSUPPORTED_GEOMETRY in ellipse.proxy_reason
+    """A preset with no canonical equivalent is never declared editable."""
+    preset = _object_named(projected, "unsupported-preset")
+    assert preset.disposition == DISPOSITION_LOCKED
+    assert preset.proxy_reason
+    assert UNSUPPORTED_GEOMETRY in preset.proxy_reason
     html = projected.html_path.read_text(encoding="utf-8")
-    element = html.split(f'id="{ellipse.html_id}"', 1)[1].split(">", 1)[0]
+    element = html.split(f'id="{preset.html_id}"', 1)[1].split(">", 1)[0]
     assert 'data-projection-locked="true"' in element
 
 
@@ -584,7 +618,7 @@ def test_the_enclosure_discriminator_fires_on_a_contaminated_image() -> None:
 def test_a_locked_proxy_carries_only_its_own_object(projected: Any) -> None:
     """A proxy for a text-free shape must not contain a sibling's glyphs.
 
-    The fixture paints three independent textboxes inside the ellipse's
+    The fixture paints three independent textboxes inside the shape's
     rectangle.  Cropping the composited slide would capture them, and the
     projection would then paint the same words twice — once inside the proxy
     image and once as the canonical text objects.  The proxy is therefore
@@ -592,11 +626,11 @@ def test_a_locked_proxy_carries_only_its_own_object(projected: Any) -> None:
     """
     from PIL import Image
 
-    overlay = _object_named(projected, "overlay-ellipse")
+    overlay = _object_named(projected, "overlay-shape")
     assert overlay.disposition == DISPOSITION_LOCKED
     assert overlay.proxy_asset, "a locked proxy must publish its asset for review"
     fill = tuple(
-        int(OVERLAY_ELLIPSE_FILL.lstrip("#")[index : index + 2], 16)
+        int(OVERLAY_SHAPE_FILL.lstrip("#")[index : index + 2], 16)
         for index in (0, 2, 4)
     )
     with Image.open(overlay.proxy_asset) as image:
@@ -621,7 +655,7 @@ def test_a_locked_proxy_carries_only_its_own_object(projected: Any) -> None:
 
 def test_a_locked_proxy_is_not_a_crop_of_the_composited_slide(projected: Any) -> None:
     """The proxy's own evidence must show it came from an isolated render."""
-    overlay = _object_named(projected, "overlay-ellipse")
+    overlay = _object_named(projected, "overlay-shape")
     assert overlay.proxy_asset
     asset = Path(overlay.proxy_asset)
     assert asset.is_file()
@@ -965,3 +999,243 @@ def test_font_resolution_keeps_a_declared_face_but_never_a_non_face() -> None:
     # Degenerate inputs still produce a usable typeface.
     assert resolve_pptx_font("") == "Calibri"
     assert resolve_pptx_font("   ") == "Calibri"
+
+
+# ---------------------------------------------------------------------------
+# A proxy carries the object's paint, not the reconstruction's background
+# ---------------------------------------------------------------------------
+
+
+def _png(path: Path, size: tuple[int, int], colour: tuple[int, int, int]) -> Path:
+    from PIL import Image
+
+    Image.new("RGB", size, colour).save(path, format="PNG")
+    return path
+
+
+def test_a_proxy_drops_the_reconstruction_background_and_keeps_the_paint(
+    tmp_path: Path,
+) -> None:
+    """The object's own pixels stay; the blank slide's pixels become transparent.
+
+    An object-local proxy is a crop of a render of a blank slide carrying one
+    object, so the background in that crop belongs to the slide the object was
+    reconstructed on, not to the object.  Keeping it made the proxy an opaque box:
+    the independent visual review found a callout band reduced to a sliver and two
+    product photos sitting on white rectangles over a lavender panel, both because
+    the proxy painted the reconstruction's white over paint the source really has.
+    """
+    from PIL import Image
+
+    blank = _png(tmp_path / "blank.png", (20, 10), (255, 255, 255))
+    painted = _png(tmp_path / "object.png", (20, 10), (255, 255, 255))
+    with Image.open(painted) as image:
+        canvas = image.convert("RGB")
+    for x in range(4, 8):
+        for y in range(3, 6):
+            canvas.putpixel((x, y), (200, 30, 30))
+    canvas.save(painted, format="PNG")
+
+    with Image.open(painted) as image:
+        result = _drop_render_background(
+            image.convert("RGB"), blank, (0, 0, 20, 10)
+        )
+    assert result.mode == "RGBA"
+    assert result.getpixel((5, 4))[3] == 255, "the object's own paint stays opaque"
+    assert result.getpixel((5, 4))[:3] == (200, 30, 30)
+    assert result.getpixel((15, 8))[3] == 0, "the blank slide's pixels are dropped"
+    assert result.getpixel((0, 0))[3] == 0
+
+
+def test_the_background_key_is_exact_so_a_white_glyph_survives(
+    tmp_path: Path,
+) -> None:
+    """White text on a white-rendered object is the case a tolerance would break.
+
+    A run whose fill is the same colour as the reconstruction's background is
+    genuinely ambiguous at one pixel, and both answers are wrong in one direction:
+    keep it and an opaque white box covers the source's coloured panel, drop it and
+    the text disappears.  The rule is that only pixels *identical* to the empty
+    render are background, so a glyph that differs by even one unit in one channel
+    is kept -- and the review's own finding shows the price of getting it wrong: on
+    that page the source file's run is white with no outline, so nothing about it is
+    painted at all and the proxy has nothing to keep.
+    """
+    from PIL import Image
+
+    blank = _png(tmp_path / "blank.png", (12, 6), (255, 255, 255))
+    faint = _png(tmp_path / "faint.png", (12, 6), (255, 255, 255))
+    with Image.open(faint) as image:
+        canvas = image.convert("RGB")
+    canvas.putpixel((3, 3), (254, 255, 255))
+    canvas.save(faint, format="PNG")
+
+    with Image.open(faint) as image:
+        result = _drop_render_background(
+            image.convert("RGB"), blank, (0, 0, 12, 6)
+        )
+    assert result.getpixel((3, 3))[3] == 255, "a one-unit difference is still paint"
+    assert result.getpixel((9, 3))[3] == 0
+
+
+def test_an_unusable_reference_leaves_the_crop_alone(tmp_path: Path) -> None:
+    """No reference, or one of the wrong size, means the old behaviour exactly."""
+    from PIL import Image
+
+    painted = _png(tmp_path / "object.png", (20, 10), (10, 20, 30))
+    small = _png(tmp_path / "small.png", (4, 4), (255, 255, 255))
+    missing = tmp_path / "not-there.png"
+    with Image.open(painted) as image:
+        for reference in (None, missing, small):
+            result = _drop_render_background(
+                image.convert("RGB"), reference, (0, 0, 20, 10)
+            )
+            assert result.mode == "RGB", reference
+            assert result.getpixel((2, 2))[:3] == (10, 20, 30)
+
+
+def test_a_flat_crop_is_left_alone_rather_than_emptied(tmp_path: Path) -> None:
+    """An object that painted nothing keeps its raster for the gate to refuse.
+
+    A fully transparent proxy would be indistinguishable from a decoding failure,
+    and the blank-proxy gate is the thing that has to decide what an object with no
+    paint means.  Handing it an empty alpha channel would take that decision away
+    from the rule that owns it.
+    """
+    from PIL import Image
+
+    blank = _png(tmp_path / "blank.png", (8, 8), (255, 255, 255))
+    same = _png(tmp_path / "same.png", (8, 8), (255, 255, 255))
+    with Image.open(same) as image:
+        result = _drop_render_background(image.convert("RGB"), blank, (0, 0, 8, 8))
+    assert result.mode == "RGB"
+
+
+def test_a_transparent_raster_measures_as_unpainted(tmp_path: Path) -> None:
+    """Every paint measurement flattens alpha onto the render's own background.
+
+    The proofs compare a proxy's pixels against its sampled background, and a
+    transparent pixel *is* that background.  Read as black it would make every
+    blank proxy measure as fully painted, which is how a proxy that shows nothing
+    would pass the gate that exists to refuse it.
+    """
+    from PIL import Image
+
+    path = tmp_path / "transparent.png"
+    image = Image.new("RGBA", (6, 6), (255, 255, 255, 0))
+    image.putpixel((2, 2), (10, 20, 30, 255))
+    image.save(path, format="PNG")
+
+    flattened = _raster_rgb(path)
+    assert flattened.mode == "RGB"
+    assert flattened.getpixel((0, 0)) == (255, 255, 255)
+    assert flattened.getpixel((2, 2)) == (10, 20, 30)
+
+
+# ---------------------------------------------------------------------------
+# Per-run formatting in a reconstruction
+# ---------------------------------------------------------------------------
+
+
+def _captured_run(
+    text: str,
+    *,
+    color: str | None = "#000000",
+    bold: bool = False,
+    size: float = 11.0,
+) -> Any:
+    from officecli_html_to_pptx._internal.pptx_reader import CapturedRun
+
+    return CapturedRun(
+        text=text,
+        font_family="Arial",
+        font_size_pt=size,
+        bold=bold,
+        italic=False,
+        underline="none",
+        color=color,
+    )
+
+
+def _captured_paragraph(*runs: Any) -> Any:
+    from officecli_html_to_pptx._internal.pptx_reader import CapturedParagraph
+
+    return CapturedParagraph(
+        text="".join(run.text for run in runs),
+        align="left",
+        line_spacing=None,
+        space_before_pt=0.0,
+        space_after_pt=0.0,
+        direction="ltr",
+        bullet="none",
+        level=0,
+        runs=tuple(runs),
+    )
+
+
+def test_a_reconstruction_writes_every_run_its_own_format() -> None:
+    """An ``add`` states one format for a body; a range states one per run.
+
+    A cell whose feature line is red inside black text cannot be rebuilt from the
+    object-level colour alone -- the reconstruction painted it black, which the
+    independent review found on six cells of src1 page 30 and on the two-line
+    subtitle of src1 page 2.  Each run now gets the range the New Deck compiler
+    would give it, with every property stated so a run can reset what it inherited.
+    """
+    from officecli_html_to_pptx._internal.pptx_reader import run_range_sets
+
+    paragraphs = [
+        _captured_paragraph(
+            _captured_run("Lead-in", color="#C00000", bold=True),
+            _captured_run(" rest"),
+        ),
+        _captured_paragraph(_captured_run("second 中文 line")),
+    ]
+    sets = run_range_sets("isolated-object", paragraphs)
+    assert [item["range"] for item in sets] == ["0:7", "7:12", "12:26"]
+    assert sets[0]["color"] == "#C00000"
+    assert sets[0]["bold"] == "true"
+    assert sets[1]["color"] == "#000000"
+    assert sets[1]["bold"] == "false"
+    # A paragraph break is part of the body's text, not of the addressable range,
+    # so the second paragraph's run starts where the first one's text ended.
+    assert sets[2]["range"] == "12:26"
+    # Every property is stated on every run, so a run can reset an inherited value.
+    for item in sets:
+        assert set(item) == {"range", "font", "size", "color", "bold", "italic", "underline"}
+
+
+def test_one_run_is_left_to_the_body_it_is_added_with() -> None:
+    """A single run needs no range: the ``add`` already states its formatting."""
+    from officecli_html_to_pptx._internal.pptx_reader import run_range_sets
+
+    assert run_range_sets("x", [_captured_paragraph(_captured_run("only"))]) == []
+    assert run_range_sets("x", []) == []
+
+
+def test_the_range_arithmetic_counts_utf16_units_not_characters() -> None:
+    """The count OfficeCLI addresses is UTF-16 code units, as its own writer uses.
+
+    An emoji outside the basic plane is two units, and getting this wrong shifts
+    every following range -- which would paint part of one run in the next run's
+    colour rather than failing.
+    """
+    from officecli_html_to_pptx._internal.pptx_reader import (
+        _officecli_range_length,
+        run_range_sets,
+    )
+
+    assert _officecli_range_length("abc") == 3
+    assert _officecli_range_length("🚀") == 2
+    assert _officecli_range_length("a\nb") == 2, "a paragraph break is not addressed"
+    assert _officecli_range_length("a\r\nb") == 2
+
+    sets = run_range_sets(
+        "x",
+        [
+            _captured_paragraph(
+                _captured_run("🚀", color="#C00000"), _captured_run("tail")
+            )
+        ],
+    )
+    assert [item["range"] for item in sets] == ["0:2", "2:6"]
