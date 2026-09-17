@@ -1916,7 +1916,17 @@ def known_findings(result: Any) -> list[str]:
         "a raster that is nothing but its own background. Section 8 names them."
     )
     lines.append(
-        "9. **A manifest cannot contain its own hash.** "
+        "9. **The run's local evidence embeds private source bindings.** The gate "
+        "directory and the page renders are the run's own evidence and `.gitignore` "
+        "excludes them; the local record beside them names each source deck's path, "
+        "size and digest by design, so the run can be re-verified here. Those "
+        "entries are not part of the published bundle and must not be shared, "
+        "attached or archived outside this machine without stripping the bindings "
+        "first -- the published documents in this directory are the sanitised form "
+        "of the same run."
+    )
+    lines.append(
+        "10. **A manifest cannot contain its own hash.** "
         "`artifact-manifest.json` is excluded from its own inventory and records "
         "`acceptance-report.md`'s hash in `report_sha256` instead; the manifest's "
         "own hash is printed by the driver that wrote it and is not part of the "

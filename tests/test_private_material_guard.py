@@ -409,3 +409,29 @@ def test_the_hooks_installer_is_tracked_and_reports_the_wiring() -> None:
         # Nothing is wired, and the installer must say so rather than claim health.
         assert checked.returncode == 1, checked.stdout
         assert "not installed" in checked.stdout
+
+
+def test_every_command_the_installer_prints_exists() -> None:
+    """A hint that names a file the repository does not carry is a trap.
+
+    The installer told a reader to run `python scripts/install-hooks.py` -- with a
+    hyphen -- and no such file exists, so the one command it offers for fixing an
+    unwired clone failed if followed.  Every `scripts/...` path either hook or
+    message mentions is checked here against the working tree.
+    """
+    import re as _re
+
+    for name in ("install_hooks.py",):
+        source = (REPO_ROOT / "scripts" / name).read_text(encoding="utf-8")
+        for reference in set(_re.findall(r"scripts/[A-Za-z0-9_.-]+\.py", source)):
+            assert (REPO_ROOT / reference).is_file(), (
+                f"{name} tells a reader to run `{reference}`, which the repository "
+                "does not carry"
+            )
+
+    for hook in ("pre-commit", "pre-push"):
+        source = (REPO_ROOT / ".githooks" / hook).read_text(encoding="utf-8")
+        for reference in set(_re.findall(r"scripts/[A-Za-z0-9_.-]+\.py", source)):
+            assert (REPO_ROOT / reference).is_file(), (
+                f"{hook} refers to `{reference}`, which the repository does not carry"
+            )

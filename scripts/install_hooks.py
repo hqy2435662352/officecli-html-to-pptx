@@ -7,7 +7,7 @@ cloned.  The guard therefore has to be *installed* once per clone — and the te
 suite fails loudly when it has not been, because a guard that silently does not run
 is the exact failure this project already made once.
 
-    python scripts/install-hooks.py
+    python scripts/install_hooks.py
 
 It is idempotent, it verifies what it did, and it refuses rather than pretending
 when the hook files are missing or are not executable in the index.
@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         if current != HOOKS_PATH:
             print(
                 f"not installed: core.hooksPath is {current or '(unset)'}, so no "
-                f"hook runs.  Run `python scripts/install-hooks.py`."
+                f"hook runs.  Run `python scripts/install_hooks.py`."
             )
             return 1
         print(f"installed: core.hooksPath={current}")
