@@ -50,13 +50,21 @@ def _guard(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    """A throwaway repository with the guard's configuration and no history."""
+    """A throwaway repository with the guard's configuration and no history.
+
+    It carries the real hooks and scanner, so a test can run the hook the way git
+    runs it rather than only the scanner the hook calls.
+    """
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "config", "user.email", "guard@example.invalid")
     _git(tmp_path, "config", "user.name", "guard test")
     (tmp_path / "private-material.json").write_text(
         json.dumps({"forbidden": [SECRET, OTHER_SECRET]}), encoding="utf-8"
     )
+    hooks = tmp_path / ".githooks"
+    hooks.mkdir()
+    for name in ("pre-commit", "pre-push", "private_material_guard.py"):
+        shutil.copy2(REPO_ROOT / ".githooks" / name, hooks / name)
     (tmp_path / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
     _git(tmp_path, "add", "keep.txt")
     _git(tmp_path, "commit", "-q", "-m", "base")
@@ -496,3 +504,202 @@ def test_every_command_the_installer_prints_exists() -> None:
             assert (REPO_ROOT / reference).is_file(), (
                 f"{hook} refers to `{reference}`, which the repository does not carry"
             )
+
+
+# ---------------------------------------------------------------------------
+# The hook's own choice of base
+# ---------------------------------------------------------------------------
+#
+# The tests above give the scanner a `--base` and check what it does with it.  These
+# run the *hook*, because the base it chooses is the part that was wrong: it read the
+# local `refs/remotes/origin` cache instead of asking the remote being pushed to, so a
+# stale cache could excuse a blob the remote no longer held, and a push to any remote
+# that is not `origin` queried the wrong repository.
+
+
+def _bare_remote(path: Path) -> Path:
+    path.mkdir(parents=True)
+    _git(path, "init", "--quiet", "--bare", "--initial-branch=main")
+    return path
+
+
+def _shell(repo: Path) -> str:
+    """Return a shell that can actually run the hook here, or skip.
+
+    The hook is a shell script because git runs it that way everywhere.  Two things
+    make "is a shell on PATH" the wrong question on Windows: `sh` is usually absent,
+    and a `bash` that belongs to WSL cannot see the repository's drive the way the
+    hook's own `git` calls need.  So each candidate is asked to do the hook's own
+    first step -- find the file and find git -- and a machine with no shell that can
+    is skipped rather than failed.
+    """
+    for candidate in ("bash", "sh"):
+        if not shutil.which(candidate):
+            continue
+        probe = subprocess.run(
+            [candidate, "-c", "test -f .githooks/pre-push && command -v git >/dev/null"],
+            cwd=repo,
+            capture_output=True,
+            check=False,
+        )
+        if probe.returncode == 0:
+            return candidate
+    pytest.skip("no POSIX shell on PATH that can run the hook in this checkout")
+
+
+def _relative(target: Path, start: Path) -> str:
+    """Return ``target`` relative to ``start`` in POSIX spelling.
+
+    Relative paths are what a shell reads without having to agree with Python about
+    how a drive letter is spelled, and the remote URL is consumed by `git` running in
+    the repository, so it resolves either way.
+    """
+    import os
+
+    return os.path.relpath(target, start).replace("\\", "/")
+
+
+def _run_hook(
+    repo: Path,
+    remote_name: str,
+    remote_url: Path,
+    local_ref: str,
+    local_sha: str,
+    remote_ref: str,
+    remote_sha: str = "0" * 40,
+) -> subprocess.CompletedProcess[str]:
+    """Run the pre-push hook the way git runs it: args plus a ref line on stdin."""
+    hook = repo / ".githooks" / "pre-push"
+    hook.chmod(0o755)
+    # Git writes the hook's ref lines with LF, on every platform, so the test does
+    # too: feeding them through a text-mode pipe on Windows would add carriage
+    # returns git never sends, and the hook would be judged on an input it cannot
+    # receive.  (It strips a stray CR anyway -- see the note in the hook -- and the
+    # test for that is separate.)
+    return subprocess.run(
+        [
+            _shell(repo),
+            ".githooks/pre-push",
+            remote_name,
+            _relative(remote_url, repo),
+        ],
+        cwd=repo,
+        input=f"{local_ref} {local_sha} {remote_ref} {remote_sha}\n".encode(),
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_the_hook_refuses_a_leak_the_local_cache_claims_is_published(
+    repo: Path, tmp_path: Path
+) -> None:
+    """A stale cache must not excuse a blob the remote does not hold.
+
+    `refs/remotes/origin/main` is a cache.  When it still points at a commit whose blob
+    is private and the remote has since dropped that history, treating the cache as the
+    base means the scan *skips* the blob and the push publishes it while the guard says
+    clean.  The hook asks the remote instead, finds it empty, and refuses.
+    """
+    remote = _bare_remote(tmp_path / "remote.git")
+
+    (repo / "leak.txt").write_text(f"token={SECRET}\n", encoding="utf-8")
+    _git(repo, "add", "leak.txt")
+    _git(repo, "commit", "-q", "-m", "a leak the remote never received")
+    tip = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    # The stale cache: it claims the remote publishes this commit.
+    _git(repo, "update-ref", "refs/remotes/origin/main", tip)
+
+    result = _run_hook(
+        repo, "origin", remote, "refs/heads/topic", tip, "refs/heads/topic"
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert b"private identifier" in (result.stdout + result.stderr) or result.returncode == 3
+
+
+def test_the_hook_passes_a_new_branch_onto_a_remote_that_holds_the_history(
+    repo: Path, tmp_path: Path
+) -> None:
+    """The same shape, with the remote genuinely holding the history: allowed through.
+
+    This is the push the hook used to refuse for *every* new branch, and the direction
+    that must keep working: an identifier the remote already publishes is not this
+    push's finding.
+    """
+    remote = _bare_remote(tmp_path / "remote.git")
+
+    (repo / "published.txt").write_text(f"token={SECRET}\n", encoding="utf-8")
+    _git(repo, "add", "published.txt")
+    _git(repo, "commit", "-q", "-m", "an identifier the remote already holds")
+    published = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "push", "--quiet", str(remote), f"{published}:refs/heads/main")
+
+    (repo / "branch.txt").write_text("ordinary content\n", encoding="utf-8")
+    _git(repo, "add", "branch.txt")
+    _git(repo, "commit", "-q", "-m", "the branch's own change")
+    tip = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    result = _run_hook(
+        repo, "origin", remote, "refs/heads/topic", tip, "refs/heads/topic"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    # And a string this branch introduces is still refused, on the same remote.
+    (repo / "mine.txt").write_text(f"token={OTHER_SECRET}\n", encoding="utf-8")
+    _git(repo, "add", "mine.txt")
+    _git(repo, "commit", "-q", "-m", "this branch introduces an identifier")
+    leaked = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    refused = _run_hook(
+        repo, "origin", remote, "refs/heads/topic", leaked, "refs/heads/topic"
+    )
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+
+
+def test_the_hook_asks_the_remote_git_was_told_to_push_to(
+    repo: Path, tmp_path: Path
+) -> None:
+    """A remote that is not `origin` is queried, not the cache named `origin`.
+
+    The cache under `refs/remotes/origin` says nothing about `upstream`; reading it
+    would choose a base from the wrong repository.  Here `upstream` holds the history
+    and `origin`'s cache does not exist at all, so only asking the push target can
+    produce a clean verdict.
+    """
+    upstream = _bare_remote(tmp_path / "upstream.git")
+
+    (repo / "published.txt").write_text(f"token={SECRET}\n", encoding="utf-8")
+    _git(repo, "add", "published.txt")
+    _git(repo, "commit", "-q", "-m", "an identifier upstream already holds")
+    published = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "push", "--quiet", str(upstream), f"{published}:refs/heads/main")
+
+    (repo / "branch.txt").write_text("ordinary content\n", encoding="utf-8")
+    _git(repo, "add", "branch.txt")
+    _git(repo, "commit", "-q", "-m", "the branch's own change")
+    tip = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    result = _run_hook(
+        repo, "upstream", upstream, "refs/heads/topic", tip, "refs/heads/topic"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_hook_refuses_when_it_cannot_ask_the_remote(
+    repo: Path, tmp_path: Path
+) -> None:
+    """No answer from the remote means no scan, and no scan means no push.
+
+    The alternative -- falling back to the local cache -- is the defect this replaced:
+    an unknown base is not a clean base.
+    """
+    missing = tmp_path / "not-a-remote.git"
+    (repo / "new.txt").write_text("ordinary content\n", encoding="utf-8")
+    _git(repo, "add", "new.txt")
+    _git(repo, "commit", "-q", "-m", "an ordinary change")
+    tip = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    result = _run_hook(
+        repo, "origin", missing, "refs/heads/topic", tip, "refs/heads/topic"
+    )
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert b"could not ask" in result.stderr
