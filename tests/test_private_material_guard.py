@@ -154,13 +154,74 @@ def test_a_leak_the_base_already_publishes_is_not_this_pushs_finding(repo: Path)
 
 
 def test_a_new_branch_range_scans_everything_reachable(repo: Path) -> None:
-    """An all-zero base means the ref does not exist yet, so all of it publishes."""
+    """An all-zero base with no other base means the ref does not exist yet.
+
+    With a repository that has published nothing, everything reachable from the tip
+    is newly published -- so the leak that predates the branch is a finding, and the
+    scan is not vacuous just because the base is empty.
+    """
     (repo / "leak.txt").write_text(f"token={SECRET}\n", encoding="utf-8")
     _git(repo, "add", "leak.txt")
     _git(repo, "commit", "-q", "-m", "leak on a new branch")
     tip = _git(repo, "rev-parse", "HEAD").stdout.strip()
     result = _guard(repo, "--mode", "range", "--base", "0" * 40, "--tip", tip)
     assert result.returncode == 1, result.stdout
+
+
+def test_a_new_branch_that_reuses_a_published_leak_passes(repo: Path) -> None:
+    """A new ref's base is what the remote already holds, not nothing.
+
+    The remote does not have the *ref*; it has the *repository*.  Passing every ref
+    the remote holds as a base is what makes a branch off a history that already
+    contains a published identifier pushable at all -- without it, no new branch could
+    ever be pushed from this repository, which is how the defect was found: the guard
+    refused a clean one-commit follow-up branch because `main`'s own history carries
+    an inherited absolute path.
+
+    The union is the two properties together: the inherited blob is not a finding for
+    this push, and a string *this* branch introduces still is.
+    """
+    (repo / "published.txt").write_text(f"token={SECRET}\n", encoding="utf-8")
+    _git(repo, "add", "published.txt")
+    _git(repo, "commit", "-q", "-m", "an identifier the remote already holds")
+    published = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    (repo / "branch.txt").write_text("ordinary content\n", encoding="utf-8")
+    _git(repo, "add", "branch.txt")
+    _git(repo, "commit", "-q", "-m", "the branch's own change")
+    tip = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    # The ref is new (all-zero base) but the remote holds `published`.
+    result = _guard(
+        repo,
+        "--mode",
+        "range",
+        "--base",
+        "0" * 40,
+        "--base",
+        published,
+        "--tip",
+        tip,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    # And the same shape with a string this branch introduces is still refused.
+    (repo / "mine.txt").write_text(f"token={OTHER_SECRET}\n", encoding="utf-8")
+    _git(repo, "add", "mine.txt")
+    _git(repo, "commit", "-q", "-m", "this branch introduces a new identifier")
+    leaked_tip = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    refused = _guard(
+        repo,
+        "--mode",
+        "range",
+        "--base",
+        "0" * 40,
+        "--base",
+        published,
+        "--tip",
+        leaked_tip,
+    )
+    assert refused.returncode == 1, refused.stdout
 
 
 def test_ignored_local_evidence_is_not_a_finding(repo: Path) -> None:

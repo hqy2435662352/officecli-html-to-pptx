@@ -47,8 +47,32 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     case "$local_sha" in
         0000000000000000000000000000000000000000) continue ;;
     esac
+    # A remote sha of all zeroes means the remote ref does not exist yet -- but the
+    # *repository* does, so what this push publishes is what the remote's existing
+    # refs do not already hold.  With no base at all the scan re-presents everything
+    # the branch shares with main, including an identifier that is in main's history
+    # and predates the branch, and no new branch could ever be pushed.  Every remote
+    # ref is passed as a base in that case; the guard unions them.
+    bases=""
+    case "$remote_sha" in
+        0000000000000000000000000000000000000000)
+            bases=$(git for-each-ref --format='%(objectname)' refs/remotes/origin 2>/dev/null || true)
+            ;;
+        *)
+            bases="$remote_sha"
+            ;;
+    esac
+    args=""
+    if [ -n "$bases" ]; then
+        for base in $bases; do
+            args="$args --base $base"
+        done
+    else
+        args="--base $remote_sha"
+    fi
     echo "private-material guard: range $remote_sha..$local_sha ($remote_ref)"
-    if ! "$python" "$guard" --mode range --base "$remote_sha" --tip "$local_sha"; then
+    # shellcheck disable=SC2086
+    if ! "$python" "$guard" --mode range $args --tip "$local_sha"; then
         status=$?
         [ "$status" -eq 0 ] && status=1
     fi
