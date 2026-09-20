@@ -265,7 +265,7 @@ async def test_officehtml_profile_rasterizes_svg_when_direct_svg_is_unsafe(
 
 
 @pytest.mark.asyncio
-async def test_officehtml_profile_uses_officecli_utf16_ranges_without_linebreaks(
+async def test_officehtml_profile_uses_native_hard_breaks_for_utf16_ranges(
     tmp_path: Path,
 ) -> None:
     officehtml = tmp_path / "range-projection.html"
@@ -291,9 +291,7 @@ async def test_officehtml_profile_uses_officecli_utf16_ranges_without_linebreaks
     result = await compile_officecli(str(officehtml), "officehtml", str(output))
 
     assert result.manifest["object_kind_counts"] == {"table": 1}
-    assert result.manifest["objects"][0]["cells"][0]["text"].replace(
-        "\r\n", "\n"
-    ) == "✓\n(200mm)"
+    assert result.manifest["objects"][0]["cells"][0]["text"] == "✓\v(200mm)"
     assert output.is_file()
 
 

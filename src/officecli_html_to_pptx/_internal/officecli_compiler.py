@@ -583,7 +583,11 @@ def _canonical_source_runs_with_breaks(
     segments: list[list[dict[str, Any]]] = [[]]
     for raw_run in raw_paragraph.get("runs") or []:
         source = dict(raw_run)
-        text = str(source.get("text", ""))
+        # HTML text may retain Windows CRLF/CR characters when it comes from
+        # an OfficeHTML projection.  They are newline spellings, not visible
+        # run content; normalize before splitting so a native hard break is
+        # represented by exactly one OfficeCLI ``\v`` control character.
+        text = str(source.get("text", "")).replace("\r\n", "\n").replace("\r", "\n")
         is_break = bool(source.get("br"))
         if is_break:
             segments.append([])
