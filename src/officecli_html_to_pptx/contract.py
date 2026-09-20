@@ -107,11 +107,6 @@ _MEASUREMENT_ONLY_CSS_PROPERTIES = frozenset(
         "justify-items",
         "justify-self",
         "left",
-        # Existing Author decks may use letter spacing for browser measurement.
-        # It remains outside the native run matrix and is therefore not lowered
-        # or published as a native capability, but Contract 1.1 preserves the
-        # pre-existing measurement-only compatibility boundary.
-        "letter-spacing",
         "list-style-type",
         "max-height",
         "max-width",
@@ -155,6 +150,10 @@ _UNSUPPORTED_CSS_PROPERTIES = frozenset(
         # Measured but never lowered: see the note above.
         "text-transform",
         "text-shadow",
+        # Letter spacing is measurable by Chromium but is not part of the
+        # Contract 1.1 native run matrix.  It must fail closed rather than
+        # silently disappear in the PowerPoint text body.
+        "letter-spacing",
         "transition",
         "transition-delay",
         "transition-duration",

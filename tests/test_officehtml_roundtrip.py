@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -334,6 +335,37 @@ def _normalized_text(value: object) -> str:
     return " ".join(str(value).replace("\u00a0", " ").split())
 
 
+@pytest.mark.skipif(
+    not _AUTHOR_HTML.is_file(),
+    reason="The external Algeria Author HTML is required",
+)
+def test_algeria_legacy_author_fixture_is_blocked_by_letter_spacing() -> None:
+    """The pre-Contract-1.1 source stays rejected; the source file is untouched."""
+    report = check_contract(_AUTHOR_HTML, "author")
+    blocking = [item for item in report.diagnostics if item.blocking]
+
+    assert report.blocked
+    assert len(blocking) == 10
+    assert all(item.code == "unsupported_visible_css" for item in blocking)
+    assert all("letter-spacing" in item.message for item in blocking)
+
+
+def _contract_11_compatible_algeria_copy(source: Path, destination: Path) -> Path:
+    """Copy the legacy fixture without changing the external source file."""
+    source_text = source.read_text(encoding="utf-8")
+    sanitized_text, removed = re.subn(
+        r"letter-spacing\s*:\s*[^;{}]+;?",
+        "",
+        source_text,
+        flags=re.IGNORECASE,
+    )
+    assert removed == 10
+    destination.write_text(sanitized_text, encoding="utf-8")
+    compatible = check_contract(destination, "author")
+    assert not compatible.blocked, compatible.as_dict()
+    return destination
+
+
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     not _AUTHOR_HTML.is_file(),
@@ -342,11 +374,19 @@ def _normalized_text(value: object) -> str:
 async def test_algeria_officehtml_roundtrip_preserves_the_supported_manifest(
     tmp_path: Path,
 ) -> None:
+    # This external golden deck predates Contract 1.1 and contains ten
+    # letter-spacing declarations.  They are intentionally rejected by the
+    # product contract; the round-trip uses only a temporary sanitized copy so
+    # the supported native manifest remains covered without mutating the source.
+    author_html = _contract_11_compatible_algeria_copy(
+        _AUTHOR_HTML,
+        tmp_path / "algeria-contract-1-1-author.html",
+    )
     pptx_a = tmp_path / "algeria-a.pptx"
     officehtml = tmp_path / "algeria-a.html"
     pptx_b = tmp_path / "algeria-b.pptx"
 
-    first = await compile_officecli(str(_AUTHOR_HTML), "author", str(pptx_a))
+    first = await compile_officecli(str(author_html), "author", str(pptx_a))
     _project_to_officehtml(pptx_a, officehtml)
     second = await compile_officecli(str(officehtml), "officehtml", str(pptx_b))
 

@@ -173,7 +173,7 @@ def test_empty_paragraphs_are_not_normalized() -> None:
         ("margin-bottom: -1px", "unsupported_paragraph_margin"),
         ("text-decoration: line-through", "unsupported_text_decoration"),
         ("text-decoration: underline dotted", "unsupported_text_decoration"),
-        ("text-transform: uppercase", "unsupported_visible_css"),
+        ("letter-spacing: 1px", "unsupported_visible_css"),
         ("text-align: distribute", "unsupported_text_alignment"),
     ],
 )
