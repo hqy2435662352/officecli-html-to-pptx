@@ -491,12 +491,13 @@ EXTRACTION_JS = """
             naturalWidth: isImg ? (el.naturalWidth || 0) : 0,
             naturalHeight: isImg ? (el.naturalHeight || 0) : 0,
             borderRadius: style.borderRadius,
-            // A preset geometry the Canonical Author shape surface keeps as a
-            // PowerPoint preset rather than inferring from CSS.  A block box is
-            // a rect and a border-radius is a roundRect, but an ellipse or a
-            // right arrow has no CSS declaration that means it, so the emitted
-            // object names the preset and the lowering reads it here.
-            shapeGeometry: el.getAttribute('data-shape-geometry'),
+            // A preset geometry the Contract 1.1 Author shape surface keeps as
+            // a PowerPoint preset rather than inferring from CSS.  Public
+            // Author HTML uses the namespaced annotation.  The private legacy
+            // spelling remains a fallback solely for the hidden projection
+            // seam, whose emitted nodes carry data-projection-id.
+            shapeGeometry: el.getAttribute('data-pptx-shape-geometry') ||
+                           el.getAttribute('data-shape-geometry'),
             // Present exactly when this element came from the V0.4.x
             // PPTX-to-Author-HTML projection.  A projected object's text
             // formatting is a reading of a source deck the product was asked to

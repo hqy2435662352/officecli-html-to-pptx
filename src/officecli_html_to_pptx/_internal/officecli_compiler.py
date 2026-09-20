@@ -32,6 +32,7 @@ from lxml import html as _lxml_html
 from ..contract import (
     CANONICAL_RUN_IDENTITY_FIELDS,
     LIST_MARKER_PRESETS,
+    SHAPE_GEOMETRY_TOKEN_SET,
     SUPPORTED_INLINE_ELEMENTS,
     ContractReport,
     _inline_styles,
@@ -1636,16 +1637,38 @@ def _border_radius(element: dict[str, Any]) -> float:
     return max(0.0, float(match.group(0))) if match else 0.0
 
 
-# The preset geometries the Canonical Author shape surface carries as PowerPoint
-# presets rather than inferring from CSS.  A block box is a rect and a
-# border-radius is a roundRect; an ellipse and a right arrow cannot be inferred
-# that way, so an emitted object declares the preset it must be rebuilt as and
-# the declaration wins over the CSS inference.
-DECLARED_SHAPE_GEOMETRIES = frozenset({"ellipse", "rightArrow"})
+# The preset geometries the Contract 1.1 Author shape surface carries as
+# PowerPoint presets rather than inferring from CSS.  The authority lives in the
+# Contract module so the compiler and public capability manifest cannot drift.
+DECLARED_SHAPE_GEOMETRIES = SHAPE_GEOMETRY_TOKEN_SET
+
+
+def _is_fifty_percent_radius(element: dict[str, Any]) -> bool:
+    """Return whether CSS resolved a uniform 50% radius on the element."""
+    value = str(element.get("borderRadius", "") or "").strip().lower()
+    if not value:
+        return False
+    # Chromium normally returns ``50%`` for this declaration, while some
+    # computed-style paths serialize the x/y radii as ``50% / 50%``.
+    parts = [part for part in re.split(r"[\s/]+", value) if part]
+    return bool(parts) and all(part == "50%" for part in parts)
+
+
+def _ellipse_inference_allowed(element: dict[str, Any]) -> bool:
+    """Apply the Contract 1.1 tolerance for CSS 50% ellipse inference."""
+    if not _is_fifty_percent_radius(element):
+        return False
+    width = _number(element.get("width"))
+    height = _number(element.get("height"))
+    if width <= 0 or height <= 0:
+        return False
+    maximum = max(width, height)
+    tolerance = max(1.0, maximum * 0.001)
+    return abs(width - height) <= tolerance
 
 
 def _declared_shape_geometry(element: dict[str, Any]) -> str | None:
-    value = str(element.get("shapeGeometry", "") or "").strip()
+    value = str(element.get("shapeGeometry", "") or "")
     return value if value in DECLARED_SHAPE_GEOMETRIES else None
 
 
@@ -1653,6 +1676,8 @@ def _shape_geometry(element: dict[str, Any]) -> str:
     declared = _declared_shape_geometry(element)
     if declared is not None:
         return declared
+    if _ellipse_inference_allowed(element):
+        return "ellipse"
     return "roundRect" if _border_radius(element) > 0 else "rect"
 
 
@@ -1818,6 +1843,59 @@ def _text_props(
     return props
 
 
+def _uniform_shape_outline(element: dict[str, Any]) -> bool:
+    """Return whether a shape's four CSS borders are one solid outline."""
+    base_width = _number(element.get("borderWidth"))
+    base_style = str(element.get("borderStyle", "solid") or "solid").lower()
+    base_color = _parse_css_color(element.get("borderColor"))
+    sides = (
+        (
+            element.get("cellBorderTopColor"),
+            element.get("cellBorderTopWidth"),
+            element.get("cellBorderTopStyle"),
+        ),
+        (
+            element.get("cellBorderRightColor"),
+            element.get("cellBorderRightWidth"),
+            element.get("cellBorderRightStyle"),
+        ),
+        (
+            element.get("cellBorderBottomColor"),
+            element.get("cellBorderBottomWidth"),
+            element.get("cellBorderBottomStyle"),
+        ),
+        (
+            element.get("cellBorderLeftColor"),
+            element.get("cellBorderLeftWidth"),
+            element.get("cellBorderLeftStyle"),
+        ),
+    )
+    if base_width <= 0 and base_color is None:
+        return all(_number(width) <= 0 for _color, width, _style in sides)
+    for color, width, style in sides:
+        if abs(_number(width) - base_width) > 0.001:
+            return False
+        if str(style or "").lower() != base_style:
+            return False
+        if _parse_css_color(color) != base_color:
+            return False
+    return base_style in {"solid", "none"}
+
+
+def _shape_has_unsupported_adjustment(element: dict[str, Any]) -> bool:
+    """Return whether CSS radius would be an unrepresentable preset handle."""
+    radius = _border_radius(element)
+    if radius <= 0:
+        return False
+    declared = _declared_shape_geometry(element)
+    if declared in {None, "roundRect"}:
+        return False
+    # A 50% radius is the documented CSS source for an ellipse.  An explicit
+    # ellipse annotation owns that semantic even when its rectangle is not
+    # square; the square tolerance is only for unannotated inference.
+    return not (declared == "ellipse" and _is_fifty_percent_radius(element))
+
+
 def _shape_props(
     element: dict[str, Any],
     bounds: tuple[float, float, float, float],
@@ -1845,8 +1923,9 @@ def _shape_props(
         rgb, alpha = border
         line_width = _pt(border_width, scale_x)
         props["line"] = f"{_hex(rgb)}:{line_width:.4f}pt"
-        if alpha < 0.999:
-            props["lineOpacity"] = f"{alpha:.4f}"
+        line_alpha = alpha * max(0.0, min(1.0, _number(element.get("opacity"), 1.0)))
+        if line_alpha < 0.999:
+            props["lineOpacity"] = f"{line_alpha:.4f}"
     else:
         props["line"] = "none"
 
@@ -2747,6 +2826,20 @@ def _lower_slide(
             child_backdrop = _blend(fill_rgb, effective_alpha, inherited_backdrop)
 
         if has_shape:
+            if profile == "author" and _shape_has_unsupported_adjustment(element):
+                raise _diagnostic(
+                    "unsupported_shape_adjustment",
+                    f"Unsupported visible object on source slide {source_slide}, {source_object}: preset adjustment handles are outside the native shape geometry surface.",
+                    source_slide,
+                    source_object,
+                )
+            if profile == "author" and not _uniform_shape_outline(element):
+                raise _diagnostic(
+                    "unsupported_outline",
+                    f"Unsupported visible object on source slide {source_slide}, {source_object}: only uniform solid outlines are supported for native shapes.",
+                    source_slide,
+                    source_object,
+                )
             props = _shape_props(element, bounds, scale_x_local, scale_y_local, inherited_backdrop)
             add_object(
                 element,

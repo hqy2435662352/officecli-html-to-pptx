@@ -23,6 +23,26 @@ AUTHOR_CANVAS_SIZES = ((1920.0, "px", 1080.0, "px"), (960.0, "px", 540.0, "px"))
 AUTHOR_PICTURE_SOURCE = "data:image/..."
 AUTHOR_EXTERNAL_RESOURCES_ALLOWED = False
 AUTHOR_TABLE_CELL_SPANS = True
+SHAPE_GEOMETRY_ATTRIBUTE = "data-pptx-shape-geometry"
+# This is the Contract 1.1 authority for the public native-shape annotation.
+# Keep the order stable: it is part of the machine-readable capability output
+# and mirrors the public ticket's acceptance checklist.
+SHAPE_GEOMETRY_TOKENS = (
+    "rect",
+    "roundRect",
+    "ellipse",
+    "triangle",
+    "diamond",
+    "parallelogram",
+    "chevron",
+    "hexagon",
+    "leftArrow",
+    "rightArrow",
+    "upArrow",
+    "downArrow",
+    "star5",
+)
+SHAPE_GEOMETRY_TOKEN_SET = frozenset(SHAPE_GEOMETRY_TOKENS)
 CSS_CLASSIFICATIONS = (
     "measurement-only",
     "rendered",
@@ -607,6 +627,36 @@ def paragraph_layout_surface() -> dict[str, Any]:
     }
 
 
+def shape_geometry_surface() -> dict[str, Any]:
+    """Declare the closed public native-shape geometry surface.
+
+    The public annotation is deliberately a small, case-sensitive vocabulary.
+    The projection reader may retain its private legacy spelling internally, but
+    that spelling is not part of this manifest or the Author Contract surface.
+    """
+    return {
+        "attribute": SHAPE_GEOMETRY_ATTRIBUTE,
+        "tokens": list(SHAPE_GEOMETRY_TOKENS),
+        "case_sensitive": True,
+        "native": "PowerPoint preset geometry",
+        "inference": {
+            "rect": "unannotated block box",
+            "roundRect": "unannotated positive border-radius",
+            "ellipse": {
+                "source": "border-radius:50%",
+                "tolerance": "abs(width-height) <= max(1 CSS px, 0.1% * max(width,height))",
+            },
+        },
+        "rejected": [
+            "unknown-token",
+            "case-variant",
+            "arbitrary-preset",
+            "custom-path",
+            "adjust-handle",
+        ],
+    }
+
+
 def _resolve_text_alignment(element: Mapping[str, Any]) -> str:
     """Resolve a measured ``text-align`` to its native paragraph alignment.
 
@@ -643,6 +693,7 @@ def author_capability_manifest() -> dict[str, Any]:
             },
         },
         "paragraph_layout_surface": paragraph_layout_surface(),
+        "shape_geometry_surface": shape_geometry_surface(),
         "list_surface": list_surface(),
         "accepted_resources": {
             "picture_source": AUTHOR_PICTURE_SOURCE,
@@ -1355,6 +1406,84 @@ def _check_css_value(
         )
 
 
+def _check_author_shape_geometry(
+    element: Any,
+    findings: list[ContractDiagnostic],
+) -> None:
+    """Validate the public shape annotation before measurement.
+
+    ``data-shape-geometry`` is accepted only on the private projection path,
+    identified by the projector's complete object-identity marker set.  Ordinary
+    Author HTML must use the namespaced public spelling so a typo cannot be
+    silently lowered as a rectangle.
+    """
+    source = _node_path(element)
+    public_value = element.get(SHAPE_GEOMETRY_ATTRIBUTE)
+    private_value = element.get("data-shape-geometry")
+    projection_identity = all(
+        element.get(attribute)
+        for attribute in (
+            "data-source-object",
+            "data-source-kind",
+            "data-projection-disposition",
+            "data-projection-id",
+        )
+    )
+
+    if private_value is not None and not projection_identity:
+        _emit(
+            findings,
+            "author",
+            "unsupported_shape_geometry_annotation",
+            "data-shape-geometry is a private projection alias; use data-pptx-shape-geometry.",
+            source,
+        )
+
+    for attribute, value in (
+        (SHAPE_GEOMETRY_ATTRIBUTE, public_value),
+        ("data-shape-geometry", private_value),
+    ):
+        if value is None:
+            continue
+        # Do not strip the value: Contract tokens are deliberately exact and
+        # case-sensitive, including their spelling and whitespace.
+        if value not in SHAPE_GEOMETRY_TOKEN_SET:
+            _emit(
+                findings,
+                "author",
+                "unsupported_shape_geometry",
+                f"{attribute} must be one of the exact native tokens: {', '.join(SHAPE_GEOMETRY_TOKENS)}.",
+                source,
+            )
+
+    if public_value is not None and private_value is not None and public_value != private_value:
+        _emit(
+            findings,
+            "author",
+            "conflicting_shape_geometry",
+            "Public and private shape geometry annotations disagree.",
+            source,
+        )
+
+    for attribute in element.attrib:
+        normalized = str(attribute).lower()
+        if normalized in {
+            "data-pptx-kind",
+            "data-pptx-shape-path",
+            "data-pptx-shape-adjust",
+            "data-pptx-shape-adjustment",
+            "data-shape-adjust",
+            "data-shape-adjustment",
+        }:
+            _emit(
+                findings,
+                "author",
+                "unsupported_shape_geometry_annotation",
+                f"{attribute} is outside the closed native shape geometry surface.",
+                source,
+            )
+
+
 def _check_author(
     document: Any,
     findings: list[ContractDiagnostic],
@@ -1393,6 +1522,7 @@ def _check_author(
         if not _is_visible_author_element(element, document):
             continue
         tag = str(element.tag).lower() if isinstance(element.tag, str) else ""
+        _check_author_shape_geometry(element, findings)
         if tag in _UNSUPPORTED_VISIBLE_TAGS:
             _emit(
                 findings,
@@ -1774,6 +1904,9 @@ __all__ = [
     "AUTHOR_PICTURE_SOURCE",
     "AUTHOR_EXTERNAL_RESOURCES_ALLOWED",
     "AUTHOR_TABLE_CELL_SPANS",
+    "SHAPE_GEOMETRY_ATTRIBUTE",
+    "SHAPE_GEOMETRY_TOKENS",
+    "SHAPE_GEOMETRY_TOKEN_SET",
     "TableRegion",
     "LogicalTableGrid",
     "TableTopologyError",
@@ -1808,6 +1941,7 @@ __all__ = [
     "ContractReport",
     "author_capability_manifest",
     "paragraph_layout_surface",
+    "shape_geometry_surface",
     "list_surface",
     "check_contract",
 ]
