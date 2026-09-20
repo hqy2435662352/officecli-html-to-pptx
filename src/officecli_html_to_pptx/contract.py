@@ -1401,7 +1401,7 @@ def _check_css_value(
             findings,
             profile,
             "unsupported_visible_css",
-            "vertical writing modes are outside OfficeCLI Contract v1.",
+            "vertical writing modes are outside OfficeCLI Contract 1.1.",
             source_object,
         )
 

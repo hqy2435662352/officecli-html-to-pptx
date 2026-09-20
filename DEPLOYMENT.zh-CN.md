@@ -1,10 +1,10 @@
-# officecli-html-to-pptx V0.2 实验版部署与使用指南
+# officecli-html-to-pptx V0.5.1 部署与使用指南
 
 ## 交付范围
 
 本 ZIP 是客户试用包，包含：
 
-- `core/officecli_html_to_pptx-0.2.0-py3-none-any.whl`：Python Core Product；
+- `core/officecli_html_to_pptx-0.5.1-py3-none-any.whl`：Python Core Product；
 - `plugins/officecli-html-to-pptx/`：skills-only Codex Plugin；
 - `.agents/plugins/marketplace.json`：本地 Plugin marketplace 清单；
 - 本部署与使用指南、README 和 MIT License。
@@ -20,7 +20,7 @@ ZIP 不内嵌 Python、Node.js、OfficeCLI、Chromium 或 Python 第三方依赖
     请先按「Platform Acceptance Track」跑一遍完整流程再投入使用；
 - Python `>=3.10,<3.15`，推荐 Python 3.12；
 - Node.js `>=20,<23`；
-- OfficeCLI `>=1.0.147`，且 `officecli` 命令已加入 `PATH`；
+- OfficeCLI `>=1.0.151`，且 `officecli` 命令已加入 `PATH`；
 - Playwright `1.62.0` 及其 Chromium revision `1234`；
 - 如需 Agent 工作流：支持 Plugin marketplace 的 Codex Desktop/CLI。
 
@@ -37,7 +37,7 @@ OfficeCLI、Python、Node.js 和 Codex 的安装来源由部署方管理。本�
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.2.0-py3-none-any.whl
+.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.5.1-py3-none-any.whl
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
@@ -52,7 +52,7 @@ py -3.12 -m venv .venv
 ```
 
 只有 `doctor` 返回 exit code `0` 且 JSON `status` 为 `PASS` 时才继续构建。
-OfficeCLI 低于 `1.0.147`、Playwright/Chromium 不匹配、Node.js 或路径缺失都会返回
+OfficeCLI 低于 `1.0.151`、Playwright/Chromium 不匹配、Node.js 或路径缺失都会返回
 exit code `2` 和可操作的诊断。
 
 ## 在 Linux 上部署
@@ -62,7 +62,7 @@ exit code `2` 和可操作的诊断。
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install ./core/officecli_html_to_pptx-0.2.0-py3-none-any.whl
+.venv/bin/python -m pip install ./core/officecli_html_to_pptx-0.5.1-py3-none-any.whl
 .venv/bin/python -m playwright install --with-deps chromium
 .venv/bin/officecli-html-to-pptx capabilities --json
 .venv/bin/officecli-html-to-pptx doctor --json
@@ -185,6 +185,8 @@ proposal.evidence/
   capabilities.json
   runtime.json
   manifest.json
+  readback.json
+  native-evidence.json
   validate.json
   issues.json
   result.json
@@ -197,12 +199,21 @@ proposal.evidence/
 交付时保留整个 PPTX/Evidence Pair，不要只复制 PPTX，也不要混用不同 build 的
 PPTX、JSON 或 Comparison Image。
 
-## V0.2 实验版边界
+V0.5.1 的 tracked public corpus 是
+`tests/fixtures/v05_01_public_corpus.html`，固定约四页：文本/CJK/hard break、
+合并表格、native geometry，以及组合业务页。V0.4 projection corpus 仍是独立
+的内部回归资产，不进入 V0.5.1 public gate 或能力计数。完成发布验收时必须执行
+`capabilities -> doctor -> check -> fresh build -> independent readback ->
+validate/issues -> Gate 3 -> finalize`；`unsupported`、`unresolved` 和
+`material_delta` 必须都是零，minor findings 仍可推导为 `PASS_WITH_FINDINGS`。
 
-支持：从 Contract-checked Author HTML 新建 PPTX；可编辑的文本框、常用形状、
-data-URI 图片和无合并单元格的原生表格。
+## V0.5.1 正式边界
 
-不支持：编辑已有 PPTX、任意网页/CSS、外部图片 URL、合并单元格、原生图表、
+支持：从 Contract 1.1 checked Author HTML 新建 PPTX；可编辑的文本框、闭合
+形状几何、data-URI 图片、合法矩形 rowspan/colspan 合并表格，以及冻结的
+文本段落/run 矩阵。
+
+不支持：编辑已有 PPTX、任意网页/CSS、外部图片 URL、原生图表、
 SmartArt、动画、音视频以及 master/layout/theme 的完整保真。
 
 本包是实验性交付，不承诺向后兼容。出现问题时请保留输入 HTML、完整 Evidence
@@ -210,7 +221,7 @@ Bundle、`doctor --json` 输出和产品版本号。
 
 ## 常见排查
 
-- `officecli_version_mismatch`：安装或选择 OfficeCLI `1.0.147` 或更新版本；
+- `officecli_version_mismatch`：安装或选择 OfficeCLI `1.0.151` 或更新版本；
 - `missing_playwright`：确认在同一虚拟环境中安装了本 wheel；
 - `missing_chromium` / `chromium_revision_mismatch`：在同一虚拟环境执行
   `python -m playwright install chromium`；

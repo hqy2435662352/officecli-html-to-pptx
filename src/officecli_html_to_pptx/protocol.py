@@ -1,4 +1,4 @@
-"""The small JSON protocol shared by the V0.2 application and CLI."""
+"""The small JSON protocol shared by the V0.5.1 application and CLI."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 PRODUCT_NAME = "officecli-html-to-pptx"
-PRODUCT_VERSION = "0.2.0"
+PRODUCT_VERSION = "0.5.1"
 ENVELOPE_SCHEMA_VERSION = 1
 
 

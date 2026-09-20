@@ -112,6 +112,38 @@ def _version_text(value: tuple[int, ...] | None) -> str | None:
     return ".".join(str(part) for part in value) if value is not None else None
 
 
+def officecli_runtime_snapshot(
+    *,
+    which: Callable[[str], str | None] = shutil.which,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> dict[str, Any]:
+    """Return the discovered OfficeCLI version and the Contract 1.1 floor.
+
+    This narrow probe is shared by the direct compiler seam and ``doctor``.
+    It deliberately does not inspect Chromium, Node, or output locations, so a
+    compiler can fail before Chromium measurement or PPTX creation while still
+    recording the exact external runtime it observed.
+    """
+
+    executable = which("officecli")
+    raw_version = version_text = None
+    if executable:
+        raw_version, version_text = _run_version(executable, runner=runner)
+    discovered = _version_tuple(raw_version)
+    required = _version_tuple(FORMAL_OFFICECLI_VERSION)
+    compatible = (
+        discovered is not None
+        and required is not None
+        and discovered >= required
+    )
+    return {
+        "required_version": f">={FORMAL_OFFICECLI_VERSION}",
+        "executable": executable,
+        "discovered_version": version_text,
+        "compatible": compatible,
+    }
+
+
 def _run_version(
     executable: str,
     args: Sequence[str] = ("--version",),
@@ -350,23 +382,12 @@ def diagnose_environment(
     if code:
         diagnostics.append(Diagnostic(code, "error", message, True, remediation=remediation, recheck="officecli-html-to-pptx doctor --json"))
 
-    officecli_executable = which("officecli")
-    officecli_raw = officecli_text = None
-    if officecli_executable:
-        officecli_raw, officecli_text = _run_version(officecli_executable, runner=runner)
-    officecli_version = _version_tuple(officecli_raw)
-    officecli_floor = _version_tuple(FORMAL_OFFICECLI_VERSION)
-    officecli_ok = (
-        officecli_version is not None
-        and officecli_floor is not None
-        and officecli_version >= officecli_floor
-    )
-    snapshot["officecli"] = {
-        "required_version": f">={FORMAL_OFFICECLI_VERSION}",
-        "executable": officecli_executable,
-        "discovered_version": officecli_text,
-        "compatible": officecli_ok,
-    }
+    officecli_info = officecli_runtime_snapshot(which=which, runner=runner)
+    officecli_executable = officecli_info["executable"]
+    officecli_text = officecli_info["discovered_version"]
+    officecli_version = _version_tuple(officecli_text)
+    officecli_ok = bool(officecli_info["compatible"])
+    snapshot["officecli"] = officecli_info
     if officecli_executable is None:
         code = "missing_officecli"
         message = "OfficeCLI was not found on PATH."
@@ -493,5 +514,6 @@ __all__ = [
     "current_platform",
     "diagnose_environment",
     "officecli_pptx_screenshot_render",
+    "officecli_runtime_snapshot",
     "supported_platforms_text",
 ]

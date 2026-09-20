@@ -44,7 +44,13 @@ from ..contract import (
     check_contract,
 )
 from ..measurement import extract_measurements
+from ..runtime import _version_tuple, officecli_runtime_snapshot
 from ..styles import resolve_pptx_font as _resolve_pptx_font
+
+# Alias the runtime authority locally so focused compiler tests can replace the
+# narrow probe without replacing the full doctor (which also checks Chromium,
+# Node, and output locations).
+_officecli_runtime_snapshot = officecli_runtime_snapshot
 
 SLIDE_WIDTH_PT = 960.0
 SLIDE_HEIGHT_PT = 540.0
@@ -127,6 +133,7 @@ class OfficeCLICompilationResult:
     object_count: int
     diagnostics: tuple[CompilationDiagnostic, ...]
     manifest: dict[str, Any]
+    runtime: dict[str, Any] | None = None
 
     def __str__(self) -> str:
         return self.output_path
@@ -251,6 +258,42 @@ def _officecli_executable() -> str:
             [CompilationDiagnostic("error", "officecli_unavailable", "Install OfficeCLI 1.0.151 and add it to PATH.")],
         )
     return executable
+
+
+def _require_officecli_runtime() -> dict[str, Any]:
+    """Fail closed before measurement or output creation below the Contract floor."""
+
+    snapshot = _officecli_runtime_snapshot()
+    discovered = snapshot.get("discovered_version")
+    if snapshot.get("compatible"):
+        return snapshot
+    if not snapshot.get("executable"):
+        raise OfficeCLICompilationError(
+            "OfficeCLI executable was not found on PATH.",
+            [
+                CompilationDiagnostic(
+                    "error",
+                    "officecli_unavailable",
+                    "OfficeCLI 1.0.151 or newer is required before measurement or output creation.",
+                )
+            ],
+        )
+    if not discovered or _version_tuple(str(discovered)) is None:
+        code = "malformed_officecli_version"
+        message = (
+            "OfficeCLI returned no parseable version; 1.0.151 or newer is "
+            "required before measurement or output creation."
+        )
+    else:
+        code = "officecli_version_mismatch"
+        message = (
+            f"OfficeCLI {discovered} is below the minimum supported version "
+            "1.0.151; measurement and output creation were skipped."
+        )
+    raise OfficeCLICompilationError(
+        message,
+        [CompilationDiagnostic("error", code, message, operation="version")],
+    )
 
 
 def _run_officecli(
@@ -2264,7 +2307,7 @@ def _table_cell_paragraph_props(
     if any(props != first for props in projected[1:]):
         raise _diagnostic(
             "unsupported_table_paragraph_format",
-            f"Table cell paragraph properties differ on source slide {source_slide}, {source_object}; OfficeCLI Contract v1 exposes these properties at cell scope.",
+            f"Table cell paragraph properties differ on source slide {source_slide}, {source_object}; OfficeCLI Contract 1.1 exposes these properties at cell scope.",
             source_slide,
             source_object,
         )
@@ -3026,7 +3069,7 @@ def _batch_for_slides(
                     if cell.paragraphs:
                         cell_path = f"{table_path}/tr[{row_index}]/tc[{column_index}]"
                         # OfficeCLI's table-cell setter is the public paragraph
-                        # formatting surface for Contract v1: align,
+                        # formatting surface for Contract 1.1: align,
                         # linespacing, spacebefore, spaceafter, and direction
                         # fan out to every paragraph in the cell.  Those
                         # properties were projected into ``cell.props`` above;
@@ -3177,6 +3220,12 @@ async def compile_officecli(
     if contract.blocked:
         raise _contract_failure(contract)
 
+    # This is intentionally before Chromium measurement and before the first
+    # temporary PPTX is created.  Contract 1.1 depends on OfficeCLI 1.0.151's
+    # native line-break and merge behavior and must not leave a misleading
+    # partial artifact when an older runtime is selected.
+    runtime_snapshot = _require_officecli_runtime()
+
     if profile == "author":
         measurements = await extract_measurements(
             input_html,
@@ -3293,6 +3342,7 @@ async def compile_officecli(
         sum(len(slide.objects) for slide in slides),
         (),
         manifest,
+        runtime_snapshot,
     )
 
 

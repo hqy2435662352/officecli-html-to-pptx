@@ -45,7 +45,7 @@ def test_capabilities_are_author_only_and_use_product_envelope(
     assert payload["status"] == "PASS"
     assert payload["product"] == {
         "name": "officecli-html-to-pptx",
-        "version": "0.2.0",
+        "version": "0.5.1",
     }
     assert payload["data"]["commands"] == [
         "capabilities",
@@ -196,19 +196,67 @@ def _patch_successful_build(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda **_: result(
             "doctor",
             "PASS",
-            data={"runtime": {"formal_pair": {"officecli": ">=1.0.151"}}},
+            data={
+                "runtime": {
+                    "formal_pair": {"officecli": ">=1.0.151"},
+                    "officecli": {
+                        "required_version": ">=1.0.151",
+                        "discovered_version": "1.0.151",
+                        "compatible": True,
+                    },
+                }
+            },
         ),
     )
 
     async def fake_compile(input_html: str, profile: str, output: str) -> OfficeCLICompilationResult:
         assert profile == "author"
         Path(output).write_bytes(b"fake-pptx")
-        return OfficeCLICompilationResult(output, "author", 1, 1, (), {"slide_count": 1})
+        return OfficeCLICompilationResult(
+            output,
+            "author",
+            1,
+            1,
+            (),
+            {
+                "slide_count": 1,
+                "object_kind_counts": {"shape": 1},
+                "objects": [
+                    {
+                        "kind": "shape",
+                        "name": "shape-1",
+                        "bounds_pt": [0.0, 0.0, 10.0, 10.0],
+                        "text": "",
+                        "paragraphs": [],
+                        "properties": {"geometry": "rect"},
+                    }
+                ],
+            },
+        )
 
     monkeypatch.setattr(application, "compile_officecli", fake_compile)
     monkeypatch.setattr(application, "_run_officecli", lambda *args: "")
     monkeypatch.setattr(application, "_validate_build_output", lambda _: {"status": "PASS"})
     monkeypatch.setattr(application, "_collect_issues", lambda _: {"status": "PASS", "output": ""})
+    monkeypatch.setattr(
+        application,
+        "_collect_readback",
+        lambda _: {
+            "slide_count": 1,
+            "slide_size_pt": {"width": 960.0, "height": 540.0},
+            "object_kind_counts": {"shape": 1},
+            "objects": [
+                {
+                    "kind": "shape",
+                    "name": "shape-1",
+                    "source_slide": 1,
+                    "bounds_pt": [0.0, 0.0, 10.0, 10.0],
+                    "paragraphs": [],
+                    "properties": {"geometry": "rect"},
+                }
+            ],
+        },
+    )
 
     async def fake_comparisons(_: Path, __: Path, destination: Path, ___: int) -> list[dict[str, str | int]]:
         destination.mkdir(parents=True, exist_ok=True)
@@ -237,6 +285,8 @@ def test_build_publishes_bound_pair_and_finalize_passes(tmp_path: Path, monkeypa
             "contract.json",
             "issues.json",
             "manifest.json",
+            "native-evidence.json",
+            "readback.json",
             "result.json",
             "runtime.json",
             "validate.json",
@@ -246,6 +296,16 @@ def test_build_publishes_bound_pair_and_finalize_passes(tmp_path: Path, monkeypa
     assert (evidence / "comparisons" / "slide-001.png").is_file()
     assert not list(evidence.rglob("*html_slide*"))
     assert not list(evidence.rglob("*pptx_slide*"))
+    native_evidence = json.loads(
+        (evidence / "native-evidence.json").read_text(encoding="utf-8")
+    )
+    assert native_evidence["diagnostics"] == {
+        "unsupported": 0,
+        "unresolved": 0,
+        "material_delta": 0,
+        "compiler": [],
+    }
+    assert native_evidence["counts"]["readback_object_count"] == 1
 
     review_path = evidence / "visual-review.json"
     review = json.loads(review_path.read_text(encoding="utf-8"))
@@ -257,6 +317,14 @@ def test_build_publishes_bound_pair_and_finalize_passes(tmp_path: Path, monkeypa
     assert finalized.status == "PASS"
     assert finalized.exit_code == 0
     assert (evidence / "finalization.json").is_file()
+    finalized_native = json.loads(
+        (evidence / "native-evidence.json").read_text(encoding="utf-8")
+    )
+    assert finalized_native["gate3"] == {
+        "status": "PASS",
+        "slide_count": 1,
+        "reviewed_slides": 1,
+    }
 
 
 def test_build_refuses_either_pair_target_before_compilation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
