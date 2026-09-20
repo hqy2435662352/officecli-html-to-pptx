@@ -52,8 +52,10 @@ _Avoid_: product release, OfficeCLI version
 
 **OfficeCLI Minimum Supported Version**:
 The lowest OfficeCLI version accepted for rendering and validation. V0.2
-requires OfficeCLI `>=1.0.147`; every build records the discovered version in
-its evidence. It is an external-runtime floor, not a Product Version.
+requires OfficeCLI `>=1.0.147`; V0.5.1 and Contract 1.1 require OfficeCLI
+`>=1.0.151` and fail before measurement or output creation when the discovered
+version is lower. Every build records the discovered version in its evidence.
+It is an external-runtime floor, not a Product Version.
 _Avoid_: OfficeCLI Compatibility Baseline, exact OfficeCLI pin, Contract version
 
 **Rendering Compatibility Pair**:
@@ -276,6 +278,78 @@ _Avoid_: source screenshot, PPTX screenshot, representative sample
 The V0.2 supported capability that compiles Author Contract HTML into a new
 editable PowerPoint presentation.
 _Avoid_: OfficeHTML compiler, legacy renderer
+
+**Native Author Capability**:
+An accepted Author HTML construct whose declared semantics lower to the
+corresponding editable PowerPoint object or property and are independently
+read back from the generated PPTX. Editable primitive decomposition and visual
+rasterization do not qualify as native semantic preservation.
+_Avoid_: visually retained content, editable-looking output, shape decomposition
+
+**Public Shape Geometry Annotation**:
+The Contract 1.1 Author HTML attribute `data-pptx-shape-geometry`, whose value
+selects one allowlisted native PowerPoint preset for a shape candidate. The
+projection seam may read the older `data-shape-geometry` spelling internally,
+but that spelling is not part of the public Author Contract.
+_Avoid_: data-shape-geometry, data-pptx-kind, arbitrary preset passthrough
+
+**Normalized Merge Topology**:
+The renderer-independent description of which rectangular HTML table cells
+belong to each native merged region, expressed by logical row/column anchors
+and spans. Acceptance compares this topology rather than OfficeCLI or OOXML
+`hMerge`/`vMerge` serialization details.
+_Avoid_: merge XML equality, hMerge sequence, visual cell overlap
+
+**Public Acceptance Corpus**:
+The small, tracked Author HTML corpus exercised through the public Product
+Commands to substantiate a released capability claim. V0.5.1 targets roughly
+four pages covering native text structure, merged tables, shape geometry, and
+one integrated business page.
+_Avoid_: private representative deck, internal projection fixture, sample-only smoke test
+
+**Projection Regression Corpus**:
+The retained V0.4 representative-page corpus that protects the hidden PPTX
+projection seam without becoming a V0.5.1 public gate or capability claim.
+_Avoid_: Public Acceptance Corpus, whole-deck product acceptance
+
+**General Localized Fallback**:
+A future lowering policy that preserves an otherwise unsupported visual region
+as an object-local raster, optionally with separately editable text. It is not
+a Native Author Capability and is outside the V0.5.1 and V0.5.2 capability
+releases; existing type-specific compatibility handling such as verified SVG
+picture fallback is not reclassified as this general policy.
+_Avoid_: native lowering, whole-slide screenshot, silent degradation
+
+**Authored Text Boundary**:
+One of three distinct Author text facts: a paragraph boundary, an
+intra-paragraph hard break, or an automatic visual wrap. Contract 1.1 lowers
+the first to a native paragraph and the second to a native line break;
+`visualLines` belongs only to measurement, evidence, and visual review and
+never creates either native structure.
+_Avoid_: newline semantics, visual-line paragraph, generic break
+
+**Trailing Empty Paragraph**:
+An authored empty paragraph after the final non-empty paragraph. OfficeCLI
+1.0.151 preserved one and two trailing empty paragraphs, in order, in three
+fresh public create/readback cycles each. Contract 1.1 therefore preserves
+their exact cardinality on every supported runtime and permits neither
+normalization nor a host-dependent capability branch.
+_Avoid_: optional trailing newline, runtime normalization
+
+**Frozen Text Property Matrix**:
+The closed Contract 1.1 list of supported Author run and paragraph properties,
+including each value domain, conversion, normalization, tolerance, and
+readback obligation. A property that is measurable but absent from this matrix
+is not a native capability claim.
+_Avoid_: complete formatting, rich text support, browser typography
+
+**Canonical Merged Border Semantics**:
+The Contract 1.1 rule for a native merged table region: logical row heights
+and column widths remain grid properties; the anchor's normalized final
+top/right/bottom/left borders become the four visible outer borders; internal
+merged borders are absent. It is deliberately not full browser collapsed-
+border conflict resolution.
+_Avoid_: CSS border-collapse equivalence, continuation-cell formatting
 
 **Candidate HTML**:
 Any HTML supplied by a user or produced during authoring before the current
@@ -560,12 +634,13 @@ Supported:
 - native table, row, column, and cell;
 - basic fills, outlines, opacity, rotation, margins, text formatting, alignment, table dimensions, padding, and borders needed by the golden case.
 
-Explicitly deferred:
+Explicitly deferred by the Contract 1.0 MVP surface:
 
 - charts and chart-SVG recovery;
 - connectors, groups, SmartArt, equations, media, animations, notes, comments, and complete hyperlink round trips;
 - masters, layouts, and themes reconstruction;
-- merged table cells;
+- merged table cells; Contract 1.1 supersedes this item for legal rectangular
+  Author `rowspan`/`colspan` regions with normalized merge topology;
 - complex gradients, filters, clip paths, complex shadows, and arbitrary SVG-to-editable-path conversion;
 - a semantic slide model;
 - responsive or arbitrary websites;
