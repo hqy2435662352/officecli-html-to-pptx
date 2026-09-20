@@ -1,7 +1,7 @@
 # V0.5.1 ticket #24 acceptance fixture
 
 This one-slide Author fixture is deliberately limited to the merged-table
-vertical slice. It contains:
+vertical slice and uses the public 1920x1080 Author canvas. It contains:
 
 - one combined `rowspan="2" colspan="2"` anchor;
 - one ordinary cell beneath the vertical merge;
@@ -23,5 +23,6 @@ The expected normalized regions are expressed in one-based logical coordinates:
 ```
 
 Acceptance compares this normalized topology and the logical row/column
-dimensions. It does not inspect OfficeCLI/OOXML continuation-cell `hMerge` or
-`vMerge` serialization.
+dimensions, plus the table's normalized source geometry against the compiler
+manifest and PPTX readback within the existing point tolerance. It does not
+inspect OfficeCLI/OOXML continuation-cell `hMerge` or `vMerge` serialization.

@@ -22,9 +22,20 @@ from officecli_html_to_pptx.contract import (
     build_logical_table_grid,
     check_contract,
 )
+from officecli_html_to_pptx.measurement import extract_measurements
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "v05_01_native_table.html"
+
+
+def _table_rows(element: dict) -> list[dict]:
+    if element.get("tag") == "tr":
+        return [element]
+    return [
+        row
+        for child in element.get("children", [])
+        for row in _table_rows(child)
+    ]
 
 
 EXPECTED_TOPOLOGY = [
@@ -102,6 +113,29 @@ async def test_public_compiler_emits_one_native_table_with_normalized_topology(
 
     assert result.manifest["object_kind_counts"] == {"table": 1}
     table = result.manifest["objects"][0]
+    measured = await extract_measurements(str(FIXTURE), officecli_mode=True)
+    source_slide = measured[0]
+    source_table = next(
+        element for element in source_slide["elements"] if element.get("tag") == "table"
+    )
+    assert (source_slide["width"], source_slide["height"]) == (1920, 1080)
+    assert [source_table[key] for key in ("x", "y", "width", "height")] == pytest.approx(
+        [160, 108, 1200, 600], abs=1.0
+    )
+    slide_size = result.manifest["slide_size_pt"]
+    scale_x = slide_size["width"] / source_slide["width"]
+    scale_y = slide_size["height"] / source_slide["height"]
+    row_heights = [row["height"] for row in _table_rows(source_table)]
+    assert len(row_heights) == 4
+    # Chromium's collapsed-border table box includes the outer border; the
+    # native table bounds are the logical row sum used by the compiler.
+    normalized_source_bounds = [
+        source_table["x"] * scale_x,
+        source_table["y"] * scale_y,
+        source_table["width"] * scale_x,
+        sum(row_heights) * scale_y,
+    ]
+    assert table["bounds_pt"] == pytest.approx(normalized_source_bounds, abs=1.0)
     assert table["rows"] == 4
     assert table["columns"] == 3
     assert table["normalized_merge_topology"] == EXPECTED_TOPOLOGY
@@ -145,6 +179,9 @@ async def test_merged_table_readback_compares_topology_dimensions_and_native_ide
     assert table["normalized_merge_topology"] == EXPECTED_TOPOLOGY
     assert table["rows"] == 4
     assert table["columns"] == 3
+    assert table["bounds_pt"] == pytest.approx(
+        result.manifest["objects"][0]["bounds_pt"], abs=1.0
+    )
     assert table["column_widths_pt"] == pytest.approx(
         result.manifest["objects"][0]["column_widths_pt"], abs=0.5
     )
