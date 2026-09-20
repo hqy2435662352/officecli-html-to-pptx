@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from lxml import html as _lxml_html
 
@@ -22,7 +22,7 @@ SUPPORTED_OBJECT_KINDS = frozenset({"shape", "textbox", "picture", "table"})
 AUTHOR_CANVAS_SIZES = ((1920.0, "px", 1080.0, "px"), (960.0, "px", 540.0, "px"))
 AUTHOR_PICTURE_SOURCE = "data:image/..."
 AUTHOR_EXTERNAL_RESOURCES_ALLOWED = False
-AUTHOR_TABLE_CELL_SPANS = False
+AUTHOR_TABLE_CELL_SPANS = True
 CSS_CLASSIFICATIONS = (
     "measurement-only",
     "rendered",
@@ -306,6 +306,211 @@ LIST_REJECTIONS = {
         "List Paragraph."
     ),
 }
+
+
+@dataclass(frozen=True)
+class TableRegion:
+    """One anchor-owned rectangular region in a logical table grid."""
+
+    anchor_row: int
+    anchor_column: int
+    row_span: int
+    column_span: int
+    source_row: int
+    source_column: int
+    source_object: str
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "anchorRow": self.anchor_row,
+            "anchorColumn": self.anchor_column,
+            "rowSpan": self.row_span,
+            "columnSpan": self.column_span,
+        }
+
+
+@dataclass(frozen=True)
+class LogicalTableGrid:
+    """Validated logical topology shared by Contract and native lowering."""
+
+    rows: int
+    columns: int
+    regions: tuple[TableRegion, ...]
+    occupancy: tuple[tuple[int, ...], ...]
+
+    @property
+    def normalized_topology(self) -> list[dict[str, int]]:
+        return [region.as_dict() for region in self.regions]
+
+
+class TableTopologyError(ValueError):
+    """A stable, source-bound failure while constructing a logical table grid."""
+
+    def __init__(self, code: str, message: str, source_object: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.source_object = source_object
+
+
+def _table_span_value(
+    raw_value: Any,
+    *,
+    attribute: str,
+    source_object: str,
+) -> int:
+    """Parse one HTML span without inheriting browser ``parseInt`` leniency."""
+
+    if raw_value is None:
+        return 1
+    text = str(raw_value).strip()
+    if not re.fullmatch(r"[+-]?\d+", text):
+        raise TableTopologyError(
+            "malformed_table_span",
+            f"{attribute} must be a positive integer on {source_object}; got {raw_value!r}.",
+            source_object,
+        )
+    value = int(text)
+    if value <= 0:
+        raise TableTopologyError(
+            "table_span_non_positive",
+            f"{attribute} must be greater than zero on {source_object}; got {raw_value!r}.",
+            source_object,
+        )
+    return value
+
+
+def build_logical_table_grid(
+    rows: Sequence[Sequence[Mapping[str, Any]]],
+    *,
+    source_object: str,
+) -> LogicalTableGrid:
+    """Build a rectangular logical grid and fail closed on ambiguous topology.
+
+    ``rows`` contains lightweight cell mappings with ``rowspan``, ``colspan``,
+    ``source_object``, and optional ``text`` keys.  The function deliberately
+    does not infer a missing cell: every logical slot must be owned by exactly
+    one anchor region after HTML row-span placement.
+    """
+
+    if not rows:
+        raise TableTopologyError(
+            "invalid_table_matrix",
+            f"Table {source_object} has no rows.",
+            source_object,
+        )
+
+    occupancy: list[dict[int, int]] = [dict() for _ in rows]
+    regions: list[TableRegion] = []
+    seen_sources: set[str] = set()
+    max_column = 0
+
+    for row_index, row in enumerate(rows):
+        if not row:
+            raise TableTopologyError(
+                "table_hole",
+                f"Table {source_object} row {row_index + 1} has no cells.",
+                f"{source_object}/tr[{row_index + 1}]",
+            )
+        cursor = 0
+        for source_column, cell in enumerate(row):
+            cell_source = str(
+                cell.get("source_object")
+                or f"{source_object}/tr[{row_index + 1}]/tc[{source_column + 1}]"
+            )
+            if cell_source in seen_sources:
+                raise TableTopologyError(
+                    "competing_table_anchor",
+                    f"Table {source_object} has competing anchors with source identity {cell_source!r}.",
+                    cell_source,
+                )
+            seen_sources.add(cell_source)
+
+            row_span = _table_span_value(
+                cell.get("rowspan"),
+                attribute="rowspan",
+                source_object=cell_source,
+            )
+            column_span = _table_span_value(
+                cell.get("colspan"),
+                attribute="colspan",
+                source_object=cell_source,
+            )
+            if row_index + row_span > len(rows):
+                raise TableTopologyError(
+                    "table_span_out_of_bounds",
+                    f"Table span at {cell_source} reaches past the {len(rows)}-row logical grid.",
+                    cell_source,
+                )
+
+            # A source cell starts at the first unoccupied slot in its row, as
+            # HTML table layout specifies.  A span that would then cross a
+            # row-spanned region is ambiguous rather than something to guess.
+            while cursor in occupancy[row_index]:
+                cursor += 1
+            end_column = cursor + column_span
+            collisions = [
+                (target_row, target_column)
+                for target_row in range(row_index, row_index + row_span)
+                for target_column in range(cursor, end_column)
+                if target_column in occupancy[target_row]
+            ]
+            if collisions:
+                has_content = bool(str(cell.get("text", "") or "").strip())
+                code = (
+                    "covered_cell_content_ambiguity"
+                    if has_content
+                    else "table_span_overlap"
+                )
+                detail = "covered-cell content is ambiguous" if has_content else "table spans overlap"
+                raise TableTopologyError(
+                    code,
+                    f"{detail} at {cell_source} in table {source_object}.",
+                    cell_source,
+                )
+
+            region_index = len(regions)
+            region = TableRegion(
+                anchor_row=row_index + 1,
+                anchor_column=cursor + 1,
+                row_span=row_span,
+                column_span=column_span,
+                source_row=row_index,
+                source_column=source_column,
+                source_object=cell_source,
+            )
+            regions.append(region)
+            for target_row in range(row_index, row_index + row_span):
+                for target_column in range(cursor, end_column):
+                    occupancy[target_row][target_column] = region_index
+            cursor = end_column
+            max_column = max(max_column, end_column)
+
+    if max_column <= 0:
+        raise TableTopologyError(
+            "invalid_table_matrix",
+            f"Table {source_object} has no logical columns.",
+            source_object,
+        )
+    for row_index in range(len(rows)):
+        missing = [column for column in range(max_column) if column not in occupancy[row_index]]
+        if missing:
+            raise TableTopologyError(
+                "table_hole",
+                f"Table {source_object} row {row_index + 1} has uncovered logical columns {missing!r}.",
+                f"{source_object}/tr[{row_index + 1}]",
+            )
+
+    normalized_occupancy = tuple(
+        tuple(occupancy[row_index][column] for column in range(max_column))
+        for row_index in range(len(rows))
+    )
+    return LogicalTableGrid(
+        rows=len(rows),
+        columns=max_column,
+        regions=tuple(regions),
+        occupancy=normalized_occupancy,
+    )
 
 
 def list_surface() -> dict[str, Any]:
@@ -1214,14 +1419,36 @@ def _check_author(
                 "Hyperlink targets are outside the Contract 1.1 native run matrix.",
                 _node_path(element),
             )
-        if tag in {"td", "th"}:
-            if str(element.get("rowspan", "1")) != "1" or str(element.get("colspan", "1")) != "1":
+        if tag == "table":
+            table_rows: list[list[dict[str, Any]]] = []
+            for row in element.xpath(".//tr"):
+                nearest_table = row.xpath("ancestor::table[1]")
+                if nearest_table and nearest_table[0] is not element:
+                    continue
+                cells = row.xpath("./td|./th")
+                table_rows.append(
+                    [
+                        {
+                            "rowspan": cell.get("rowspan"),
+                            "colspan": cell.get("colspan"),
+                            "source_object": _node_path(cell),
+                            "text": "".join(cell.itertext()),
+                        }
+                        for cell in cells
+                    ]
+                )
+            try:
+                build_logical_table_grid(
+                    table_rows,
+                    source_object=_node_path(element),
+                )
+            except TableTopologyError as exc:
                 _emit(
                     findings,
                     "author",
-                    "unsupported_table_span",
-                    "Merged table cells are not supported in OfficeCLI Contract v1.",
-                    _node_path(element),
+                    exc.code,
+                    exc.message,
+                    exc.source_object or _node_path(element),
                 )
 
     _check_lists(document, findings)
@@ -1454,14 +1681,36 @@ def _check_officehtml(
                         "Every OfficeHTML table cell must expose data-cell-path.",
                         source,
                     )
-                if str(cell.get("rowspan", "1")) != "1" or str(cell.get("colspan", "1")) != "1":
-                    _emit(
-                        findings,
-                        "officehtml",
-                        "unsupported_table_span",
-                        "Merged table cells are not supported in OfficeCLI Contract v1.",
-                        str(cell.get("data-cell-path") or source),
-                    )
+            table_nodes = element.xpath(".//table[1]")
+            table_root = table_nodes[0] if table_nodes else element
+            table_rows: list[list[dict[str, Any]]] = []
+            for row in table_root.xpath(".//tr"):
+                nearest_table = row.xpath("ancestor::table[1]")
+                if nearest_table and nearest_table[0] is not table_root:
+                    continue
+                table_rows.append(
+                    [
+                        {
+                            "rowspan": cell.get("rowspan"),
+                            "colspan": cell.get("colspan"),
+                            "source_object": str(
+                                cell.get("data-cell-path") or _node_path(cell)
+                            ),
+                            "text": "".join(cell.itertext()),
+                        }
+                        for cell in row.xpath("./td|./th")
+                    ]
+                )
+            try:
+                build_logical_table_grid(table_rows, source_object=source)
+            except TableTopologyError as exc:
+                _emit(
+                    findings,
+                    "officehtml",
+                    exc.code,
+                    exc.message,
+                    exc.source_object or source,
+                )
         for descendant in element.iter():
             if not isinstance(descendant.tag, str) or _is_hidden(descendant):
                 continue
@@ -1525,6 +1774,10 @@ __all__ = [
     "AUTHOR_PICTURE_SOURCE",
     "AUTHOR_EXTERNAL_RESOURCES_ALLOWED",
     "AUTHOR_TABLE_CELL_SPANS",
+    "TableRegion",
+    "LogicalTableGrid",
+    "TableTopologyError",
+    "build_logical_table_grid",
     "SUPPORTED_PROFILES",
     "SUPPORTED_OBJECT_KINDS",
     "SUPPORTED_INLINE_ELEMENTS",

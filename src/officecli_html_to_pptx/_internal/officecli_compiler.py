@@ -38,6 +38,8 @@ from ..contract import (
     _officehtml_parser,
     _officehtml_picture_source,
     _resolve_text_alignment,
+    TableTopologyError,
+    build_logical_table_grid,
     check_contract,
 )
 from ..measurement import extract_measurements
@@ -141,6 +143,11 @@ class _TableCellIR:
     text: str
     props: dict[str, str]
     paragraphs: tuple[dict[str, Any], ...] = ()
+    row: int = 0
+    column: int = 0
+    row_span: int = 1
+    column_span: int = 1
+    anchor: bool = True
 
     def as_manifest(self) -> dict[str, Any]:
         return {
@@ -152,6 +159,11 @@ class _TableCellIR:
             "text": self.text,
             "props": dict(self.props),
             "paragraphs": list(self.paragraphs),
+            "row": self.row,
+            "column": self.column,
+            "row_span": self.row_span,
+            "column_span": self.column_span,
+            "anchor": self.anchor,
         }
 
 
@@ -186,7 +198,7 @@ class _ObjectIR:
             },
             "paragraphs": list(self.paragraphs),
         }
-        if self.metadata:
+        if self.metadata and self.kind != "table":
             manifest["metadata"] = dict(self.metadata)
         if self.kind == "table":
             manifest.update(
@@ -195,6 +207,9 @@ class _ObjectIR:
                     "columns": len(self.column_widths),
                     "column_widths_pt": list(self.column_widths),
                     "row_heights_pt": list(self.row_heights),
+                    "normalized_merge_topology": list(
+                        (self.metadata or {}).get("normalized_merge_topology", [])
+                    ),
                     "cells": [cell.as_manifest() for cell in self.table_cells],
                 }
             )
@@ -809,6 +824,17 @@ def _number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _measured_table_span(value: Any) -> str | None:
+    """Convert a measured span to strict integer text for topology validation."""
+
+    if value is None:
+        return None
+    number = _number(value, float("nan"))
+    if number == number and number.is_integer():
+        return str(int(number))
+    return str(value)
+
+
 def _officehtml_style(element: Any) -> dict[str, str]:
     """Read the inline CSS emitted by OfficeCLI 1.0.151.
 
@@ -1364,18 +1390,41 @@ def _officehtml_table(
         for row in rows
     ]
     cell_rows: list[dict[str, Any]] = []
-    column_count = 0
     for row_index, row in enumerate(rows, start=1):
         cells = row.xpath("./td|./th")
-        column_count = max(column_count, len(cells))
         cell_rows.append({"tag": "tr", "height": row_heights[row_index - 1], "children": cells})
-    if column_count <= 0:
+    if not any(row["children"] for row in cell_rows):
         raise _diagnostic(
             "invalid_table_matrix",
             f"OfficeHTML table {source} has no cells.",
             source_slide,
             source,
         )
+    topology_rows = [
+        [
+            {
+                "rowspan": cell.get("rowspan"),
+                "colspan": cell.get("colspan"),
+                "source_object": str(
+                    cell.get("data-cell-path")
+                    or f"{source}/tr[{row_index}]/tc[{column_index}]"
+                ),
+                "text": "".join(cell.itertext()),
+            }
+            for column_index, cell in enumerate(row_data["children"], start=1)
+        ]
+        for row_index, row_data in enumerate(cell_rows, start=1)
+    ]
+    try:
+        grid = build_logical_table_grid(topology_rows, source_object=source)
+    except TableTopologyError as exc:
+        raise _diagnostic(
+            exc.code,
+            exc.message,
+            source_slide,
+            exc.source_object or source,
+        ) from exc
+    column_count = grid.columns
     if not columns:
         columns = [bounds[2] / column_count for _ in range(column_count)]
     if len(columns) != column_count:
@@ -1389,25 +1438,24 @@ def _officehtml_table(
     normalized_rows: list[dict[str, Any]] = []
     current_y = bounds[1]
     for row_index, row_data in enumerate(cell_rows, start=1):
-        current_x = bounds[0]
         normalized_cells: list[dict[str, Any]] = []
         cells = row_data["children"]
-        if len(cells) != column_count:
-            raise _diagnostic(
-                "invalid_table_matrix",
-                f"OfficeHTML table {source} row {row_index} has {len(cells)} cells; expected {column_count}.",
-                source_slide,
-                source,
+        for source_column, cell in enumerate(cells):
+            region = next(
+                region
+                for region in grid.regions
+                if region.source_row == row_index - 1
+                and region.source_column == source_column
             )
-        for column_index, cell in enumerate(cells, start=1):
-            width = columns[column_index - 1]
+            logical_column = region.anchor_column - 1
+            width = sum(columns[logical_column : logical_column + region.column_span])
             normalized_cells.append(
                 _officehtml_cell(
                     cell,
                     undo_officecli_projection=undo_officecli_projection,
                     row_index=row_index,
-                    column_index=column_index,
-                    x=current_x,
+                    column_index=region.anchor_column,
+                    x=bounds[0] + sum(columns[:logical_column]),
                     y=current_y,
                     width=width,
                     height=row_data["height"],
@@ -1415,7 +1463,6 @@ def _officehtml_table(
                     source_slide=source_slide,
                 )
             )
-            current_x += width
         normalized_rows.append(
             {
                 "tag": "tr",
@@ -2270,21 +2317,14 @@ def _lower_table(
             source_object,
         )
 
+    topology_rows: list[list[dict[str, Any]]] = []
     for row_index, cells in enumerate(row_cells, start=1):
+        topology_row: list[dict[str, Any]] = []
         for column_index, cell in enumerate(cells, start=1):
             cell_source = str(
                 cell.get("dataCellPath")
                 or f"{source_object}/tr[{row_index}]/tc[{column_index}]"
             )
-            row_span = _number(cell.get("rowSpan"), 1)
-            col_span = _number(cell.get("colSpan"), 1)
-            if row_span != 1 or col_span != 1:
-                raise _diagnostic(
-                    "unsupported_table_span",
-                    f"Unsupported merged table cell on source slide {source_slide}, {cell_source}: rowspan and colspan must both be 1.",
-                    source_slide,
-                    cell_source,
-                )
             if cell.get("backgroundImage"):
                 raise _diagnostic(
                     "unsupported_table_effect",
@@ -2292,19 +2332,51 @@ def _lower_table(
                     source_slide,
                     cell_source,
                 )
-
-    column_count = len(row_cells[0])
-    if any(len(cells) != column_count for cells in row_cells):
-        raise _diagnostic(
-            "invalid_table_matrix",
-            f"Invalid table on source slide {source_slide}, {source_object}: every row must have {column_count} cells.",
-            source_slide,
-            source_object,
+            topology_row.append(
+                {
+                    "rowspan": _measured_table_span(cell.get("rowSpan")),
+                    "colspan": _measured_table_span(cell.get("colSpan")),
+                    "source_object": cell_source,
+                    "text": _text_of(cell),
+                }
+            )
+        topology_rows.append(topology_row)
+    try:
+        grid = build_logical_table_grid(
+            topology_rows,
+            source_object=source_object,
         )
+    except TableTopologyError as exc:
+        raise _diagnostic(
+            exc.code,
+            f"Invalid merged table on source slide {source_slide}, {exc.source_object or source_object}: {exc.message}",
+            source_slide,
+            exc.source_object or source_object,
+        ) from exc
 
     row_heights = tuple(_pt(_number(row.get("height")), scale_y) for row in rows)
+    logical_height = sum(row_heights)
+    logical_widths_px: list[float | None] = [None] * grid.columns
+    for region in grid.regions:
+        cell = row_cells[region.source_row][region.source_column]
+        if region.column_span == 1:
+            measured_width = _number(cell.get("width"))
+            if measured_width > 0 and logical_widths_px[region.anchor_column - 1] is None:
+                logical_widths_px[region.anchor_column - 1] = measured_width
+    remaining_columns = [
+        index for index, width in enumerate(logical_widths_px) if width is None
+    ]
+    if remaining_columns:
+        known_width = sum(width or 0.0 for width in logical_widths_px)
+        fallback_width = max(
+            0.0,
+            (_number(bounds[2]) / scale_x - known_width)
+            / len(remaining_columns),
+        )
+        for index in remaining_columns:
+            logical_widths_px[index] = fallback_width
     column_widths = tuple(
-        _pt(_number(cell.get("width")), scale_x) for cell in row_cells[0]
+        _pt(float(width or 0.0), scale_x) for width in logical_widths_px
     )
     if any(height <= 0 for height in row_heights) or any(
         width <= 0 for width in column_widths
@@ -2321,9 +2393,9 @@ def _lower_table(
         "x": _length(bounds[0]),
         "y": _length(bounds[1]),
         "width": _length(bounds[2]),
-        "height": _length(bounds[3]),
-        "rows": str(len(rows)),
-        "cols": str(column_count),
+        "height": _length(logical_height),
+        "rows": str(grid.rows),
+        "cols": str(grid.columns),
         "colWidths": ",".join(_length(width) for width in column_widths),
         "style": "none",
         "firstRow": "false",
@@ -2334,38 +2406,74 @@ def _lower_table(
         "bandedCols": "false",
     }
     table_cells: list[_TableCellIR] = []
-    for row_index, cells in enumerate(row_cells, start=1):
-        for column_index, cell in enumerate(cells, start=1):
+    for row_index in range(grid.rows):
+        for column_index in range(grid.columns):
+            region = grid.regions[grid.occupancy[row_index][column_index]]
+            anchor = (
+                row_index + 1 == region.anchor_row
+                and column_index + 1 == region.anchor_column
+            )
             cell_source = str(
-                cell.get("dataCellPath")
-                or f"{source_object}/tr[{row_index}]/tc[{column_index}]"
+                row_cells[region.source_row][region.source_column].get("dataCellPath")
+                or f"{source_object}/tr[{region.source_row + 1}]/tc[{region.source_column + 1}]"
             )
-            cell_name = f"{name}-cell-r{row_index:03d}-c{column_index:03d}"
-            cell_bounds = _bounds(cell, scale_x, scale_y)
-            cell_paragraphs = _text_paragraphs(
-                cell,
-                scale_x,
-                scale_y,
-                backdrop,
-                preserve_table_projection=True,
-            )
+            cell_name = f"{name}-cell-r{row_index + 1:03d}-c{column_index + 1:03d}"
+            cell_x = bounds[0] + sum(column_widths[:column_index])
+            cell_y = bounds[1] + sum(row_heights[:row_index])
+            cell_width = column_widths[column_index]
+            cell_height = row_heights[row_index]
+            cell_paragraphs: tuple[dict[str, Any], ...] = ()
+            if anchor:
+                cell = row_cells[region.source_row][region.source_column]
+                cell_paragraphs = _text_paragraphs(
+                    cell,
+                    scale_x,
+                    scale_y,
+                    backdrop,
+                    preserve_table_projection=True,
+                )
+                cell_width = sum(
+                    column_widths[
+                        region.anchor_column - 1 : region.anchor_column - 1 + region.column_span
+                    ]
+                )
+                cell_height = sum(
+                    row_heights[
+                        region.anchor_row - 1 : region.anchor_row - 1 + region.row_span
+                    ]
+                )
+                cell_props = _table_cell_props(
+                    cell,
+                    scale_x,
+                    scale_y,
+                    backdrop,
+                    source_slide,
+                    cell_source,
+                    cell_paragraphs,
+                )
+                if region.column_span > 1:
+                    cell_props["colspan"] = str(region.column_span)
+                if region.row_span > 1:
+                    cell_props["rowspan"] = str(region.row_span)
+            else:
+                # Covered physical cells are intentionally blank and carry no
+                # border/fill/text properties.  The anchor is the sole owner of
+                # content, formatting, and the four canonical outer borders.
+                cell_props = {"text": ""}
             table_cells.append(
                 _TableCellIR(
                     cell_name,
                     source_slide,
                     cell_source,
-                    cell_bounds,
+                    (cell_x, cell_y, cell_width, cell_height),
                     _paragraphs_text(cell_paragraphs),
-                    _table_cell_props(
-                        cell,
-                        scale_x,
-                        scale_y,
-                        backdrop,
-                        source_slide,
-                        cell_source,
-                        cell_paragraphs,
-                    ),
+                    cell_props,
                     cell_paragraphs,
+                    row_index + 1,
+                    column_index + 1,
+                    region.row_span if anchor else 1,
+                    region.column_span if anchor else 1,
+                    anchor,
                 )
             )
     return _ObjectIR(
@@ -2373,8 +2481,9 @@ def _lower_table(
         name=name,
         source_slide=source_slide,
         source_object=source_object,
-        bounds=bounds,
+        bounds=(bounds[0], bounds[1], bounds[2], logical_height),
         props=table_props,
+        metadata={"normalized_merge_topology": grid.normalized_topology},
         table_cells=tuple(table_cells),
         row_heights=row_heights,
         column_widths=column_widths,

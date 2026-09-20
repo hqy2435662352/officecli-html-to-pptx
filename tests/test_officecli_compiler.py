@@ -657,7 +657,7 @@ async def test_native_table_projects_uniform_cell_paragraph_properties(
 
 
 @pytest.mark.asyncio
-async def test_native_table_rejects_non_unit_cell_spans_without_output(
+async def test_native_table_rejects_span_that_leaves_logical_holes_without_output(
     tmp_path: Path,
 ):
     html_path = tmp_path / "author.html"
@@ -672,7 +672,7 @@ async def test_native_table_rejects_non_unit_cell_spans_without_output(
             str(html_path), "author", str(output_path), slide_indices=[0]
         )
 
-    assert error.value.diagnostics[0].code == "unsupported_table_span"
+    assert error.value.diagnostics[0].code == "table_hole"
     assert error.value.diagnostics[0].source_object
     assert not output_path.exists()
 

@@ -1094,6 +1094,15 @@ def compare_manifests(
             for field_name in ("rows", "columns"):
                 if left.get(field_name) != right.get(field_name):
                     mismatch(f"table {field_name} differ", object=name)
+            if left.get("normalized_merge_topology", []) != right.get(
+                "normalized_merge_topology", []
+            ):
+                mismatch(
+                    "table normalized merge topology differs",
+                    object=name,
+                    expected=left.get("normalized_merge_topology", []),
+                    actual=right.get("normalized_merge_topology", []),
+                )
             if not _approx_equal(left.get("column_widths_pt", ()), right.get("column_widths_pt", ()), 0.5):
                 mismatch("table column widths differ by more than 0.5pt", object=name)
             if not _approx_equal(left.get("row_heights_pt", ()), right.get("row_heights_pt", ()), 0.5):
@@ -1342,14 +1351,49 @@ def _officecli_table_manifest(table: Mapping[str, Any]) -> dict[str, Any]:
     table_x = _points(format_data.get("x"))
     table_y = _points(format_data.get("y"))
     cells: list[dict[str, Any]] = []
+    normalized_topology: list[dict[str, int]] = []
     for row_index, row in enumerate(row_nodes):
         cell_x = table_x
         for column_index, cell in enumerate(row.get("children", []) or []):
             if cell.get("type") != "tc":
                 continue
             cell_format = cell.get("format", {})
-            cell_width = column_widths[column_index] if column_index < len(column_widths) else 0.0
+            row_span = int(cell_format.get("rowspan") or 1)
+            column_span = int(cell_format.get("colspan") or 1)
+            is_horizontal_continuation = bool(
+                cell_format.get("hmerge") or cell_format.get("hMerge")
+            )
+            is_vertical_continuation = bool(
+                cell_format.get("vmerge") or cell_format.get("vMerge")
+            )
+            anchor = not is_horizontal_continuation and not is_vertical_continuation
+            if anchor:
+                normalized_topology.append(
+                    {
+                        "anchorRow": row_index + 1,
+                        "anchorColumn": column_index + 1,
+                        "rowSpan": row_span,
+                        "columnSpan": column_span,
+                    }
+                )
+            base_width = (
+                column_widths[column_index] if column_index < len(column_widths) else 0.0
+            )
+            cell_width = (
+                sum(column_widths[column_index : column_index + column_span])
+                if anchor and column_span > 1
+                else base_width
+            )
             cell_height = row_heights[row_index] if row_index < len(row_heights) else 0.0
+            cell_properties = {
+                key: value
+                for key, value in _officecli_properties(cell_format).items()
+                if str(key).lower() not in {"hmerge", "vmerge"}
+            }
+            if "spaceBefore" in cell_properties:
+                cell_properties["spacebefore"] = cell_properties.pop("spaceBefore")
+            if "spaceAfter" in cell_properties:
+                cell_properties["spaceafter"] = cell_properties.pop("spaceAfter")
             cells.append(
                 {
                     "kind": "cell",
@@ -1358,25 +1402,40 @@ def _officecli_table_manifest(table: Mapping[str, Any]) -> dict[str, Any]:
                         f"r{row_index + 1:03d}-c{column_index + 1:03d}"
                     ),
                     "source_object": cell.get("path", ""),
-                    "bounds_pt": [cell_x, table_y + sum(row_heights[:row_index]), cell_width, cell_height],
+                    "bounds_pt": [
+                        cell_x,
+                        table_y + sum(row_heights[:row_index]),
+                        cell_width,
+                        (
+                            sum(row_heights[row_index : row_index + row_span])
+                            if anchor and row_span > 1
+                            else cell_height
+                        ),
+                    ],
                     "text": cell.get("text", "") or "",
                     "props": {
-                        **_officecli_properties(cell_format),
+                        **cell_properties,
                         "linespacing": cell_format.get(
                             "linespacing", cell_format.get("lineSpacing")
                         ),
                         "text": cell.get("text", "") or "",
                     },
                     "paragraphs": _officecli_cell_paragraphs(cell),
+                    "row": row_index + 1,
+                    "column": column_index + 1,
+                    "row_span": row_span if anchor else 1,
+                    "column_span": column_span if anchor else 1,
+                    "anchor": anchor,
                 }
             )
-            cell_x += cell_width
+            cell_x += base_width
     return {
         "properties": _officecli_properties(format_data),
         "rows": rows,
         "columns": columns,
         "column_widths_pt": column_widths,
         "row_heights_pt": row_heights,
+        "normalized_merge_topology": normalized_topology,
         "cells": cells,
     }
 
