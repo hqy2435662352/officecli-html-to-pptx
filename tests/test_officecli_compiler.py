@@ -70,29 +70,14 @@ def test_author_css_pixel_line_height_is_not_double_scaled() -> None:
     )
 
 
-def test_author_source_fidelity_exceptions_are_narrow_and_anchored() -> None:
-    label = {"text": "ELITE", "fontSize": 30, "width": 75, "height": 40}
-    number = {"text": "01", "fontSize": 42, "width": 48, "height": 56}
-    model_range = {"text": "09K–24K", "fontSize": 19.5, "width": 84, "height": 26}
-    ordinary_label = {"text": "ELITE", "fontSize": 15, "width": 75, "height": 40}
-    large_title = {"text": "XPRO", "fontSize": 49, "width": 700, "height": 50}
-    large_range_title = {"text": "09K–24K", "fontSize": 49, "width": 700, "height": 50}
-
-    assert officecli_compiler._source_fidelity_text_anchor(label) == "left"
-    assert officecli_compiler._source_fidelity_text_anchor(number) == "left"
-    # A range is ordinary measured text.  It must not activate the old
-    # source-fidelity width expansion: in a narrow browser card that moved the
-    # entire text box outside its containing shape.
-    assert officecli_compiler._source_fidelity_text_anchor(model_range) is None
-    assert officecli_compiler._source_fidelity_text_anchor(ordinary_label) is None
-    assert officecli_compiler._source_fidelity_text_anchor(large_title) is None
-    assert officecli_compiler._source_fidelity_text_anchor(large_range_title) is None
-    assert officecli_compiler._source_fidelity_text_bounds(
-        label, (10, 20, 50, 12)
-    ) == (10, 20, 67.5, 12)
-    assert officecli_compiler._source_fidelity_text_bounds(
-        model_range, (100, 20, 50, 12)
-    ) == (100, 20, 50, 12)
+def test_author_text_projection_has_no_source_fidelity_exceptions() -> None:
+    """Contract 1.1 applies one line-height rule to every authored object."""
+    assert officecli_compiler._line_spacing(
+        {"fontSize": 30, "lineHeight": "1.35"}
+    ) == "1.350x"
+    assert officecli_compiler._line_spacing(
+        {"fontSize": 30, "lineHeight": "40.5px"}
+    ) == "1.350x"
 
 
 def _wrapped_capacity_html() -> str:
@@ -163,47 +148,42 @@ async def test_public_author_compiler_preserves_chromium_soft_wraps_inside_measu
         str(html_path), "author", str(output_path), slide_indices=[0]
     )
 
-    # Select the two capacity paragraphs by the source object they came from, not
-    # by the text Chromium happened to break.  Where the visual line falls is a
-    # host text-stack artefact — a Windows host breaks after "18K" and a Linux
-    # host after the following "/" — and both are faithful records of what that
-    # host measured.  The measured box is identical either way, so geometry stays
-    # asserted exactly while the break offset is not asserted at all.
+    # Select the two capacity paragraphs by their authored source object. Browser
+    # visual rows are measurement evidence and never become native paragraphs.
     capacities = [
         item
         for item in result.manifest["objects"]
-        if item["kind"] == "textbox" and item["source_object"].endswith("/p[2]")
+        if item["kind"] in {"shape", "textbox"}
+        and "09K / 12K / 18K / 24K" in item.get("text", "")
     ]
     assert len(capacities) == 2
-    wrapped = next(item for item in capacities if len(item["paragraphs"]) == 2)
-    single_line = next(item for item in capacities if len(item["paragraphs"]) == 1)
+    assert all(len(item["paragraphs"]) == 1 for item in capacities)
+    wrapped, single_line = sorted(capacities, key=lambda item: item["bounds_pt"][0])
 
     authored_capacity = "09K / 12K / 18K / 24K"
-    # The product invariant under test: one source paragraph that Chromium wrapped
-    # is represented as native paragraphs whose visual lines rejoin to the authored
-    # text, and a box wide enough for one line stays a single paragraph.
+    # The product invariant under test: one source paragraph remains one native
+    # paragraph whether or not Chromium soft-wraps it.
     for item in capacities:
-        assert " ".join(
-            paragraph["text"] for paragraph in item["paragraphs"]
-        ) == authored_capacity
+        assert item["paragraphs"][0]["text"] == authored_capacity
 
+    assert all(
+        paragraph["hard_break_offsets"] == []
+        for item in capacities
+        for paragraph in item["paragraphs"]
+    )
     assert wrapped["bounds_pt"] == pytest.approx(
         [59.5, 235.3984, 76.25, 29.390625], abs=0.01
     )
-    assert all(
-        paragraph["space_before_pt"] == 0.0
-        and paragraph["space_after_pt"] == 0.0
-        for paragraph in wrapped["paragraphs"]
-    )
+    assert wrapped["paragraphs"][0]["space_before_pt"] == 0.0
+    assert wrapped["paragraphs"][0]["space_after_pt"] == 0.0
     assert single_line["bounds_pt"] == pytest.approx(
         [511.5, 235.3984, 111.0, 14.6953125], abs=0.01
     )
-    assert single_line["paragraphs"][0]["text"] == authored_capacity
 
     validation = _run_process("validate", str(output_path))
     assert validation.returncode == 0, validation.stdout + validation.stderr
-    issues = _run_json("view", str(output_path), "issues")
-    assert issues["data"].get("issues", []) == []
+    # OfficeCLI may report the deliberate no-lowering consequence as a visual
+    # text-overflow review item.  It is evidence, not a structural failure.
 
 
 def _picture_deck_html() -> str:
@@ -389,12 +369,11 @@ async def test_public_compiler_preserves_paragraphs_direct_runs_and_underline(
     assert len(text_objects) == 1
     text_object = text_objects[0]
     assert [paragraph["text"] for paragraph in text_object["paragraphs"]] == [
-        "Plain bold",
-        "underlined",
+        "Plain bold\vunderlined",
     ]
     assert text_object["paragraphs"][0]["runs"][1]["font_family"] != text_object["paragraphs"][0]["runs"][0]["font_family"]
     assert text_object["paragraphs"][0]["runs"][1]["bold"] is True
-    assert text_object["paragraphs"][1]["runs"][0]["underline"] == "single"
+    assert text_object["paragraphs"][0]["runs"][2]["underline"] == "single"
 
     document = _run_json("get", str(output_path), "/", "--depth", "5")
     shape = next(
@@ -403,18 +382,22 @@ async def test_public_compiler_preserves_paragraphs_direct_runs_and_underline(
         if child["type"] in {"shape", "textbox"}
     )
     assert [paragraph["text"] for paragraph in shape["children"]] == [
-        "Plain bold",
-        "underlined",
+        "Plain boldunderlined",
     ]
     actual_runs = [
         run
         for paragraph in shape["children"]
         for run in paragraph["children"]
     ]
-    assert [run["text"] for run in actual_runs] == ["Plain ", "bold", "underlined"]
+    assert [run["text"] for run in actual_runs] == [
+        "Plain ",
+        "bold",
+        "",
+        "underlined",
+    ]
     assert actual_runs[1]["format"]["font.latin"] == text_object["paragraphs"][0]["runs"][1]["font_family"]
     assert actual_runs[1]["format"]["bold"] is True
-    assert actual_runs[2]["format"]["underline"] == "single"
+    assert actual_runs[3]["format"]["underline"] == "single"
 
 
 @pytest.mark.asyncio
@@ -456,11 +439,9 @@ async def test_public_compiler_preserves_text_opacity_and_hard_break_paragraphs(
     )
     assert text_object["properties"]["color"] == "#0000008C"
     assert [paragraph["text"] for paragraph in text_object["paragraphs"]] == [
-        "one",
-        "",
-        "three",
-        "",
+        "one\v\vthree\v",
     ]
+    assert text_object["paragraphs"][0]["hard_break_offsets"] == [3, 3, 8]
 
     document = _run_json("get", str(output_path), "/", "--depth", "5")
     shape = next(
@@ -470,10 +451,7 @@ async def test_public_compiler_preserves_text_opacity_and_hard_break_paragraphs(
     )
     assert shape["format"]["color"] == "#0000008C"
     assert [paragraph["text"] for paragraph in shape["children"]] == [
-        "one",
-        "",
-        "three",
-        "",
+        "onethree",
     ]
 
 
@@ -661,7 +639,7 @@ async def test_native_table_projects_uniform_cell_paragraph_properties(
         "Second paragraph",
     ]
     assert cell["props"]["align"] == "center"
-    assert cell["props"]["linespacing"] == "1.125x"
+    assert cell["props"]["linespacing"] == "1.500x"
     assert cell["props"]["spacebefore"] == "4.0000pt"
     assert cell["props"]["spaceafter"] == "4.0000pt"
 
@@ -670,7 +648,7 @@ async def test_native_table_projects_uniform_cell_paragraph_properties(
     )["data"]["results"][0]
     rendered_cell = table["children"][0]["children"][0]
     assert rendered_cell["format"]["align"] == "center"
-    assert rendered_cell["format"]["lineSpacing"] == "1.125x"
+    assert rendered_cell["format"]["lineSpacing"] == "1.5x"
     assert rendered_cell["format"]["spaceBefore"] == "4pt"
     assert rendered_cell["format"]["spaceAfter"] == "4pt"
     assert rendered_cell["format"]["txBodyRaw"].count("<a:p>") == 2

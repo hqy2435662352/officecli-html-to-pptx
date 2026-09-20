@@ -11,7 +11,7 @@ from __future__ import annotations
 _SAFE_FONTS = {
     "arial", "arial black", "calibri", "cambria", "candara", "consolas",
     "constantia", "corbel", "courier new", "georgia", "times new roman",
-    "trebuchet ms", "verdana", "segoe ui", "tahoma", "garamond",
+    "trebuchet ms", "verdana", "segoe ui", "microsoft yahei", "tahoma", "garamond",
     "book antiqua", "century gothic", "palatino linotype", "gill sans",
     "franklin gothic medium", "lucida sans", "impact",
 }

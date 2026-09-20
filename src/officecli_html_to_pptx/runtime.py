@@ -16,7 +16,7 @@ from typing import Any, Callable, Sequence
 
 from .protocol import Diagnostic
 
-FORMAL_OFFICECLI_VERSION = "1.0.147"
+FORMAL_OFFICECLI_VERSION = "1.0.151"
 FORMAL_PLAYWRIGHT_VERSION = "1.62.0"
 FORMAL_CHROMIUM_REVISION = "1234"
 # The Comparison Image is Gate 3 evidence, so its PPTX panel is rendered
@@ -370,11 +370,11 @@ def diagnose_environment(
     if officecli_executable is None:
         code = "missing_officecli"
         message = "OfficeCLI was not found on PATH."
-        remediation = "Install OfficeCLI 1.0.147 or newer through the approved OfficeCLI package source, then verify with officecli --version."
+        remediation = "Install OfficeCLI 1.0.151 or newer through the approved OfficeCLI package source, then verify with officecli --version."
     elif officecli_version is None:
         code = "malformed_officecli_version"
         message = f"OfficeCLI returned an unparseable version: {officecli_text!r}."
-        remediation = "Repair the OfficeCLI installation so officecli --version returns 1.0.147 or newer."
+        remediation = "Repair the OfficeCLI installation so officecli --version returns 1.0.151 or newer."
     elif not officecli_ok:
         code = "officecli_version_mismatch"
         message = f"OfficeCLI {officecli_text} is below the minimum supported version {FORMAL_OFFICECLI_VERSION}."

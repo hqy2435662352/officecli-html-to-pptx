@@ -70,12 +70,12 @@ LIST_BOUNDS_PT = {
     UNORDERED_SOURCE: UNORDERED_BOUNDS_PT,
     ORDERED_SOURCE: ORDERED_BOUNDS_PT,
 }
-# The fixture's list items declare 27px at scale 0.5 (and 1.35 x 27px line
-# height, whose released CSS-pixel projection is (36.45px x 0.75) / 27px =
-# 1.0125 -> "1.013x").
+# The fixture's list items declare 27px at scale 0.5 and a direct 1.35
+# line-height ratio under Contract 1.1.
 ITEM_FONT_SIZE_PT = 13.5
 ITEM_COLOR = "#24324A"
-ITEM_LINE_SPACING = "1.013x"
+ITEM_LINE_SPACING = "1.350x"
+ITEM_READBACK_LINE_SPACING = "1.35x"
 
 # The fixture's lists declare ``padding-left: 42px``: the item boxes start 42px
 # (21pt) right of the list's border box, which is the native paragraph left
@@ -341,7 +341,7 @@ async def test_the_whole_slide_keeps_exactly_six_text_objects(tmp_path: Path) ->
     # No list item is an image, an SVG, or a marker-simulating shape.
     assert {
         node.get("type") for node in _slide_nodes(output)
-    } <= {"slide", "textbox", "shape", "paragraph", "run"}
+    } <= {"slide", "textbox", "shape", "paragraph", "run", "linebreak"}
     # Every list item text appears inside exactly one list object, and no
     # readback object carries a literal marker prefix.
     texts = [node.get("text", "") for node in text_objects]
@@ -431,8 +431,8 @@ async def test_native_marker_level_and_indentation_survive_readback(
             None,
         ]
         assert [paragraph["line_spacing"] for paragraph in paragraphs] == [
-            ITEM_LINE_SPACING,
-            ITEM_LINE_SPACING,
+            ITEM_READBACK_LINE_SPACING,
+            ITEM_READBACK_LINE_SPACING,
         ]
         # No item text carries a literal marker prefix.
         for paragraph in paragraphs:

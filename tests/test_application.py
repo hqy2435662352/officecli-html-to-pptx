@@ -74,7 +74,7 @@ def test_capabilities_are_author_only_and_use_product_envelope(
     assert scope["enforced"] is False
     assert "other Linux distributions" in scope["not_implied"]
     assert "macOS" in scope["not_implied"]
-    assert payload["data"]["rendering_compatibility"]["officecli"] == ">=1.0.147"
+    assert payload["data"]["rendering_compatibility"]["officecli"] == ">=1.0.151"
     assert payload["data"]["scope"]["officehtml_import"] is False
     assert "profile" not in payload["data"]["contract"]["css_properties"]
 
@@ -196,7 +196,7 @@ def _patch_successful_build(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda **_: result(
             "doctor",
             "PASS",
-            data={"runtime": {"formal_pair": {"officecli": ">=1.0.147"}}},
+            data={"runtime": {"formal_pair": {"officecli": ">=1.0.151"}}},
         ),
     )
 

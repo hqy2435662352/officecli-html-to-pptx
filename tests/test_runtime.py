@@ -40,7 +40,7 @@ def test_doctor_reports_missing_external_tools_without_mutation(monkeypatch: pyt
     assert {"missing_node", "missing_officecli", "missing_playwright", "missing_chromium"} <= codes
 
 
-@pytest.mark.parametrize("officecli_version", ["1.0.147", "1.0.148"])
+@pytest.mark.parametrize("officecli_version", ["1.0.151", "1.0.152"])
 def test_doctor_accepts_the_minimum_and_newer_officecli(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -62,15 +62,15 @@ def test_doctor_accepts_the_minimum_and_newer_officecli(
     )
 
     assert diagnosis.compatible
-    assert diagnosis.snapshot["formal_pair"]["officecli"] == ">=1.0.147"
-    assert diagnosis.snapshot["officecli"]["required_version"] == ">=1.0.147"
+    assert diagnosis.snapshot["formal_pair"]["officecli"] == ">=1.0.151"
+    assert diagnosis.snapshot["officecli"]["required_version"] == ">=1.0.151"
     assert diagnosis.snapshot["officecli"]["compatible"] is True
     assert diagnosis.snapshot["chromium"]["compatible"] is True
 
 
 def _view_help_runner(help_text: str):
     """A runner whose ``view --help`` advertises (or not) the render option."""
-    versions = {"node": "v22.1.0", "officecli": "1.0.148"}
+    versions = {"node": "v22.1.0", "officecli": "1.0.151"}
 
     def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
         if command[1:3] == ["view", "--help"]:
@@ -198,7 +198,7 @@ def test_doctor_blocks_a_platform_outside_the_supported_set(
 
     diagnosis = runtime.diagnose_environment(
         which=LINUX_TOOLS.get,
-        runner=_runner_factory({"node": "v22.23.2", "officecli": "1.0.149"}),
+        runner=_runner_factory({"node": "v22.23.2", "officecli": "1.0.151"}),
     )
 
     blocking = {item.code for item in diagnosis.diagnostics if item.blocking}

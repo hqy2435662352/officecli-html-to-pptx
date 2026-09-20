@@ -573,7 +573,7 @@ async def build_author_html(
         if missing:
             raise RuntimeError("Build evidence is incomplete: " + ", ".join(missing))
 
-        # OfficeCLI 1.0.148 may keep validation/view results in a resident
+        # OfficeCLI 1.0.151 may keep validation/view results in a resident
         # process.  Close our staged document before a native Windows rename.
         _run_officecli("close", staged_pptx)
 

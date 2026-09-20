@@ -15,8 +15,8 @@ from typing import Any, Iterable, Mapping
 
 from lxml import html as _lxml_html
 
-CONTRACT_VERSION = "1.0"
-OFFICECLI_COMPATIBILITY_BASELINE = "1.0.147"
+CONTRACT_VERSION = "1.1"
+OFFICECLI_COMPATIBILITY_BASELINE = "1.0.151"
 SUPPORTED_PROFILES = ("author", "officehtml")
 SUPPORTED_OBJECT_KINDS = frozenset({"shape", "textbox", "picture", "table"})
 AUTHOR_CANVAS_SIZES = ((1920.0, "px", 1080.0, "px"), (960.0, "px", 540.0, "px"))
@@ -45,6 +45,7 @@ _RENDERED_CSS_PROPERTIES = frozenset(
         "border-width",
         "border-collapse",
         "color",
+        "direction",
         "font",
         "font-family",
         "font-size",
@@ -106,7 +107,9 @@ _MEASUREMENT_ONLY_CSS_PROPERTIES = frozenset(
         "justify-items",
         "justify-self",
         "left",
-        "letter-spacing",
+        # Letter spacing is measurable by Chromium but is not part of the
+        # Contract 1.1 native run matrix.  It must fail closed rather than
+        # silently disappear in the PowerPoint text body.
         "list-style-type",
         "max-height",
         "max-width",
@@ -150,6 +153,7 @@ _UNSUPPORTED_CSS_PROPERTIES = frozenset(
         # Measured but never lowered: see the note above.
         "text-transform",
         "text-shadow",
+        "letter-spacing",
         "transition",
         "transition-delay",
         "transition-duration",
@@ -201,13 +205,10 @@ SUPPORTED_INLINE_ELEMENTS = (
 #
 #   (normalized lowering field, published mixed-run attribute, CSS property)
 #
-# The published attribute and the CSS property are ``None`` for a supported
-# *semantic* attribute that is not part of the declared CSS surface (an anchor
-# target, a gradient-text fill).  The published attributes are the ones the
-# capability manifest has always declared, so deriving them from this
-# declaration republishes the same surface; the lowering pass builds its merge
-# key from the same rows, so an identity dimension cannot be published without
-# being implemented, or implemented without being published.
+# Every row is part of the closed native run matrix.  The capability manifest
+# derives its published attributes from this declaration and the lowering pass
+# builds its merge key from the same rows, so an identity dimension cannot be
+# published without being implemented, or implemented without being published.
 CANONICAL_RUN_IDENTITY = (
     ("font_family", "font_family", "font-family"),
     ("font_size_pt", "font_size", "font-size"),
@@ -215,9 +216,6 @@ CANONICAL_RUN_IDENTITY = (
     ("italic", "italic", "font-style"),
     ("color", "color", "color"),
     ("underline", "underline", "text-decoration"),
-    ("href", None, None),
-    ("is_gradient_text", None, None),
-    ("background_image", None, None),
 )
 CANONICAL_RUN_IDENTITY_FIELDS = tuple(
     field for field, _attribute, _property in CANONICAL_RUN_IDENTITY
@@ -231,6 +229,8 @@ CANONICAL_RUN_POLICY = {
     "scope": "paragraph",
     "requires": [
         "identical resolved formatting",
+        # Retain the public capability token for schema compatibility; the
+        # concrete identity dimensions are the six closed-matrix rows above.
         "identical supported semantic attributes",
     ],
     "forbidden_across": ["paragraph", "list_item", "hard_break"],
@@ -250,26 +250,24 @@ TEXT_ALIGNMENT_MAPPING = {
 }
 LINE_HEIGHT_PROPERTY = "line-height"
 PARAGRAPH_SPACING_PROPERTIES = ("margin-top", "margin-bottom")
-# The lowering pass keeps the released V0.2 CSS-pixel projection (a px
-# line-height is scaled by 0.75) except for the one reviewed source-fidelity
-# label below, which opts into the raw browser ratio.
-LINE_HEIGHT_PX_PROJECTION_SCALE = 0.75
-SOURCE_FIDELITY_LINE_SPACING_TEXT = "ALGERIA PRODUCT LINE-UP"
-SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX = 45.0
-# Chromium's measured visual lines are the soft-wrap authority.  They become the
-# native paragraph boundaries of the one authored text object; no new
-# soft-line-break representation exists in the PPT Object IR.
+# Contract 1.1 deliberately has no CSS-pixel projection: a used line-height in
+# px is divided by the element font size directly.  The scale constant remains
+# public for older callers, but its only valid value is the identity scale.
+LINE_HEIGHT_PX_PROJECTION_SCALE = 1.0
+# These names existed in the pre-1.1 compiler and remain as inert compatibility
+# symbols while downstream callers migrate.  Contract 1.1 never consults them
+# to select a formatting or geometry exception.
+SOURCE_FIDELITY_LINE_SPACING_TEXT = ""
+SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX = 0.0
+# Chromium's measured visual lines are evidence only.  They never become native
+# paragraph boundaries or hard breaks in Contract 1.1.
 SOFT_WRAP_MODEL = {
-    "representation": "chromium-visual-lines-as-native-paragraph-boundaries",
+    "representation": "measurement-and-evidence-only",
     "measured_property": "visualLines",
-    "unit": "native-paragraph",
-    "requires": [
-        "one-source-paragraph",
-        "one-source-run",
-        "visual-lines-rejoin-to-the-authored-text",
-        "ordered-soft-wrap-sequence",
-    ],
-    "fallback": "authored-paragraph-when-the-visual-lines-are-not-a-repartition",
+    "unit": "measurement-line",
+    "requires": ["ordered-soft-wrap-sequence"],
+    "fallback": "authored-paragraph-structure",
+    "lowering": "never",
     "object_per_source": 1,
     "object_kind": "textbox",
     "new_soft_line_break_representation": False,
@@ -357,6 +355,8 @@ def paragraph_layout_surface() -> dict[str, Any]:
         "alignment": {
             "property": "text-align",
             "values": sorted(TEXT_ALIGNMENT_VALUES),
+            "accepted_relative": ["start", "end"],
+            "rejected": ["unknown-values"],
             "default": TEXT_ALIGNMENT_DEFAULT,
             "mapping": {
                 name: dict(directions)
@@ -367,24 +367,30 @@ def paragraph_layout_surface() -> dict[str, Any]:
         "line_height": {
             "property": LINE_HEIGHT_PROPERTY,
             "native": "lineSpacing",
+            "accepted": ["positive-unitless", "positive-px"],
             "unitless": "line-height / font-size",
-            "length_with_px_projection": (
-                f"(line-height x {LINE_HEIGHT_PX_PROJECTION_SCALE}) / font-size"
-            ),
-            "length_with_source_fidelity_projection": "line-height / font-size",
+            "length_with_px_projection": "line-height / font-size",
+            "rejected": [
+                "normal",
+                "percentage",
+                "relative-unit",
+                "non-px-absolute-unit",
+                "unresolved-css-variable",
+                "non-positive",
+            ],
             "omitted_when_ratio_within": 0.01,
             "precision": "0.001x",
+            "readback_tolerance": 0.01,
             "default": "absent",
-            "source_fidelity_text": SOURCE_FIDELITY_LINE_SPACING_TEXT,
-            "source_fidelity_min_font_size_px": (
-                SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX
-            ),
         },
         "paragraph_spacing": {
             "properties": list(PARAGRAPH_SPACING_PROPERTIES),
             "native": ["spaceBefore", "spaceAfter"],
             "unit": "pt",
-            "projection": "css-margin-px-to-native-paragraph-points",
+            "accepted": ["unitless-zero", "non-negative-px"],
+            "rejected": ["negative", "relative-unit", "non-px-absolute-unit", "auto"],
+            "projection": "css-margin-px-to-native-paragraph-points-at-measured-slide-scale",
+            "readback_tolerance_pt": 0.25,
             "default": "absent",
             "emitted_at": ["table-cell-paragraph"],
             "standalone_text_block": "margins-are-already-in-the-measured-bounds",
@@ -1054,6 +1060,77 @@ def _check_css_value(
 ) -> None:
     normalized = value.strip().lower()
     classification = classification or _css_classification(property_name, value)
+    if property_name == LINE_HEIGHT_PROPERTY:
+        parsed = _parse_length(value)
+        raw = value.strip().lower()
+        if parsed is None or parsed[0] <= 0 or parsed[1] not in {"px"}:
+            # A unitless positive number is the one non-length line-height
+            # form accepted by Contract 1.1.  ``_parse_length`` normalizes a
+            # missing unit to px for the general geometry grammar, so inspect
+            # the source spelling separately here.
+            if not re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)", raw) or float(raw) <= 0:
+                _emit(
+                    findings,
+                    profile,
+                    "unsupported_line_height",
+                    "line-height must be a positive unitless number or positive px value.",
+                    source_object,
+                )
+        return
+    if property_name.startswith("margin"):
+        values = value.split()
+        if not values:
+            values = [value]
+        invalid = False
+        for item in values:
+            if re.fullmatch(r"0(?:\.0+)?", item) or re.fullmatch(
+                r"(?:\d+(?:\.\d*)?|\.\d+)px", item, re.IGNORECASE
+            ):
+                continue
+            invalid = True
+            break
+        if invalid:
+            _emit(
+                findings,
+                profile,
+                "unsupported_paragraph_margin",
+                "paragraph margins must be unitless zero or non-negative px values.",
+                source_object,
+            )
+        return
+    if property_name == "text-decoration":
+        if normalized not in {"none", "underline"}:
+            _emit(
+                findings,
+                profile,
+                "unsupported_text_decoration",
+                "text-decoration must be exactly none or underline.",
+                source_object,
+            )
+        return
+    if property_name == "direction" and normalized not in {"ltr", "rtl", "initial"}:
+        _emit(
+            findings,
+            profile,
+            "unsupported_text_direction",
+            "direction must be ltr, rtl, or initial.",
+            source_object,
+        )
+        return
+    if property_name == "text-align" and normalized not in {
+        *TEXT_ALIGNMENT_VALUES,
+        "start",
+        "end",
+        "initial",
+    }:
+        _emit(
+            findings,
+            profile,
+            "unsupported_text_alignment",
+            "text-align must be left, center, right, justify, start, end, or initial.",
+            source_object,
+        )
+        return
     if classification == "unsupported" and normalized not in {"none", "initial"}:
         _emit(
             findings,
@@ -1129,6 +1206,14 @@ def _check_author(
                     "Author pictures must use data:image/... sources.",
                     _node_path(element),
                 )
+        if tag == "a" and element.get("href"):
+            _emit(
+                findings,
+                "author",
+                "unsupported_hyperlink",
+                "Hyperlink targets are outside the Contract 1.1 native run matrix.",
+                _node_path(element),
+            )
         if tag in {"td", "th"}:
             if str(element.get("rowspan", "1")) != "1" or str(element.get("colspan", "1")) != "1":
                 _emit(
@@ -1312,7 +1397,7 @@ def _check_officehtml(
             design_height = declarations.get("--slide-design-h", design_height)
     for index, slide in enumerate(slides, start=1):
         styles = _inline_styles(slide)
-        # The OfficeCLI 1.0.147 parser uses the widescreen point canvas when a
+        # The OfficeCLI 1.0.151 parser uses the widescreen point canvas when a
         # minimal projection omits explicit slide bounds.  Keep the Contract
         # aligned with that public parser default while still rejecting a
         # partially declared or non-positive canvas.

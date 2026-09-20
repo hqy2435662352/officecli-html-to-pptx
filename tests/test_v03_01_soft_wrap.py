@@ -5,12 +5,11 @@ fixture (``tests/fixtures/v03_01_rich_text_paragraphs.html``) or from an
 explicitly written expected paragraph-layout model.  Nothing is derived from the
 compiler's own output.
 
-The slice under test is Recorded Decision V03-01-004: V03-01 preserves V0.2
-newline semantics and the existing ``visualLines`` behaviour.  A ``<br>`` is a
-native paragraph boundary, soft wrapping stays browser/layout behaviour, and
-**no new soft-line-break representation is introduced**.  Chromium-decided
-visual lines therefore survive as the native paragraph boundaries of the one
-authored text object, and the paragraph-layout surface that checking and
+The slice under test is now the Contract 1.1 paragraph-layout surface.  An
+authored ``<br>`` is an intra-paragraph native hard break, soft wrapping stays
+measurement/evidence only, and **no new soft-line-break representation is
+introduced**.  Chromium-decided visual lines therefore never become native
+paragraph boundaries, and the paragraph-layout surface that checking and
 lowering really implement is declared by ``capabilities --json``.
 """
 
@@ -52,18 +51,17 @@ SOFT_WRAP_BOUNDS_PT = [85.0, 320.0, 325.0, 110.0]
 # font-size: 31px at scale 0.5.
 SOFT_WRAP_FONT_SIZE_PT = 15.5
 SOFT_WRAP_COLOR = "#24324A"
-# line-height: 1.35 on a 31px font computes to 41.85px; the existing V0.2
-# projection divides that 0.75-scaled CSS pixel value by the 15.5pt font size
-# and rounds to three decimals.  1.35 x 0.75 = 1.0125 -> 1.013.
-SOFT_WRAP_LINE_SPACING = "1.013x"
+# Contract 1.1 preserves the used line-height ratio directly.
+SOFT_WRAP_LINE_SPACING = "1.350x"
+SOFT_WRAP_READBACK_LINE_SPACING = "1.35x"
 
 # The authored source of #soft-wrap is one paragraph with no <br>:
 #
 #     Chromium decides this bilingual soft wrap：浏览器决定视觉换行，
 #     PowerPoint 保留可编辑段落与原始阅读顺序。
 #
-# Chromium forms three visual lines inside the 650px box.  They are the native
-# paragraph boundaries, in source order, and nothing is inserted between them.
+# Chromium forms three visual lines inside the 650px box.  They remain
+# measurement evidence; nothing is inserted into the native paragraph.
 EXPECTED_VISUAL_LINES: tuple[str, ...] = (
     "Chromium decides this bilingual soft wrap：浏",
     "览器决定视觉换行，PowerPoint 保留可编辑段",
@@ -73,15 +71,13 @@ EXPECTED_AUTHORED_TEXT = (
     "Chromium decides this bilingual soft wrap：浏览器决定视觉换行，"
     "PowerPoint 保留可编辑段落与原始阅读顺序。"
 )
-EXPECTED_OBJECT_TEXT = "\n".join(EXPECTED_VISUAL_LINES)
+EXPECTED_OBJECT_TEXT = EXPECTED_AUTHORED_TEXT
 
-# The neighbouring released-V0.2 line-height projections that this ticket must
-# not disturb (criterion 11).  #mixed-runs is 30px/1.45 and #paragraphs is
-# 28px/1.35; both keep the established CSS-pixel projection.
+# The neighbouring authored line-height ratios.
 MIXED_RUNS_SOURCE = "slide[1]/div[3]"
-MIXED_RUNS_LINE_SPACING = "1.087x"
+MIXED_RUNS_LINE_SPACING = "1.450x"
 PARAGRAPHS_SOURCE = "slide[1]/div[5]"
-PARAGRAPHS_LINE_SPACING = "1.012x"
+PARAGRAPHS_LINE_SPACING = "1.350x"
 
 # ---------------------------------------------------------------------------
 # Independent expected literals for the authored paragraph-spacing input
@@ -119,14 +115,16 @@ EXPECTED_SPACE_AFTER_PT = [18.0, 18.0]
 EXPECTED_SPACE_BEFORE_READBACK = "12pt"
 EXPECTED_SPACE_AFTER_READBACK = "18pt"
 EXPECTED_CELL_PARAGRAPHS = ("Native spacing one", "Native spacing two")
-EXPECTED_CELL_LINE_SPACING = "1.013x"
-# The standalone text body keeps its block's margin *in its measured bounds*
-# instead of re-emitting it as native paragraph spacing, so its margin must not
-# be counted twice.  12px at scale 0.5 is 6pt.
+EXPECTED_CELL_LINE_SPACING = "1.350x"
+EXPECTED_CELL_READBACK_LINE_SPACING = "1.35x"
+# Standalone text bounds already include authored block margins; they are not
+# projected a second time into native paragraph spacing.
 STANDALONE_BLOCK_MARGIN_PX = 12
 EXPECTED_STANDALONE_SPACE_BEFORE_PT = 0.0
 EXPECTED_STANDALONE_SPACE_AFTER_PT = 0.0
-EXPECTED_STANDALONE_TOP_MARGIN_PT = 6.0
+EXPECTED_STANDALONE_TOP_MARGIN_PT = 0.0
+EXPECTED_STANDALONE_READBACK_SPACE_BEFORE = None
+EXPECTED_STANDALONE_READBACK_SPACE_AFTER = None
 
 # The independently written alignment surface; the manifest must declare
 # exactly this, and the checker/lowering resolver must map each value to itself
@@ -153,20 +151,16 @@ ALIGNMENT_HTML = f"""<!doctype html>
 </section></body></html>"""
 ALIGNMENT_SOURCE = "slide[1]/div[1]"
 
-# The declared soft-wrap model: Chromium visual lines become native paragraph
-# boundaries of the one authored text object.  No soft-line-break object,
-# marker, or per-line text box may be introduced.
+# The declared soft-wrap model: Chromium visual lines are measurement evidence
+# only.  No soft-line-break object, marker, or per-line text box may be
+# introduced.
 EXPECTED_SOFT_WRAP_MODEL = {
-    "representation": "chromium-visual-lines-as-native-paragraph-boundaries",
+    "representation": "measurement-and-evidence-only",
     "measured_property": "visualLines",
-    "unit": "native-paragraph",
-    "requires": [
-        "one-source-paragraph",
-        "one-source-run",
-        "visual-lines-rejoin-to-the-authored-text",
-        "ordered-soft-wrap-sequence",
-    ],
-    "fallback": "authored-paragraph-when-the-visual-lines-are-not-a-repartition",
+    "unit": "measurement-line",
+    "requires": ["ordered-soft-wrap-sequence"],
+    "fallback": "authored-paragraph-structure",
+    "lowering": "never",
     "object_per_source": 1,
     "object_kind": "textbox",
     "new_soft_line_break_representation": False,
@@ -284,35 +278,24 @@ def test_capabilities_declare_the_paragraph_layout_surface() -> None:
 
     assert surface["line_height"]["property"] == "line-height"
     assert surface["line_height"]["native"] == "lineSpacing"
-    # The released V0.2 CSS-pixel projection is declared, not invented here.
     assert surface["line_height"]["unitless"] == "line-height / font-size"
     assert surface["line_height"]["length_with_px_projection"] == (
-        "(line-height x 0.75) / font-size"
-    )
-    assert surface["line_height"]["length_with_source_fidelity_projection"] == (
         "line-height / font-size"
     )
+    assert surface["line_height"]["accepted"] == ["positive-unitless", "positive-px"]
     assert surface["line_height"]["omitted_when_ratio_within"] == 0.01
     assert surface["line_height"]["precision"] == "0.001x"
+    assert surface["line_height"]["readback_tolerance"] == 0.01
     assert surface["line_height"]["default"] == "absent"
-    # The declaration quotes the released projection scale as data, and the
-    # compiler multiplies by that same constant, so the published number cannot
-    # drift from the one the lowering pass applies.
-    assert surface["line_height"]["length_with_px_projection"] == (
-        f"(line-height x {LINE_HEIGHT_PX_PROJECTION_SCALE}) / font-size"
-    )
-    assert LINE_HEIGHT_PX_PROJECTION_SCALE == 0.75
-    assert surface["line_height"]["source_fidelity_text"] == (
-        "ALGERIA PRODUCT LINE-UP"
-    )
-    assert surface["line_height"]["source_fidelity_min_font_size_px"] == 45.0
+    assert LINE_HEIGHT_PX_PROJECTION_SCALE == 1.0
 
     assert surface["paragraph_spacing"]["properties"] == ["margin-top", "margin-bottom"]
     assert surface["paragraph_spacing"]["native"] == ["spaceBefore", "spaceAfter"]
     assert surface["paragraph_spacing"]["unit"] == "pt"
     assert surface["paragraph_spacing"]["projection"] == (
-        "css-margin-px-to-native-paragraph-points"
+        "css-margin-px-to-native-paragraph-points-at-measured-slide-scale"
     )
+    assert surface["paragraph_spacing"]["readback_tolerance_pt"] == 0.25
     assert surface["paragraph_spacing"]["default"] == "absent"
     assert surface["paragraph_spacing"]["emitted_at"] == [
         "table-cell-paragraph"
@@ -386,7 +369,7 @@ def test_public_check_accepts_the_authored_spacing_input(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# Criteria 3, 4, 5, 7: one native object, visual-line paragraphs, no new model
+# Criteria 3, 4, 5, 7: one native object, authored paragraphs, no new model
 # ---------------------------------------------------------------------------
 
 
@@ -424,11 +407,10 @@ async def test_soft_wrapped_paragraph_stays_one_native_text_object(
         if node.get("type") in {"picture", "svg"}
         or str(node.get("path", "")).startswith("/slide[1]/picture")
     ]
-    # The native paragraph count of the object is the visual-line count; a
-    # per-line textbox flattening would show up as one text object per line.
+    # The native paragraph count stays authored, regardless of browser rows.
     assert len(_readback_paragraphs(
         _object_by_name(output, manifest_object["name"])
-    )) == len(EXPECTED_VISUAL_LINES)
+    )) == 1
 
     readback = _object_by_name(output, manifest_object["name"])
     assert readback["type"] == "textbox"
@@ -441,10 +423,10 @@ async def test_soft_wrapped_paragraph_stays_one_native_text_object(
 
 
 @pytest.mark.asyncio
-async def test_chromium_visual_lines_are_the_native_paragraph_boundaries(
+async def test_chromium_visual_lines_never_become_native_paragraph_boundaries(
     tmp_path: Path,
 ) -> None:
-    """Criterion 4 and 7: source order, one run each, no invented separators."""
+    """Criterion 4 and 7: visual rows are evidence, not authored structure."""
     output = tmp_path / "soft-wrap-lines.pptx"
 
     result = await compile_officecli(str(FIXTURE), "author", str(output))
@@ -452,51 +434,37 @@ async def test_chromium_visual_lines_are_the_native_paragraph_boundaries(
     manifest_object = _shape_by_source(result.manifest, SOFT_WRAP_SOURCE)
     assert [
         paragraph["text"] for paragraph in manifest_object["paragraphs"]
-    ] == list(EXPECTED_VISUAL_LINES)
-    assert len(manifest_object["paragraphs"]) == len(EXPECTED_VISUAL_LINES)
+    ] == [EXPECTED_AUTHORED_TEXT]
+    assert len(manifest_object["paragraphs"]) == 1
     assert [
         [run["text"] for run in paragraph["runs"]]
         for paragraph in manifest_object["paragraphs"]
-    ] == [[line] for line in EXPECTED_VISUAL_LINES]
-    # Re-joining the visual lines reproduces the authored paragraph exactly:
-    # this is the repartition requirement the fallback tests, and it proves the
-    # lowering split a real browser wrap instead of inventing a break.
-    assert "".join(
-        paragraph["text"] for paragraph in manifest_object["paragraphs"]
-    ) == EXPECTED_AUTHORED_TEXT
-    assert "\n".join(
-        paragraph["text"] for paragraph in manifest_object["paragraphs"]
-    ) == EXPECTED_OBJECT_TEXT
+    ] == [[EXPECTED_AUTHORED_TEXT]]
+    assert manifest_object["paragraphs"][0]["hard_break_offsets"] == []
 
     readback = _object_by_name(output, manifest_object["name"])
     readback_paragraphs = _readback_paragraphs(readback)
-    assert [
-        paragraph["text"] for paragraph in readback_paragraphs
-    ] == list(EXPECTED_VISUAL_LINES)
-    # Each visual line stays one editable native run holding the whole line.
+    assert [paragraph["text"] for paragraph in readback_paragraphs] == [
+        EXPECTED_AUTHORED_TEXT
+    ]
+    # The authored paragraph stays one editable native run.
     assert [
         [run["text"] for run in paragraph.get("children", [])]
         for paragraph in readback["children"]
-    ] == [[line] for line in EXPECTED_VISUAL_LINES]
+    ] == [[EXPECTED_AUTHORED_TEXT]]
 
 
 @pytest.mark.asyncio
 async def test_no_soft_line_break_representation_is_introduced(
     tmp_path: Path,
 ) -> None:
-    """Criterion 5: the visual-line model is the only newline source.
-
-    The authored paragraph has no ``<br>``, so the only native paragraph
-    boundaries in the object are the three Chromium visual lines.  Nothing
-    else -- no marker run, no empty paragraph, no ``\n`` inside a run, and no
-    duplicate object -- represents a soft line break.
-    """
+    """Criterion 5: visual-line evidence never creates native separators."""
     output = tmp_path / "soft-wrap-model.pptx"
 
     result = await compile_officecli(str(FIXTURE), "author", str(output))
 
     manifest_object = _shape_by_source(result.manifest, SOFT_WRAP_SOURCE)
-    assert manifest_object["text"].count("\n") == len(EXPECTED_VISUAL_LINES) - 1
+    assert manifest_object["text"].count("\n") == 0
     assert "" not in [
         paragraph["text"] for paragraph in manifest_object["paragraphs"]
     ]
@@ -518,7 +486,7 @@ async def test_no_soft_line_break_representation_is_introduced(
     ]
 
     readback = _object_by_name(output, manifest_object["name"])
-    assert readback["text"] == EXPECTED_OBJECT_TEXT
+    assert readback["text"] == EXPECTED_AUTHORED_TEXT
     assert not [
         node
         for node in _slide_nodes(output)
@@ -544,55 +512,55 @@ async def test_alignment_line_height_and_spacing_read_back_as_literals(
     assert manifest_object["properties"]["lineSpacing"] == SOFT_WRAP_LINE_SPACING
     assert [
         paragraph["align"] for paragraph in manifest_object["paragraphs"]
-    ] == ["left", "left", "left"]
+    ] == ["left"]
     assert [
         paragraph["line_spacing"] for paragraph in manifest_object["paragraphs"]
-    ] == [SOFT_WRAP_LINE_SPACING] * len(EXPECTED_VISUAL_LINES)
+    ] == [SOFT_WRAP_LINE_SPACING]
     assert [
         paragraph["space_before_pt"] for paragraph in manifest_object["paragraphs"]
-    ] == [0.0] * len(EXPECTED_VISUAL_LINES)
+    ] == [0.0]
     assert [
         paragraph["space_after_pt"] for paragraph in manifest_object["paragraphs"]
-    ] == [0.0] * len(EXPECTED_VISUAL_LINES)
+    ] == [0.0]
     # The ordinary font size and the color are unchanged by the wrap.
     assert [
         run["font_size_pt"] for paragraph in manifest_object["paragraphs"]
         for run in paragraph["runs"]
-    ] == [SOFT_WRAP_FONT_SIZE_PT] * len(EXPECTED_VISUAL_LINES)
+    ] == [SOFT_WRAP_FONT_SIZE_PT]
     assert [
         run["color"] for paragraph in manifest_object["paragraphs"]
         for run in paragraph["runs"]
-    ] == [SOFT_WRAP_COLOR] * len(EXPECTED_VISUAL_LINES)
+    ] == [SOFT_WRAP_COLOR]
 
     readback = _object_by_name(output, manifest_object["name"])
     assert readback["format"]["align"] == "left"
-    assert readback["format"]["lineSpacing"] == SOFT_WRAP_LINE_SPACING
+    assert readback["format"]["lineSpacing"] == SOFT_WRAP_READBACK_LINE_SPACING
     readback_paragraphs = _readback_paragraphs(readback)
     assert [
         paragraph["format"].get("align") for paragraph in readback_paragraphs
-    ] == ["left", "left", "left"]
+    ] == ["left"]
     assert [
         paragraph["format"].get("lineSpacing")
         for paragraph in readback_paragraphs
-    ] == [SOFT_WRAP_LINE_SPACING] * len(EXPECTED_VISUAL_LINES)
+    ] == [SOFT_WRAP_READBACK_LINE_SPACING]
     # An omitted native spaceBefore/spaceAfter is the zero projection: the
     # OfficeCLI default is no paragraph spacing.
     assert [
         paragraph["format"].get("spaceBefore") for paragraph in readback_paragraphs
-    ] == [None] * len(EXPECTED_VISUAL_LINES)
+    ] == [None]
     assert [
         paragraph["format"].get("spaceAfter") for paragraph in readback_paragraphs
-    ] == [None] * len(EXPECTED_VISUAL_LINES)
+    ] == [None]
     assert [
         run["format"]["size"]
         for paragraph in readback["children"]
         for run in paragraph.get("children", [])
-    ] == ["15.5pt"] * len(EXPECTED_VISUAL_LINES)
+    ] == ["15.5pt"]
 
 
 @pytest.mark.asyncio
-async def test_v02_line_height_projections_are_unchanged(tmp_path: Path) -> None:
-    """Criterion 11: the released V0.2 CSS-pixel projection still applies."""
+async def test_line_height_ratios_are_preserved_as_native_values(tmp_path: Path) -> None:
+    """Contract 1.1 keeps positive authored ratios without a 0.75 projection."""
     output = tmp_path / "v02-line-height.pptx"
 
     result = await compile_officecli(str(FIXTURE), "author", str(output))
@@ -603,16 +571,16 @@ async def test_v02_line_height_projections_are_unchanged(tmp_path: Path) -> None
     assert paragraphs["properties"]["lineSpacing"] == PARAGRAPHS_LINE_SPACING
     assert [
         paragraph["line_spacing"] for paragraph in paragraphs["paragraphs"]
-    ] == [PARAGRAPHS_LINE_SPACING] * 5
+    ] == [PARAGRAPHS_LINE_SPACING]
 
     mixed_readback = _object_by_name(output, mixed_runs["name"])
     paragraphs_readback = _object_by_name(output, paragraphs["name"])
-    assert mixed_readback["format"]["lineSpacing"] == MIXED_RUNS_LINE_SPACING
-    assert paragraphs_readback["format"]["lineSpacing"] == PARAGRAPHS_LINE_SPACING
+    assert mixed_readback["format"]["lineSpacing"] == "1.45x"
+    assert paragraphs_readback["format"]["lineSpacing"] == "1.35x"
     assert [
         (paragraph.get("format") or {}).get("lineSpacing")
         for paragraph in paragraphs_readback["children"]
-    ] == [PARAGRAPHS_LINE_SPACING] * 5
+    ] == ["1.35x"]
 
 
 # ---------------------------------------------------------------------------
@@ -667,7 +635,7 @@ async def test_authored_paragraph_spacing_lowers_and_reads_back(
     assert rendered_cell["text"] == "\n".join(EXPECTED_CELL_PARAGRAPHS)
     assert rendered_cell["format"]["spaceBefore"] == EXPECTED_SPACE_BEFORE_READBACK
     assert rendered_cell["format"]["spaceAfter"] == EXPECTED_SPACE_AFTER_READBACK
-    assert rendered_cell["format"]["lineSpacing"] == EXPECTED_CELL_LINE_SPACING
+    assert rendered_cell["format"]["lineSpacing"] == EXPECTED_CELL_READBACK_LINE_SPACING
     assert rendered_cell["format"]["align"] == "right"
     # One native paragraph per authored paragraph: the spacing is paragraph
     # formatting, not an extra empty paragraph used as a spacer.
@@ -686,13 +654,12 @@ async def test_authored_paragraph_spacing_lowers_and_reads_back(
 async def test_standalone_block_margin_is_not_double_counted(
     tmp_path: Path,
 ) -> None:
-    """The V0.2 text-body projection stays truthful about standalone blocks.
+    """Standalone paragraph margins are not emitted a second time.
 
-    A standalone Author paragraph already carries its own margin inside the
-    Chromium-measured bounds, so the lowering must not re-emit that margin as
-    native paragraph spacing; doing so would count the authored spacing twice.
-    The block's top is therefore exactly one margin below its containing box's
-    top (120px), and its own body reports no native space before/after.
+    The browser-measured textbox bounds already include the authored block
+    margins.  Re-emitting them as native paragraph spacing would double-count
+    the vertical geometry; table-cell paragraphs have their own explicit
+    spacing projection covered by the test above.
     """
     output = tmp_path / "standalone-margin.pptx"
 
@@ -700,7 +667,9 @@ async def test_standalone_block_margin_is_not_double_counted(
         str(_write_layout_html(tmp_path)), "author", str(output)
     )
 
-    standalone = _shape_by_source(result.manifest, "slide[1]/div[1]/p[1]")
+    # Direct authored <p> children are folded into their owning native textbox
+    # so empty paragraphs and paragraph order remain structural evidence.
+    standalone = _shape_by_source(result.manifest, "slide[1]/div[1]")
     assert standalone["kind"] == "textbox"
     assert [
         paragraph["text"] for paragraph in standalone["paragraphs"]
@@ -712,21 +681,27 @@ async def test_standalone_block_margin_is_not_double_counted(
         paragraph["space_after_pt"] for paragraph in standalone["paragraphs"]
     ] == [EXPECTED_STANDALONE_SPACE_AFTER_PT]
     assert standalone["paragraphs"][0]["line_spacing"] == EXPECTED_CELL_LINE_SPACING
-    # Independent literal: 120px container top + 12px margin = 132px = 66pt, and
-    # the margin is inside the measured box rather than added to the text body.
+    # Independent literal: the owning textbox remains at 120px = 60pt and the
+    # measured block margins do not move its native y coordinate.
     assert standalone["bounds_pt"][1] == 60.0 + EXPECTED_STANDALONE_TOP_MARGIN_PT
-    assert standalone["properties"]["y"] == "66.0000pt"
+    assert standalone["properties"]["y"] == "60.0000pt"
 
     readback = _object_by_name(output, standalone["name"])
     assert readback["type"] == "textbox"
-    assert readback["format"]["y"] == "66pt"
+    assert readback["format"]["y"] == "60pt"
     assert readback["format"]["size"] == "15.5pt"
     readback_paragraphs = _readback_paragraphs(readback)
     assert [paragraph["text"] for paragraph in readback_paragraphs] == [
         "Standalone spacing line"
     ]
-    assert readback_paragraphs[0]["format"].get("spaceBefore") is None
-    assert readback_paragraphs[0]["format"].get("spaceAfter") is None
+    assert (
+        readback_paragraphs[0]["format"].get("spaceBefore")
+        == EXPECTED_STANDALONE_READBACK_SPACE_BEFORE
+    )
+    assert (
+        readback_paragraphs[0]["format"].get("spaceAfter")
+        == EXPECTED_STANDALONE_READBACK_SPACE_AFTER
+    )
 
 
 @pytest.mark.asyncio

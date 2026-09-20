@@ -1034,10 +1034,9 @@ def _paragraphs(
 
     ``breaks`` pairs a paragraph's run-length layout with the run index each of
     its own ``<a:br/>`` elements follows, read from the source part because
-    OfficeCLI's readback drops the break itself.  A paragraph whose layout
-    matches one of them is re-partitioned on its breaks, so the two lines a hard
-    break separates are two paragraphs of the projection -- which is the one
-    separator the Canonical Author paragraph orthography has.
+    OfficeCLI's readback drops the break itself.  A matching paragraph keeps its
+    authored paragraph identity; the break is restored inside the paragraph as
+    ``_HARD_BREAK`` rather than being repartitioned into synthetic paragraphs.
     """
     fmt = dict(node.get("format") or {})
     text_children = [
@@ -1066,9 +1065,10 @@ def _paragraphs(
             ),
             breaks,
         )
-        text = _text_of(paragraph)
+        run_text = "".join(run.text for run in runs)
+        text = run_text if _HARD_BREAK in run_text else _text_of(paragraph)
         if not text:
-            text = "".join(run.text for run in runs)
+            text = run_text
         alignment = paragraph_format.get("align", fmt.get("align", ALIGNMENT_DEFAULT))
         result.append(
             CapturedParagraph(
@@ -1103,10 +1103,10 @@ def _with_line_breaks(
 ) -> tuple[CapturedRun, ...]:
     """Return ``runs`` with PowerPoint's hard break restored between them.
 
-    The break is put back where the source declares it -- after the run the
-    source's own run index names -- so the paragraph's own characters are
+    The break is put back where the source declares it -- before or after the
+    run position named by the source -- so the paragraph's own characters are
     unchanged and the one thing the readback lost is the one thing this puts
-    back.
+    back.  Repeated positions are retained for consecutive hard breaks.
 
     The two sides count runs differently: the source part's paragraph is split
     into runs by OfficeCLI's own readback, which can divide one authored run's
@@ -1121,20 +1121,18 @@ def _with_line_breaks(
     if not breaks:
         return runs
     text = "".join(run.text for run in runs)
-    if not text:
-        return runs
     layout = tuple(len(run.text) for run in runs)
     for recorded, positions in breaks:
         if recorded == layout:
             return _break_after_indices(runs, positions)
         if sum(recorded) != len(text):
             continue
-        offsets: set[int] = set()
+        offsets: list[int] = []
         for index in positions:
             if index < len(recorded):
                 # A break at run index N follows the first N runs, so its
                 # character offset is the sum of their lengths.
-                offsets.add(sum(recorded[:index]))
+                offsets.append(sum(recorded[:index]))
         if not offsets:
             continue
         return _break_after_offsets(runs, offsets)
@@ -1144,34 +1142,85 @@ def _with_line_breaks(
 def _break_after_indices(
     runs: tuple[CapturedRun, ...], positions: Sequence[int]
 ) -> tuple[CapturedRun, ...]:
-    """Append the hard break to the run at each recorded index."""
-    wanted = set(positions)
-    return tuple(
-        dataclasses.replace(run, text=run.text + _HARD_BREAK)
-        if index in wanted
-        else run
-        for index, run in enumerate(runs, start=1)
-    )
+    """Restore breaks before/after runs without collapsing duplicates."""
+    counts: dict[int, int] = {}
+    for position in positions:
+        counts[position] = counts.get(position, 0) + 1
+    if not runs:
+        return (
+            CapturedRun(
+                text=_HARD_BREAK * counts.get(0, 0),
+                font_family="",
+                font_size_pt=0.0,
+                bold=False,
+                italic=False,
+                underline="none",
+                color=None,
+            ),
+        ) if counts.get(0, 0) else ()
+    restored: list[CapturedRun] = []
+    for index, run in enumerate(runs):
+        prefix = _HARD_BREAK * counts.get(0, 0) if index == 0 else ""
+        suffix = _HARD_BREAK * counts.get(index + 1, 0)
+        restored.append(dataclasses.replace(run, text=prefix + run.text + suffix))
+    return tuple(restored)
 
 
 def _break_after_offsets(
-    runs: tuple[CapturedRun, ...], offsets: set[int]
+    runs: tuple[CapturedRun, ...], offsets: Sequence[int]
 ) -> tuple[CapturedRun, ...]:
-    """Append the hard break to the run that owns each character offset."""
+    """Restore breaks at visible offsets, retaining consecutive breaks.
+
+    OfficeCLI may coalesce the two visible sides of a break into one returned
+    run.  In that case an offset can fall in the middle of a run rather than at
+    one of its boundaries.  Keep the formatting run intact and inject the
+    native break control at that character offset; splitting the run is not
+    needed for readback and would create a synthetic formatting boundary.
+    """
+    counts: dict[int, int] = {}
+    for offset in offsets:
+        counts[offset] = counts.get(offset, 0) + 1
+    if not runs:
+        return (
+            CapturedRun(
+                text=_HARD_BREAK * counts.get(0, 0),
+                font_family="",
+                font_size_pt=0.0,
+                bold=False,
+                italic=False,
+                underline="none",
+                color=None,
+            ),
+        ) if counts.get(0, 0) else ()
     restored: list[CapturedRun] = []
     consumed = 0
     for run in runs:
-        consumed += len(run.text)
-        restored.append(
-            dataclasses.replace(run, text=run.text + _HARD_BREAK)
-            if consumed in offsets
-            else run
-        )
+        start = consumed
+        end = start + len(run.text)
+        insertions = [
+            (offset, count)
+            for offset, count in sorted(counts.items())
+            if (start == 0 and offset == 0) or start < offset <= end
+        ]
+        if not insertions:
+            restored.append(run)
+            consumed = end
+            continue
+        pieces: list[str] = []
+        cursor = 0
+        for offset, count in insertions:
+            local = offset - start
+            pieces.append(run.text[cursor:local])
+            pieces.append(_HARD_BREAK * count)
+            cursor = local
+        pieces.append(run.text[cursor:])
+        restored.append(dataclasses.replace(run, text="".join(pieces)))
+        consumed = end
     return tuple(restored)
 
 
 # PowerPoint's intra-paragraph line break.  It is a character in a text body and
-# never a character of the document's text: the projection re-partitions on it.
+# remains inside the authored paragraph; it is never lowered to a new paragraph.
 _HARD_BREAK = "\x0b"
 
 
@@ -1185,64 +1234,8 @@ def _number(value: Any) -> float:
 def _split_intra_paragraph_breaks(
     paragraphs: Sequence[CapturedParagraph],
 ) -> tuple[CapturedParagraph, ...]:
-    """Re-partition paragraphs on PowerPoint's intra-paragraph line break.
-
-    A text body that mixes runs and ``<a:br/>`` reads back with ``\\x0b`` inside
-    one paragraph.  The Canonical Author paragraph orthography has one
-    separator -- a paragraph boundary -- so such a body is re-partitioned on
-    that break: every run's text is split in source order, so each side keeps
-    exactly the characters it owned, and the run formatting is preserved.  Only
-    the paragraph count changes, and the projection report records that.
-
-    The break is looked for in the paragraph's *runs*, not in its aggregate text:
-    the aggregate text OfficeCLI reports is the runs concatenated, so a paragraph
-    whose break this reader restored onto a run would otherwise look unbroken.
-    """
-    if not _carries_hard_break(paragraphs):
-        return tuple(paragraphs)
-    reordered: list[CapturedParagraph] = []
-    for paragraph in paragraphs:
-        if not any("\x0b" in run.text for run in paragraph.runs):
-            reordered.append(paragraph)
-            continue
-        pieces: list[list[CapturedRun]] = [[]]
-        for run in paragraph.runs:
-            segments = run.text.split("\x0b")
-            for index, segment in enumerate(segments):
-                if index:
-                    pieces.append([])
-                if segment:
-                    pieces[-1].append(
-                        CapturedRun(
-                            text=segment,
-                            font_family=run.font_family,
-                            font_size_pt=run.font_size_pt,
-                            bold=run.bold,
-                            italic=run.italic,
-                            underline=run.underline,
-                            color=run.color,
-                            properties=run.properties,
-                        )
-                    )
-        for index, runs in enumerate(pieces):
-            reordered.append(
-                CapturedParagraph(
-                    text="".join(item.text for item in runs),
-                    align=paragraph.align,
-                    line_spacing=paragraph.line_spacing,
-                    space_before_pt=(
-                        paragraph.space_before_pt if index == 0 else 0.0
-                    ),
-                    space_after_pt=(
-                        paragraph.space_after_pt if index == len(pieces) - 1 else 0.0
-                    ),
-                    direction=paragraph.direction,
-                    bullet=paragraph.bullet,
-                    level=paragraph.level,
-                    runs=tuple(runs),
-                )
-            )
-    return tuple(reordered)
+    """Compatibility no-op; authored hard breaks stay inside their paragraph."""
+    return tuple(paragraphs)
 
 
 def _line_spacing_value(value: Any) -> str | None:
@@ -1524,17 +1517,22 @@ def _table_cell_paragraphs(cell: Mapping[str, Any]) -> tuple[CapturedParagraph, 
             node for node in paragraph if _local_name(node.tag) in {"r", "fld", "br"}
         ]:
             if _local_name(run.tag) == "br":
-                runs.append(
-                    CapturedRun(
-                        text="\n",
-                        font_family=default_font,
-                        font_size_pt=default_size,
-                        bold=False,
-                        italic=False,
-                        underline="none",
-                        color=default_color,
+                if runs:
+                    runs[-1] = dataclasses.replace(
+                        runs[-1], text=runs[-1].text + _HARD_BREAK
                     )
-                )
+                else:
+                    runs.append(
+                        CapturedRun(
+                            text=_HARD_BREAK,
+                            font_family=default_font,
+                            font_size_pt=default_size,
+                            bold=False,
+                            italic=False,
+                            underline="none",
+                            color=default_color,
+                        )
+                    )
                 continue
             run_props = next(
                 (node for node in run if _local_name(node.tag) == "rPr"), None
@@ -1583,9 +1581,10 @@ def _table_cell_paragraphs(cell: Mapping[str, Any]) -> tuple[CapturedParagraph, 
                     color=color,
                 )
             )
-        text = _text_of(cell)
+        run_text = "".join(run.text for run in runs)
+        text = run_text if _HARD_BREAK in run_text else _text_of(cell)
         if not text:
-            text = "".join(run.text for run in runs)
+            text = run_text
         paragraphs.append(
             CapturedParagraph(
                 text=text,
@@ -1690,9 +1689,10 @@ def _captured_object(
     bounds = tuple(
         length_to_points(fmt.get(key)) for key in ("x", "y", "width", "height")
     )
-    paragraphs = _split_intra_paragraph_breaks(
-        _paragraphs(node, breaks=line_breaks)
-    )
+    # Keep authored paragraph boundaries intact.  ``<a:br/>`` is restored by
+    # ``_paragraphs`` as an intra-paragraph control character, never promoted to
+    # a new native paragraph during readback.
+    paragraphs = _paragraphs(node, breaks=line_breaks)
     # A themed colour is a colour the deck paints, so it is resolved from the
     # deck's own scheme before anything is emitted: a token left unresolved is
     # then a real base-only claim rather than a silent loss of colour.
