@@ -2249,7 +2249,7 @@ def _document_html(
     style = (
         "* { box-sizing: border-box; }\n"
         "html, body { margin: 0; padding: 0; background: #1f2227; }\n"
-        ".slide { margin: 0 auto 24px auto; }\n"
+        ".slide { margin: 0 0 24px 0; }\n"
         ".slide:first-of-type { margin-top: 0; }\n"
     )
     script = (
