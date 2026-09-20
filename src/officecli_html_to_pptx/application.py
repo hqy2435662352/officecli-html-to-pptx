@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable, Mapping, Sequence
+from copy import deepcopy
 import errno
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 import time
@@ -33,6 +35,7 @@ from ._internal.acceptance import (
     _officecli_manifest,
     _run_officecli,
     _screenshot_pptx,
+    compare_manifests,
 )
 from ._internal.compare import create_comparison, screenshot_html_slides
 from ._internal.officecli_compiler import (
@@ -340,123 +343,150 @@ def _manifest_object_counts(manifest: Mapping[str, Any]) -> dict[str, int]:
     return counts
 
 
-def _native_text_signature(item: Mapping[str, Any]) -> tuple[Any, ...]:
-    """Normalize readback text without treating harmless serialization noise as delta."""
-
-    paragraphs: list[tuple[Any, ...]] = []
-    for paragraph in item.get("paragraphs", []) or []:
-        if not isinstance(paragraph, Mapping):
-            continue
-        runs: list[tuple[Any, ...]] = []
-        for run in paragraph.get("runs", []) or []:
-            if not isinstance(run, Mapping) or not str(run.get("text", "")):
-                continue
-            try:
-                font_size = round(float(run.get("font_size_pt")), 3)
-            except (TypeError, ValueError):
-                font_size = run.get("font_size_pt")
-            runs.append(
-                (
-                    str(run.get("text", "")),
-                    run.get("font_family"),
-                    font_size,
-                    bool(run.get("bold")),
-                    bool(run.get("italic")),
-                    run.get("underline"),
-                    run.get("color"),
-                )
-            )
-        line_spacing = paragraph.get("line_spacing")
-        if isinstance(line_spacing, str) and line_spacing.endswith("x"):
-            try:
-                line_spacing = round(float(line_spacing[:-1]), 3)
-            except ValueError:
-                pass
-        paragraphs.append(
-            (
-                str(paragraph.get("text", "")),
-                paragraph.get("align"),
-                paragraph.get("direction"),
-                line_spacing,
-                tuple(paragraph.get("hard_break_offsets", []) or []),
-                tuple(runs),
-            )
-        )
-    return tuple(paragraphs)
+_ALPHA_COLOR_RE = re.compile(r"#[0-9a-fA-F]{8}(?=$|[\s:])")
+_ANY_COLOR_RE = re.compile(r"#([0-9a-fA-F]{6,8})(?=$|[\s:])")
 
 
-def _within_points(left: Any, right: Any, tolerance: float = 1.0) -> bool:
+def _opacity_number(value: Any) -> float | None:
     try:
-        left_values = [float(value) for value in left]
-        right_values = [float(value) for value in right]
+        return float(str(value).strip())
     except (TypeError, ValueError):
-        return False
-    return len(left_values) == len(right_values) and all(
-        abs(a - b) <= tolerance for a, b in zip(left_values, right_values)
+        return None
+
+
+def _normalize_alpha_color(
+    actual_value: Any,
+    expected_value: Any,
+    expected_opacity: Any,
+) -> Any:
+    """Strip only a matching OfficeCLI alpha spelling from a readback color.
+
+    OfficeCLI 1.0.151 can serialize the same native opacity both as the public
+    ``opacity``/``lineOpacity`` property and as an alpha suffix on ``fill`` or
+    ``line``.  The RGB value and the independent opacity remain strict: an
+    alpha suffix is removed only when its RGB and alpha agree with the authored
+    representation.  A changed color or opacity therefore still becomes a
+    material finding.
+    """
+
+    actual_text = str(actual_value or "")
+    expected_match = _ANY_COLOR_RE.search(str(expected_value or ""))
+    actual_match = _ANY_COLOR_RE.search(actual_text)
+    if not actual_match or not expected_match:
+        return actual_value
+    if len(actual_match.group(1)) != 8:
+        return actual_value
+    if actual_match.group(1)[:6].lower() != expected_match.group(1)[:6].lower():
+        return actual_value
+    expected_alpha = _opacity_number(expected_opacity)
+    if expected_alpha is None:
+        expected_alpha = (
+            int(expected_match.group(1)[6:], 16) / 255.0
+            if len(expected_match.group(1)) == 8
+            else 1.0
+        )
+    actual_alpha = int(actual_match.group(1)[6:], 16) / 255.0
+    if abs(actual_alpha - expected_alpha) > 0.01:
+        return actual_value
+    return _ALPHA_COLOR_RE.sub(
+        f"#{actual_match.group(1)[:6].upper()}", actual_text, count=1
     )
+
+
+def _normalize_readback_paragraph(paragraph: Any) -> None:
+    if not isinstance(paragraph, dict) or str(paragraph.get("text", "")):
+        return
+    runs = paragraph.get("runs")
+    if isinstance(runs, list):
+        # The readback adapter materializes one empty run for authored empty
+        # paragraphs.  Paragraph count, spacing, direction, and hard breaks
+        # remain strict; only this non-semantic child is removed.
+        paragraph["runs"] = [
+            run for run in runs if isinstance(run, Mapping) and str(run.get("text", ""))
+        ]
+
+
+def _normalize_readback_item(
+    expected: Mapping[str, Any] | None,
+    actual: dict[str, Any],
+) -> None:
+    expected_properties = (
+        expected.get("properties", {}) if isinstance(expected, Mapping) else {}
+    )
+    properties = actual.get("properties")
+    if isinstance(properties, dict) and isinstance(expected_properties, Mapping):
+        if "fill" in properties:
+            properties["fill"] = _normalize_alpha_color(
+                properties.get("fill"),
+                expected_properties.get("fill"),
+                expected_properties.get("opacity"),
+            )
+        if "line" in properties:
+            properties["line"] = _normalize_alpha_color(
+                properties.get("line"),
+                expected_properties.get("line"),
+                expected_properties.get("lineOpacity"),
+            )
+    for paragraph in actual.get("paragraphs", []) or []:
+        _normalize_readback_paragraph(paragraph)
+
+    expected_cells = expected.get("cells", []) if isinstance(expected, Mapping) else []
+    for index, cell in enumerate(actual.get("cells", []) or []):
+        if not isinstance(cell, dict):
+            continue
+        expected_cell = (
+            expected_cells[index]
+            if index < len(expected_cells) and isinstance(expected_cells[index], Mapping)
+            else None
+        )
+        expected_cell_props = (
+            expected_cell.get("props", {}) if isinstance(expected_cell, Mapping) else {}
+        )
+        cell_props = cell.get("props")
+        if isinstance(cell_props, dict) and isinstance(expected_cell_props, Mapping):
+            if "fill" in cell_props:
+                cell_props["fill"] = _normalize_alpha_color(
+                    cell_props.get("fill"),
+                    expected_cell_props.get("fill"),
+                    expected_cell_props.get("opacity"),
+                )
+            if "line" in cell_props:
+                cell_props["line"] = _normalize_alpha_color(
+                    cell_props.get("line"),
+                    expected_cell_props.get("line"),
+                    expected_cell_props.get("lineOpacity"),
+                )
+        for paragraph in cell.get("paragraphs", []) or []:
+            _normalize_readback_paragraph(paragraph)
+
+
+def _normalize_native_readback_noise(
+    expected: Mapping[str, Any], readback: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return a strict readback manifest with only two serializer noises removed."""
+
+    normalized = deepcopy(dict(readback))
+    expected_objects = {
+        str(item.get("name")): item
+        for item in expected.get("objects", []) or []
+        if isinstance(item, Mapping) and item.get("name")
+    }
+    for item in normalized.get("objects", []) or []:
+        if isinstance(item, dict):
+            _normalize_readback_item(expected_objects.get(str(item.get("name"))), item)
+    return normalized
 
 
 def _native_material_delta_count(
     compiled: Mapping[str, Any], readback: Mapping[str, Any]
 ) -> int:
-    """Count material native-slice differences, ignoring OfficeCLI formatting noise."""
+    """Count all supported native-field findings after narrow readback cleanup."""
 
-    deltas = 0
-    if compiled.get("slide_count") != readback.get("slide_count"):
-        deltas += 1
-    if _manifest_object_counts(compiled) != _manifest_object_counts(readback):
-        deltas += 1
-    expected_objects = {
-        str(item.get("name")): item
-        for item in compiled.get("objects", []) or []
-        if isinstance(item, Mapping) and item.get("name")
-    }
-    actual_objects = {
-        str(item.get("name")): item
-        for item in readback.get("objects", []) or []
-        if isinstance(item, Mapping) and item.get("name")
-    }
-    for name in sorted(set(expected_objects) | set(actual_objects)):
-        expected = expected_objects.get(name)
-        actual = actual_objects.get(name)
-        if expected is None or actual is None:
-            deltas += 1
-            continue
-        if expected.get("kind") != actual.get("kind"):
-            deltas += 1
-            continue
-        if not _within_points(expected.get("bounds_pt", ()), actual.get("bounds_pt", ())):
-            deltas += 1
-        if str(expected.get("text", "")) != str(actual.get("text", "")):
-            deltas += 1
-        if expected.get("kind") in {"shape", "textbox"}:
-            if _native_text_signature(expected) != _native_text_signature(actual):
-                deltas += 1
-            expected_geometry = (expected.get("properties") or {}).get("geometry")
-            actual_geometry = (actual.get("properties") or {}).get("geometry")
-            if expected_geometry and expected_geometry != actual_geometry:
-                deltas += 1
-        if expected.get("kind") == "table":
-            for field in ("rows", "columns", "normalized_merge_topology"):
-                if expected.get(field) != actual.get(field):
-                    deltas += 1
-            expected_cells = expected.get("cells", []) or []
-            actual_cells = actual.get("cells", []) or []
-            if len(expected_cells) != len(actual_cells):
-                deltas += 1
-            for expected_cell, actual_cell in zip(expected_cells, actual_cells):
-                if not isinstance(expected_cell, Mapping) or not isinstance(actual_cell, Mapping):
-                    deltas += 1
-                    continue
-                if (
-                    expected_cell.get("text", "") != actual_cell.get("text", "")
-                    or expected_cell.get("row") != actual_cell.get("row")
-                    or expected_cell.get("column") != actual_cell.get("column")
-                    or expected_cell.get("row_span") != actual_cell.get("row_span")
-                    or expected_cell.get("column_span") != actual_cell.get("column_span")
-                ):
-                    deltas += 1
-    return deltas
+    _, findings = compare_manifests(
+        compiled,
+        _normalize_native_readback_noise(compiled, readback),
+    )
+    return len(findings)
 
 
 def _native_slice_evidence(
