@@ -590,6 +590,43 @@ def _native_slice_evidence(
             if item.get("kind") == "chart"
         ],
     }
+    localized_fallbacks = {
+        "compiled": [
+            {
+                "name": item.get("name"),
+                "source_slide": item.get("source_slide"),
+                "source_identity": item.get("source_identity"),
+                "source_object": item.get("source_object"),
+                "compiled_kind": item.get("compiled_kind", item.get("kind")),
+                "disposition": item.get("disposition"),
+                "editable": item.get("editable"),
+                "bounds_pt": item.get("bounds_pt", []),
+                "localized_fallback": item.get("localized_fallback", {}),
+            }
+            for item in compiled_objects
+            if item.get("disposition") == "rasterized"
+        ],
+        "readback": [
+            {
+                "name": item.get("name"),
+                "source_slide": item.get("source_slide"),
+                "source_identity": item.get("source_identity"),
+                "compiled_kind": item.get("compiled_kind", item.get("kind")),
+                "disposition": item.get("disposition"),
+                "editable": item.get("editable"),
+                "bounds_pt": item.get("bounds_pt", []),
+                "localized_fallback": item.get("localized_fallback", {}),
+            }
+            for item in readback_objects
+            if item.get("disposition") == "rasterized"
+        ],
+    }
+    readback_native_counts: dict[str, int] = {}
+    for item in readback_objects:
+        if item.get("disposition") != "rasterized":
+            kind = str(item.get("kind", ""))
+            if kind:
+                readback_native_counts[kind] = readback_native_counts.get(kind, 0) + 1
     compiled_chart_count = sum(
         item.get("kind") == "chart" for item in compiled_objects
     )
@@ -613,6 +650,7 @@ def _native_slice_evidence(
         "normalized_merge_topology": merge_topology,
         "native_geometry": native_geometry,
         "charts": chart_structure,
+        "localized_fallbacks": localized_fallbacks,
         "validation": dict(validation or {}),
         "issues": dict(issues or {}),
         "counts": {
@@ -621,6 +659,11 @@ def _native_slice_evidence(
             "readback_object_count": len(readback_objects),
             "compiled_object_kind_counts": _manifest_object_counts(compiled.manifest),
             "readback_object_kind_counts": _manifest_object_counts(readback),
+            "compiled_native_object_kind_counts": dict(
+                compiled.manifest.get("native_object_kind_counts", {})
+            ),
+            "readback_native_object_kind_counts": readback_native_counts,
+            "rasterized_object_count": len(localized_fallbacks["compiled"]),
             "chart_counts": {
                 "authored": compiled_chart_count,
                 "compiled": compiled_chart_count,
@@ -836,7 +879,12 @@ async def build_author_html(
                 raise RuntimeError(f"OfficeCLI compiler did not create {staged_pptx}")
         except OfficeCLICompilationError as exc:
             diagnostics = _diagnostics_from_compiler(exc.diagnostics)
-            if any(item.code.startswith(("unsupported_", "undecodable_", "invalid_")) for item in exc.diagnostics):
+            if any(
+                item.code.startswith(
+                    ("unsupported_", "undecodable_", "invalid_", "unresolved_")
+                )
+                for item in exc.diagnostics
+            ):
                 return result("build", "BLOCK", diagnostics=diagnostics)
             return result("build", "ERROR", diagnostics=diagnostics)
         except (FileExistsError, OSError, RuntimeError, ValueError) as exc:

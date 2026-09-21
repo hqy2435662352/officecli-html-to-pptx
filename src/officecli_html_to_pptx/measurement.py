@@ -8,8 +8,12 @@ the OfficeCLI renderer.
 from __future__ import annotations
 
 import base64
+from io import BytesIO
+import hashlib
 import logging
 import os
+
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +28,7 @@ EXTRACTION_JS = """
     const results = [];
     let _svgCounter = 0;
     let _imageCounter = 0;
+    let _localizedCounter = 0;
     const INLINE_TAGS = new Set([
         'span','strong','em','b','i','a','code','mark','sub','sup',
         'small','u','s','del','abbr','cite','q','time','var','kbd',
@@ -404,6 +409,32 @@ EXTRACTION_JS = """
         if (ownRotation) { el.style.transform = _savedT; }
         const relX = rect.left - slideRect.left;
         const relY = rect.top - slideRect.top;
+
+        // A localized fallback is one authored object. Measure its own
+        // border box, retain only the source facts needed by the capture and
+        // lower it as an atomic node; descendants are intentionally not
+        // visited by the generic object discovery below.
+        const localizedToken = el.getAttribute('data-pptx-rasterize');
+        if (localizedToken !== null) {
+            const localizedId = 'pptx-localized-' + (_localizedCounter++);
+            el.setAttribute('data-pptx-localized-id', localizedId);
+            return {
+                tag: el.tagName.toLowerCase(),
+                x: relX,
+                y: relY,
+                width: rect.width,
+                height: rect.height,
+                text: '',
+                children: [],
+                localizedId: localizedId,
+                localizedFallback: {
+                    token: localizedToken,
+                    sourceIdentity: (el.getAttribute('id') || '').trim() || null,
+                    excludedDescendantCount: el.querySelectorAll('*').length,
+                    isolated: false,
+                },
+            };
+        }
 
         if (rect.width < 1 || rect.height < 1) {
             if (el.hasAttribute('data-pptx-chart')) {
@@ -884,6 +915,164 @@ async def _rasterize_inline_svgs(
                 logger.debug("Failed to rasterize SVG %s", element_id or "?")
 
 
+def _localized_elements(elements: list[dict]) -> list[dict]:
+    """Return localized roots without entering their excluded descendants."""
+    return [
+        element
+        for element in _walk_elements(elements)
+        if element.get("localizedFallback") and element.get("localizedId")
+    ]
+
+
+async def _rasterize_localized_fallbacks(
+    browser,
+    page,
+    measurements: list[dict],
+) -> None:
+    """Capture each opted-in region in a page containing only that region."""
+    for slide_index, slide_data in enumerate(measurements):
+        localized = _localized_elements(slide_data.get("elements", []))
+        if not localized:
+            continue
+
+        payload = await page.evaluate(
+            """(index) => {
+                const slides = Array.from(document.querySelectorAll('.slide'));
+                const slide = slides[index];
+                if (!slide) return null;
+                const rect = slide.getBoundingClientRect();
+                return {
+                    width: rect.width,
+                    height: rect.height,
+                    styles: Array.from(document.querySelectorAll('style'))
+                        .map(style => style.textContent || ''),
+                };
+            }""",
+            slide_index,
+        )
+        if not payload:
+            continue
+
+        slide_width = float(payload.get("width") or 0)
+        slide_height = float(payload.get("height") or 0)
+        if slide_width <= 0 or slide_height <= 0:
+            continue
+        # Author canvases normalize to 960pt x 540pt. Choose the browser
+        # device scale that produces exactly 2 pixels per point for both
+        # accepted 1920px and legacy 960px canvases.
+        css_pixels_per_point = slide_width / 960.0
+        device_scale = 2.0 / css_pixels_per_point
+
+        for element in localized:
+            localized_id = str(element.get("localizedId"))
+            capture_payload = await page.evaluate(
+                """(value) => {
+                    const node = document.querySelector(
+                        '[data-pptx-localized-id="' + value + '"]'
+                    );
+                    if (!node) return null;
+                    const slide = node.closest('.slide');
+                    if (!slide) return null;
+                    const rect = node.getBoundingClientRect();
+                    const slideRect = slide.getBoundingClientRect();
+                    return {
+                        outerHTML: node.outerHTML,
+                        x: rect.left - slideRect.left,
+                        y: rect.top - slideRect.top,
+                        width: rect.width,
+                        height: rect.height,
+                    };
+                }""",
+                localized_id,
+            )
+            if not capture_payload:
+                continue
+
+            outer_html = str(capture_payload.get("outerHTML") or "")
+            # A script would execute if copied into the capture page. Keep the
+            # capture inert; the Contract/failure seam reports the missing asset.
+            if "<script" in outer_html.lower():
+                continue
+            styles = "\n".join(str(value) for value in payload.get("styles", []))
+            markup = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>{styles}</style></head>
+<body style="margin:0;overflow:hidden;background:transparent">
+<section class="slide active" style="display:block !important;position:relative;background:transparent !important;background-image:none !important;border:0 !important;"
+         data-pptx-localized-capture="true">
+  {outer_html}
+</section>
+</body></html>"""
+
+            context = await browser.new_context(
+                viewport={
+                    "width": max(1, round(slide_width)),
+                    "height": max(1, round(slide_height)),
+                },
+                device_scale_factor=device_scale,
+            )
+            png_bytes: bytes | None = None
+            try:
+                capture_page = await context.new_page()
+                await capture_page.set_content(markup, wait_until="load")
+                await capture_page.wait_for_function(
+                    """() => Array.from(document.images).every(image =>
+                        image.complete && image.naturalWidth > 0)""",
+                    timeout=PLAYWRIGHT_TIMEOUT_MS,
+                )
+                target = capture_page.locator(
+                    f'[data-pptx-localized-id="{localized_id}"]'
+                ).first
+                png_bytes = await target.screenshot(
+                    type="png",
+                    animations="disabled",
+                )
+            except Exception:
+                logger.debug("Failed to rasterize localized fallback %s", localized_id)
+            finally:
+                await context.close()
+
+            if not png_bytes:
+                continue
+            try:
+                with Image.open(BytesIO(png_bytes)) as image:
+                    image.load()
+                    pixel_width, pixel_height = image.size
+                    alpha = image.convert("RGBA").getchannel("A")
+                    nonblank = alpha.getbbox() is not None
+            except Exception:
+                logger.debug("Localized fallback %s produced invalid PNG", localized_id)
+                continue
+
+            point_width = float(capture_payload.get("width") or 0) / css_pixels_per_point
+            point_height = float(capture_payload.get("height") or 0) / css_pixels_per_point
+            minimum_width = max(1, round(point_width * 2.0))
+            minimum_height = max(1, round(point_height * 2.0))
+            density_ok = pixel_width >= minimum_width and pixel_height >= minimum_height
+            if not nonblank or not density_ok:
+                continue
+
+            encoded = base64.b64encode(png_bytes).decode("ascii")
+            element["src"] = "data:image/png;base64," + encoded
+            element["isImage"] = True
+            element["objectFit"] = "fill"
+            element["naturalWidth"] = pixel_width
+            element["naturalHeight"] = pixel_height
+            element["localizedFallback"].update(
+                {
+                    "assetMime": "image/png",
+                    "assetSha256": hashlib.sha256(png_bytes).hexdigest(),
+                    "pixelWidth": pixel_width,
+                    "pixelHeight": pixel_height,
+                    "density": 2.0,
+                    "nonblank": nonblank,
+                    "densityVerified": density_ok,
+                    "isolated": True,
+                    "isolation": "fresh-page-single-region",
+                    "optInReason": "explicit-author-opt-in",
+                }
+            )
+
+
 async def extract_measurements(
     html_path: str,
     *,
@@ -942,6 +1131,12 @@ async def extract_measurements(
         measurements = await page.evaluate(
             EXTRACTION_JS,
             {"officecliMode": officecli_mode},
+        )
+
+        await _rasterize_localized_fallbacks(
+            browser,
+            page,
+            measurements,
         )
 
         await _rasterize_inline_svgs(

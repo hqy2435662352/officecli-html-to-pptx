@@ -28,6 +28,8 @@ CONTRACT_VERSION = "1.2"
 OFFICECLI_COMPATIBILITY_BASELINE = "1.0.151"
 SUPPORTED_PROFILES = ("author", "officehtml")
 SUPPORTED_OBJECT_KINDS = frozenset({"shape", "textbox", "picture", "table", "chart"})
+LOCALIZED_FALLBACK_ATTRIBUTE = "data-pptx-rasterize"
+LOCALIZED_FALLBACK_TOKEN = "localized"
 # The Contract 1.2 chart surface is Author-only. OfficeHTML remains the
 # V0.5.1 import/projection profile and must continue to reject deferred chart
 # objects instead of implying chart round-trip support.
@@ -766,6 +768,42 @@ def chart_surface() -> dict[str, Any]:
     }
 
 
+def localized_fallback_surface() -> dict[str, Any]:
+    """Declare the first, deliberately narrow localized picture seam.
+
+    The release integration owns the public Contract version and the complete
+    disposition/evidence policy.  This small declaration is the typed boundary
+    needed by the first end-to-end compiler slice.
+    """
+    return {
+        "annotation": LOCALIZED_FALLBACK_ATTRIBUTE,
+        "token": LOCALIZED_FALLBACK_TOKEN,
+        "case_sensitive": True,
+        "atomic": True,
+        "identity": {
+            "explicit": "trimmed HTML id",
+            "fallback": "deterministic source path",
+        },
+        "geometry": "measured outer border box",
+        "density": {"pixels_per_point": 2},
+        "disposition": "rasterized",
+        "editable": False,
+        "fallback": "explicit-author-opt-in",
+        "accepted_content": ["static HTML/CSS", "inline SVG", "data URI pictures"],
+        "rejected_content": [
+            "script execution",
+            "runtime canvas",
+            "iframe",
+            "network resources",
+            "audio/video",
+            "WebGL",
+            "animation",
+            "interaction-dependent state",
+        ],
+        "preview_descendants": "excluded-from-generic-lowering",
+    }
+
+
 def author_capability_manifest() -> dict[str, Any]:
     """Return the Author support claims owned by the Contract checker."""
     return {
@@ -795,6 +833,7 @@ def author_capability_manifest() -> dict[str, Any]:
         },
         "table_cell_spans": AUTHOR_TABLE_CELL_SPANS,
         "chart_surface": chart_surface(),
+        "localized_fallback": localized_fallback_surface(),
     }
 
 _CSS_BLOCK_RE = re.compile(r"(?P<selectors>[^{}]+)\{(?P<body>[^{}]*)\}", re.DOTALL)
@@ -1148,6 +1187,7 @@ def _stylesheet_rule_has_visible_author_match(
     return any(
         _simple_selector_matches(element, alternative)
         and _chart_ancestor(element) is None
+        and _localized_fallback_ancestor(element) is None
         and _is_visible_author_element(element, document)
         for alternative in selectors
         for slide in slide_elements
@@ -1217,6 +1257,82 @@ def _chart_ancestor(element: Any) -> Any | None:
         if parent.get("data-pptx-chart") is not None:
             return parent
     return None
+
+
+def _localized_fallback_ancestor(element: Any) -> Any | None:
+    """Return the nearest explicitly opted-in localized region, if any."""
+    current = element
+    while current is not None:
+        if current.get(LOCALIZED_FALLBACK_ATTRIBUTE) == LOCALIZED_FALLBACK_TOKEN:
+            return current
+        current = current.getparent()
+    return None
+
+
+def _check_author_localized_fallbacks(
+    document: Any,
+    findings: list[ContractDiagnostic],
+) -> None:
+    """Validate the exact opt-in and identity needed by the first slice."""
+    seen_ids: dict[str, Any] = {}
+    for element in document.xpath(f"//*[@{LOCALIZED_FALLBACK_ATTRIBUTE}]"):
+        source = _node_path(element)
+        token = element.get(LOCALIZED_FALLBACK_ATTRIBUTE)
+        if token != LOCALIZED_FALLBACK_TOKEN:
+            _emit(
+                findings,
+                "author",
+                "unsupported_localized_fallback_token",
+                f"{LOCALIZED_FALLBACK_ATTRIBUTE} must be exactly {LOCALIZED_FALLBACK_TOKEN!r}.",
+                source,
+            )
+            continue
+
+        if not _in_slide(element):
+            _emit(
+                findings,
+                "author",
+                "localized_fallback_outside_slide",
+                "A localized fallback region must be owned by one Author slide.",
+                source,
+            )
+        if _is_hidden(element) or _stylesheet_hides_element(document, element):
+            _emit(
+                findings,
+                "author",
+                "hidden_localized_fallback",
+                "A localized fallback region must be visible before output is created.",
+                source,
+            )
+
+        styles = _inline_styles(element)
+        for property_name in ("width", "height"):
+            declared = styles.get(property_name) or _chart_style_value(
+                document, element, property_name
+            )
+            parsed = _parse_length(declared) if declared is not None else None
+            if parsed is not None and parsed[0] <= 0:
+                _emit(
+                    findings,
+                    "author",
+                    "invalid_localized_fallback_geometry",
+                    f"Localized fallback {property_name} must be positive when declared.",
+                    source,
+                )
+
+        raw_id = str(element.get("id", "") or "").strip()
+        if raw_id:
+            previous = seen_ids.get(raw_id)
+            if previous is not None:
+                _emit(
+                    findings,
+                    "author",
+                    "duplicate_localized_fallback_identity",
+                    f"Trimmed HTML id {raw_id!r} must identify one localized fallback region.",
+                    source,
+                )
+            else:
+                seen_ids[raw_id] = element
 
 
 def _chart_style_value(document: Any, element: Any, property_name: str) -> str | None:
@@ -1387,6 +1503,8 @@ def _check_lists(document: Any, findings: list[ContractDiagnostic]) -> None:
         if tag not in list_tags:
             continue
         if _chart_ancestor(element) is not None:
+            continue
+        if _localized_fallback_ancestor(element) is not None:
             continue
         if not _is_visible_author_element(element, document):
             continue
@@ -1724,6 +1842,7 @@ def _check_author(
         return
 
     _check_author_charts(document, findings)
+    _check_author_localized_fallbacks(document, findings)
 
     rules = _stylesheet_rules(document)
     for index, slide in enumerate(slides, start=1):
@@ -1749,6 +1868,11 @@ def _check_author(
 
     for element in document.iter():
         if _chart_ancestor(element) is not None:
+            continue
+        localized_root = (
+            element.get(LOCALIZED_FALLBACK_ATTRIBUTE) == LOCALIZED_FALLBACK_TOKEN
+        )
+        if _localized_fallback_ancestor(element) is not None and not localized_root:
             continue
         if not _is_visible_author_element(element, document):
             continue
@@ -1876,7 +2000,12 @@ def _check_author(
     for element in document.iter():
         tag = str(element.tag).lower() if isinstance(element.tag, str) else ""
         chart_descendant = _chart_ancestor(element) is not None
-        author_ignored = _is_author_ignored(element) or chart_descendant
+        localized_descendant = _localized_fallback_ancestor(element) is not None
+        author_ignored = (
+            _is_author_ignored(element)
+            or chart_descendant
+            or localized_descendant
+        )
         ignored = (
             author_ignored
             or _is_hidden(element)
@@ -2132,6 +2261,8 @@ def check_contract(input_html: str | Path, profile: str = "author") -> ContractR
 __all__ = [
     "CONTRACT_VERSION",
     "OFFICECLI_COMPATIBILITY_BASELINE",
+    "LOCALIZED_FALLBACK_ATTRIBUTE",
+    "LOCALIZED_FALLBACK_TOKEN",
     "AUTHOR_CANVAS_SIZES",
     "AUTHOR_PICTURE_SOURCE",
     "AUTHOR_EXTERNAL_RESOURCES_ALLOWED",
@@ -2172,6 +2303,7 @@ __all__ = [
     "ContractDiagnostic",
     "ContractReport",
     "chart_surface",
+    "localized_fallback_surface",
     "author_capability_manifest",
     "paragraph_layout_surface",
     "shape_geometry_surface",
