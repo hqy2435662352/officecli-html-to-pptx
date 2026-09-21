@@ -61,11 +61,11 @@ def _paragraph(text, runs=None, **extra):
 
 
 def test_contract_12_and_officecli_floor_are_published() -> None:
-    assert CONTRACT_VERSION == "1.2"
+    assert CONTRACT_VERSION == "1.3"
     assert OFFICECLI_COMPATIBILITY_BASELINE == "1.0.151"
     assert FORMAL_OFFICECLI_VERSION == "1.0.151"
     manifest = author_capability_manifest()
-    assert manifest["version"] == "1.2"
+    assert manifest["version"] == "1.3"
     assert manifest["paragraph_layout_surface"]["soft_wrap"]["representation"] == (
         "measurement-and-evidence-only"
     )

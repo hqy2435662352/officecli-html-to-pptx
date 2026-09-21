@@ -1,6 +1,6 @@
 # officecli-html-to-pptx
 
-`officecli-html-to-pptx` 0.5.2 builds a new editable PowerPoint deck from
+`officecli-html-to-pptx` 0.5.3 builds a new editable PowerPoint deck from
 Contract-checked Author HTML. Chromium supplies final layout measurements and
 OfficeCLI creates the native PowerPoint objects. The supported public path is
 task-oriented and produces a matching PPTX/Evidence Pair:
@@ -12,19 +12,21 @@ capabilities -> doctor -> check -> fresh build -> independent readback
 
 The product does not edit an existing presentation and does not replace a
 slide with a screenshot. Supported visible objects are native text-bearing
-shapes, rectangles, pictures, merged tables, the Contract 1.2 text and
-geometry surface, and explicitly authored native `column`, `bar`, `line`,
-`pie`, and `doughnut` charts reported by the installed command. General
-localized fallback remains out of scope.
+shapes, rectangles, pictures, merged tables, the Contract 1.3 text and
+geometry surface, explicitly authored native `column`, `bar`, `line`, `pie`,
+and `doughnut` charts, and explicitly opted-in localized visual fallback.
+Localized fallback is visual-only: one `data-pptx-rasterize="localized"`
+region becomes one non-editable native picture, while unannotated unsupported
+content remains blocking.
 
 ## Install
 
-For a packaged V0.5.2 release, install the bundled wheel from the ZIP
+For a packaged V0.5.3 release, install the bundled wheel from the ZIP
 root and then install its Playwright-managed Chromium:
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.5.2-py3-none-any.whl
+.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.5.3-py3-none-any.whl
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
@@ -127,7 +129,7 @@ each key was accepted in and whether that was verified (it is not — the gate
 matches an operating-system family only). `doctor --json` decides for the
 machine in front of you. External resources and unsupported visible content are
 rejected explicitly. Pictures must be deterministic `data:image/...` sources.
-Contract 1.2 accepts legal rectangular `rowspan`/`colspan` regions with
+Contract 1.3 accepts legal rectangular `rowspan`/`colspan` regions with
 normalized merge-topology readback and exposes the closed
 `data-pptx-shape-geometry` allowlist. It also accepts one atomic
 `data-pptx-chart` container with exactly one inert JSON
@@ -135,7 +137,13 @@ normalized merge-topology readback and exposes the closed
 categories and series, supports the five native chart types, and exposes only
 semantic presentation tokens. The outer chart container supplies geometry;
 every preview descendant is excluded from generic lowering. Unknown fields,
-unsupported combinations, and chart fallback fail closed.
+unsupported combinations, and chart fallback fail closed. An explicitly
+annotated localized region is captured in isolation at a fixed 2 pixels per
+point from its CSS border box; its descendants are atomic and its PNG is
+audited for nonblank paint, density, overflow, and contamination before the
+existing native picture path embeds it. The public fallback dispositions are
+only `native`, `rasterized`, `unsupported`, and `unresolved`; `rasterized`
+objects are never counted as native or claimed editable.
 
 ## Evidence Bundle
 
@@ -166,8 +174,10 @@ screenshots are temporary build inputs. `readback.json` is an independent
 OfficeCLI object read, while `native-evidence.json` records the frozen text
 matrix and authored structure, normalized merge topology, native geometry,
 native chart count and normalized chart structures, compiled/readback counts,
-actual OfficeCLI runtime, diagnostics/material delta, and Gate 3 state. No
-V0.6 `native/rasterized/degraded` taxonomy is introduced.
+actual OfficeCLI runtime, diagnostics/material delta, localized fallback audit,
+and Gate 3 state. The localized fallback audit records source identity/path,
+picture bounds, capture hash and dimensions, density, paint/isolation facts,
+excluded descendants, and independent picture readback.
 `visual-review.json` is seeded with a complete image inventory and immutable
 hashes. An independent reviewer marks every slide and records only `major` or
 `minor` findings. A major finding requires an actionable revision instruction.
@@ -189,9 +199,10 @@ git diff --check
 
 The maintained product surface is Author HTML plus the five commands above.
 The tracked four-slide Author corpus at
-`tests/fixtures/v05_02_public_corpus.html` is the V0.5.2 public acceptance
-corpus for categorical, trend, part-to-whole, and integrated native-chart
-behavior. The V0.5.1 corpus remains a focused regression fixture. V0.4
-projection experiments remain a separate internal regression corpus and do not
-contribute to public gates or capability counts. The MIT license and upstream
-history are preserved.
+`tests/fixtures/v05_03_public_corpus.html` is the V0.5.3 public acceptance
+corpus for contained CSS effects, inline SVG, multiple local regions, and an
+integrated native text/table/shape/chart page with one rasterized region. The
+V0.5.2 chart corpus and V0.5.1 native corpus remain focused regression
+fixtures. V0.4 projection experiments remain a separate internal regression
+corpus and do not contribute to public gates or capability counts. The MIT
+license and upstream history are preserved.

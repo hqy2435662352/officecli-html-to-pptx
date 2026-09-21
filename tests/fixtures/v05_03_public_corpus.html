@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>V0.5.3 public localized fallback acceptance corpus</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+      body { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+      .slide {
+        position: relative;
+        display: none;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #f8fafc;
+      }
+      .slide.active { display: block; }
+      .eyebrow {
+        position: absolute;
+        left: 120px;
+        top: 56px;
+        color: #64748b;
+        font-size: 22px;
+        line-height: 1.2;
+        font-weight: 700;
+      }
+      .title {
+        position: absolute;
+        left: 120px;
+        top: 110px;
+        width: 1680px;
+        height: 80px;
+        color: #0f172a;
+        font-size: 48px;
+        line-height: 1.15;
+        font-weight: 700;
+      }
+      .subtitle {
+        position: absolute;
+        left: 120px;
+        top: 200px;
+        width: 1680px;
+        height: 46px;
+        color: #475569;
+        font-size: 26px;
+        line-height: 1.25;
+      }
+      .note {
+        position: absolute;
+        left: 120px;
+        top: 930px;
+        width: 1680px;
+        height: 60px;
+        color: #475569;
+        font-size: 22px;
+        line-height: 1.25;
+      }
+      .localized {
+        position: absolute;
+        overflow: hidden;
+      }
+      .css-effects {
+        left: 120px;
+        top: 300px;
+        width: 760px;
+        height: 500px;
+        padding: 34px;
+        border: 4px solid #2563eb;
+        border-radius: 32px;
+        background: #dbeafe;
+      }
+      .css-effects-card {
+        width: 100%;
+        height: 100%;
+        padding: 44px;
+        border-radius: 22px;
+        background: linear-gradient(135deg, #172033 0%, #2563eb 52%, #0f766e 100%);
+        box-shadow: inset 0 0 0 8px rgba(255, 255, 255, .28), inset 0 -30px 42px rgba(0, 0, 0, .2);
+        color: #ffffff;
+        filter: saturate(1.15);
+        font-size: 30px;
+        line-height: 1.3;
+      }
+      .css-effects-card strong { display: block; margin-bottom: 22px; font-size: 42px; }
+      .css-effects-card span { display: block; border: 3px solid #ffffff; padding: 18px; border-radius: 14px; }
+      .svg-fallback {
+        left: 980px;
+        top: 300px;
+        width: 820px;
+        height: 500px;
+        padding: 34px;
+        border: 4px solid #0f766e;
+        border-radius: 28px;
+        background: #ecfeff;
+      }
+      .svg-fallback svg { display: block; width: 748px; height: 428px; }
+      .region-a, .region-b {
+        top: 340px;
+        width: 700px;
+        height: 380px;
+        padding: 28px;
+        border-radius: 24px;
+        color: #ffffff;
+        font-size: 32px;
+        line-height: 1.25;
+      }
+      .region-a {
+        left: 120px;
+        border: 4px solid #c2410c;
+        background: linear-gradient(135deg, #7c2d12, #f97316);
+      }
+      .region-b {
+        left: 1100px;
+        border: 4px solid #7c3aed;
+        background: linear-gradient(135deg, #312e81, #a855f7);
+      }
+      .region-a .inner, .region-b .inner {
+        width: 100%;
+        height: 100%;
+        padding: 42px;
+        border: 3px solid rgba(255, 255, 255, .85);
+        border-radius: 18px;
+        background: rgba(15, 23, 42, .18);
+      }
+      .integrated-copy {
+        position: absolute;
+        left: 120px;
+        top: 260px;
+        width: 440px;
+        height: 300px;
+        padding: 24px;
+        border: 3px solid #1d4ed8;
+        border-radius: 24px;
+        background: #eff6ff;
+        color: #1e293b;
+        font-size: 24px;
+        line-height: 1.35;
+      }
+      .integrated-copy p { margin: 0 0 16px 0; }
+      .integrated-copy p:last-child { margin-bottom: 0; }
+      .integrated-copy strong { color: #0f6b78; }
+      .integrated-table {
+        position: absolute;
+        left: 620px;
+        top: 260px;
+        width: 580px;
+        height: 360px;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font-size: 22px;
+        line-height: 1.25;
+      }
+      .integrated-table th, .integrated-table td {
+        height: 90px;
+        padding: 12px;
+        border: 3px solid #475569;
+        text-align: center;
+        vertical-align: middle;
+      }
+      .integrated-table th { background: #1d4ed8; color: #ffffff; }
+      .integrated-table td { background: #ffffff; }
+      .integrated-table .group { background: #dbeafe; text-align: left; }
+      .integrated-badge {
+        position: absolute;
+        left: 120px;
+        top: 680px;
+        width: 440px;
+        height: 150px;
+        padding: 22px;
+        border: 3px solid #0f766e;
+        background: #ccfbf1;
+        color: #134e4a;
+        font-size: 27px;
+        line-height: 1.2;
+      }
+      .chart {
+        position: absolute;
+        left: 1300px;
+        top: 260px;
+        width: 500px;
+        height: 360px;
+      }
+      .chart-preview {
+        position: absolute;
+        left: 28px;
+        top: 28px;
+        width: 240px;
+        height: 32px;
+        color: #94a3b8;
+        font-size: 16px;
+        line-height: 1.2;
+      }
+      .integrated-fallback {
+        left: 1300px;
+        top: 680px;
+        width: 500px;
+        height: 220px;
+        padding: 24px;
+        border: 4px solid #be123c;
+        border-radius: 20px;
+        background: #fff1f2;
+      }
+      .integrated-fallback .inner {
+        width: 100%;
+        height: 100%;
+        padding: 24px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #881337, #e11d48);
+        color: #ffffff;
+        font-size: 27px;
+        line-height: 1.25;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="slide active" aria-label="contained CSS effects localized fallback">
+        <div class="eyebrow">PUBLIC CORPUS · 01 / CSS EFFECTS</div>
+        <div class="title">局部视觉保留 · contained CSS effects</div>
+        <div class="subtitle">Gradient, inset shadow, filter, rounded corners, and authored padding become one picture.</div>
+        <div id="css-effects" class="localized css-effects" data-pptx-rasterize="localized">
+          <div class="css-effects-card">
+            <strong>Visual-only region</strong>
+            <span>CSS effects stay inside the measured border box.</span>
+          </div>
+        </div>
+        <div class="note">One explicit region · one rasterized picture · no editable text overlay.</div>
+      </section>
+
+      <section class="slide" aria-label="inline SVG localized fallback">
+        <div class="eyebrow">PUBLIC CORPUS · 02 / INLINE SVG</div>
+        <div class="title">内联矢量构图 · inline SVG</div>
+        <div class="subtitle">Static inline SVG is captured locally and remains one independently readable picture.</div>
+        <div id="inline-svg" class="localized svg-fallback" data-pptx-rasterize="localized">
+          <svg viewBox="0 0 748 428" width="748" height="428" aria-label="static inline SVG visual">
+            <defs>
+              <linearGradient id="svg-gradient" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#172033" />
+                <stop offset="0.55" stop-color="#2563eb" />
+                <stop offset="1" stop-color="#14b8a6" />
+              </linearGradient>
+            </defs>
+            <rect width="748" height="428" rx="28" fill="url(#svg-gradient)" />
+            <circle cx="570" cy="214" r="104" fill="#ffffff" fill-opacity=".7" />
+            <path d="M80 320 C180 210 260 360 360 250 S560 120 680 220" fill="none" stroke="#ffffff" stroke-width="18" stroke-linecap="round" />
+            <text x="72" y="116" fill="#ffffff" font-size="44" font-family="Arial, sans-serif">Static vector visual</text>
+          </svg>
+        </div>
+        <div class="note">Inline SVG descendants are excluded from generic lowering and are not duplicated.</div>
+      </section>
+
+      <section class="slide" aria-label="multiple localized fallback regions">
+        <div class="eyebrow">PUBLIC CORPUS · 03 / MULTIPLE REGIONS</div>
+        <div class="title">多个独立区域 · two nonoverlapping fallbacks</div>
+        <div class="subtitle">Two local regions coexist on one slide without overlap or sibling contamination.</div>
+        <div id="region-a" class="localized region-a" data-pptx-rasterize="localized">
+          <div class="inner"><strong>Region A</strong><br>Independent local capture</div>
+        </div>
+        <div id="region-b" class="localized region-b" data-pptx-rasterize="localized">
+          <div class="inner"><strong>Region B</strong><br>Independent local capture</div>
+        </div>
+        <div class="note">Two approved rasterized pictures · zero overlap · zero duplicate descendants.</div>
+      </section>
+
+      <section class="slide" aria-label="integrated native objects and localized fallback">
+        <div class="eyebrow">PUBLIC CORPUS · 04 / INTEGRATED NATIVE SURFACE</div>
+        <div class="title">原生对象与局部视觉共存 · V0.5.3 integration</div>
+        <div class="subtitle">Editable text, table, shape, and chart remain native beside one explicit visual fallback.</div>
+        <div class="integrated-copy">
+          <p>本页保留 Contract 1.3 的原生对象，并加入一个局部视觉区域。</p>
+          <p><strong>Rasterized content is visual-only</strong>; neighboring objects remain independently editable.</p>
+        </div>
+        <table class="integrated-table" aria-label="localized fallback integration metrics">
+          <thead><tr><th colspan="2">Integration checks</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="2" class="group">Native surface</td><td>Text / table</td><td>PASS</td></tr>
+            <tr><td>Shape / chart</td><td>PASS</td></tr>
+            <tr><td class="group">Fallback</td><td>Picture readback</td><td>PASS</td></tr>
+          </tbody>
+        </table>
+        <div class="integrated-badge" data-pptx-shape-geometry="roundRect">Native neighbors stay editable.</div>
+        <div class="chart" data-pptx-chart id="integrated-chart">
+          <div class="chart-preview">browser preview: native chart</div>
+          <svg aria-hidden="true" width="340" height="230"><rect width="340" height="230" fill="#e2e8f0"></rect></svg>
+          <script type="application/json" data-pptx-chart-spec>{"type":"column","categories":["Text","Table","Shape","Chart"],"series":[{"name":"Native objects","values":[3,2,1,1],"color":"#1D4ED8"}],"presentation":{"title":"Native object inventory","legend":"none","labels":"value","valueAxis":{"numberFormat":"integer"}}}</script>
+        </div>
+        <div id="integrated-fallback" class="localized integrated-fallback" data-pptx-rasterize="localized">
+          <div class="inner"><strong>Localized visual</strong><br>One native picture, not a native claim.</div>
+        </div>
+        <div class="note">Native text / table / shape / chart plus one approved rasterized picture.</div>
+      </section>
+    </main>
+  </body>
+</html>

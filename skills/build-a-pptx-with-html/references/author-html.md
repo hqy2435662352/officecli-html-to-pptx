@@ -35,7 +35,7 @@ meaningful visible details that the brief or reference establishes.
    visible external resources out of the normal workbench unless the Contract
    explicitly accepts that form.
 
-### Explicit native charts (Contract 1.2)
+### Explicit native charts (Contract 1.3)
 
 When a chart is needed, make its semantics explicit instead of drawing bars,
 lines, or slices as ordinary HTML. Mark one measured outer container with
@@ -63,6 +63,29 @@ generic lowering and never becomes a second native object. Keep the container
 visible, measurable, and non-zero-sized. Unknown fields, duplicate JSON keys,
 non-finite constants, nested chart containers, unsupported combinations, and
 chart fallback fail the Contract check.
+
+### Explicit localized visual fallback (Contract 1.3)
+
+When a complex local visual cannot be represented by the native surface, opt in
+with exactly `data-pptx-rasterize="localized"` on its outer element. The
+element is one atomic authored object: all descendants are captured into one
+PNG and excluded from generic lowering. Use the ordinary trimmed HTML `id` for
+identity; without one, the product records a deterministic source path.
+
+The CSS border box is both capture geometry and PowerPoint picture geometry.
+Keep shadows, filters, and other visual effects inside that box with authored
+padding; paint that overflows the box blocks the build. Capture density is
+fixed at 2 pixels per point and cannot be set by Author HTML. The result is a
+native picture whose internal content is not editable and must not be described
+as native semantics or editable text.
+
+Only static HTML/CSS, inline SVG, and deterministic data-URI or permitted local
+images are admitted. Scripts, runtime canvas, iframe/network resources,
+audio/video, WebGL, animation, interaction-dependent states, nested or
+overlapping regions, whole-slide regions, and regions containing another
+atomic object are rejected. Unannotated unsupported content remains blocking;
+the public dispositions are `native`, `rasterized`, `unsupported`, and
+`unresolved` only.
 
 ### Native shape geometry
 

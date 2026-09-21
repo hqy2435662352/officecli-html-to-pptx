@@ -51,19 +51,19 @@ page dimensions.
 - Validate the delivered PPTX with OfficeCLI, inspect text and structure, and
   review a screenshot of every slide.
 - Report known baseline findings separately from regressions.
-- Product 0.5.2 keeps the five public commands unchanged and requires Contract
-  1.2 with OfficeCLI `>=1.0.151`; a lower runtime must fail before measurement
+- Product 0.5.3 keeps the five public commands unchanged and requires Contract
+  1.3 with OfficeCLI `>=1.0.151`; a lower runtime must fail before measurement
   or output creation.
 - For a public release gate, retain the four-slide corpus, independent
   OfficeCLI readback, `validate`/`issues`, and one reviewed Comparison Image per
   slide. Record the actual runtime, text structure/matrix, normalized merge
   topology, native geometry, chart structures and counts, object/readback
-  counts, diagnostics/material delta, and Gate 3 result. Do not add a V0.6
-  fallback taxonomy.
+  counts, localized-fallback dispositions, diagnostics/material delta, and Gate 3
+  result. Do not add a second fallback taxonomy or silently downgrade failures.
 
 ## Environment setup
 
-The current Contract 1.2 release is pinned to OfficeCLI `1.0.151`. Windows and Linux are
+The current Contract 1.3 release is pinned to OfficeCLI `1.0.151`. Windows and Linux are
 supported build platforms; `doctor --json` decides for the machine in front of
 you, and `capabilities --json` reports the running platform alongside the
 supported set.
@@ -665,13 +665,17 @@ record the original and temporary paths.
 
 ## Supported surface and non-goals
 
-Contract 1.2 supports:
+Contract 1.3 supports:
 
 - slides and slide backgrounds;
 - rectangles and rounded rectangles;
 - text boxes and text-bearing shapes;
 - paragraphs and direct text runs;
 - data-URI pictures, including SVG with deterministic picture-level fallback;
+- explicit localized visual fallback on an atomic node marked only with
+  `data-pptx-rasterize="localized"`; capture uses the CSS border box, local
+  isolation, and fixed `2 pixels per point` density, and produces a visual-only
+  deterministic PNG picture;
 - native tables, rows, columns, cells, and legal rectangular `rowspan`/`colspan`
   merges with normalized topology;
 - public `data-pptx-shape-geometry` tokens from the closed capability allowlist;
@@ -681,7 +685,14 @@ Contract 1.2 supports:
   reported by `capabilities --json`; and
 - the formatting fields enumerated by the Contract.
 
-Contract 1.2 does not promise chart fallback, master/theme reconstruction,
+Localized fallback is limited to static HTML/CSS, inline SVG, data URIs, and
+the currently allowed local-image policy. Script execution, runtime canvas,
+iframes, network resources, audio/video, WebGL, animation, interaction state,
+cross-slide capture, overflow outside the border box, `unsupported`, and
+`unresolved` are blocking. The fallback dispositions are exactly `native`,
+`rasterized`, `unsupported`, and `unresolved`; rasterized text is not editable.
+
+Contract 1.3 does not promise chart fallback, master/theme reconstruction,
 connectors, groups, SmartArt, equations, media, animations,
 notes, comments, complete hyperlink round trips, complex gradients, filters,
 clipping paths, complex shadows, arbitrary SVG-to-path conversion, automatic
@@ -696,7 +707,7 @@ use another renderer. Never hide the loss.
 ## Final agent checklist
 
 - [ ] Correct repository root and task input confirmed.
-- [ ] Installed OfficeCLI version is at least `1.0.151` and matches Contract 1.2.
+- [ ] Installed OfficeCLI version is at least `1.0.151` and matches Contract 1.3.
 - [ ] Explicit `author` or `officehtml` profile selected.
 - [ ] Author HTML remains a browser-reviewable workbench when applicable.
 - [ ] Matching Contract report is `PASS`.

@@ -29,13 +29,13 @@ from ._internal.localized_capture import (
     validate_localized_document,
 )
 
-CONTRACT_VERSION = "1.2"
+CONTRACT_VERSION = "1.3"
 OFFICECLI_COMPATIBILITY_BASELINE = "1.0.151"
 SUPPORTED_PROFILES = ("author", "officehtml")
 SUPPORTED_OBJECT_KINDS = frozenset({"shape", "textbox", "picture", "table", "chart"})
 LOCALIZED_FALLBACK_ATTRIBUTE = "data-pptx-rasterize"
 LOCALIZED_FALLBACK_TOKEN = "localized"
-# The Contract 1.2 chart surface is Author-only. OfficeHTML remains the
+# The Contract 1.3 chart surface is Author-only. OfficeHTML remains the
 # V0.5.1 import/projection profile and must continue to reject deferred chart
 # objects instead of implying chart round-trip support.
 _OFFICEHTML_SUPPORTED_OBJECT_KINDS = frozenset(
@@ -46,7 +46,7 @@ AUTHOR_PICTURE_SOURCE = "data:image/..."
 AUTHOR_EXTERNAL_RESOURCES_ALLOWED = False
 AUTHOR_TABLE_CELL_SPANS = True
 SHAPE_GEOMETRY_ATTRIBUTE = "data-pptx-shape-geometry"
-# This is the Contract 1.2 authority for the public native-shape annotation.
+# This is the Contract 1.3 authority for the public native-shape annotation.
 # Keep the order stable: it is part of the machine-readable capability output
 # and mirrors the public ticket's acceptance checklist.
 SHAPE_GEOMETRY_TOKENS = (
@@ -193,7 +193,7 @@ _UNSUPPORTED_CSS_PROPERTIES = frozenset(
         "text-transform",
         "text-shadow",
         # Letter spacing is measurable by Chromium but is not part of the
-        # Contract 1.2 native run matrix.  It must fail closed rather than
+        # Contract 1.3 native run matrix.  It must fail closed rather than
         # silently disappear in the PowerPoint text body.
         "letter-spacing",
         "transition",
@@ -292,17 +292,17 @@ TEXT_ALIGNMENT_MAPPING = {
 }
 LINE_HEIGHT_PROPERTY = "line-height"
 PARAGRAPH_SPACING_PROPERTIES = ("margin-top", "margin-bottom")
-# Contract 1.2 deliberately has no CSS-pixel projection: a used line-height in
+# Contract 1.3 deliberately has no CSS-pixel projection: a used line-height in
 # px is divided by the element font size directly.  The scale constant remains
 # public for older callers, but its only valid value is the identity scale.
 LINE_HEIGHT_PX_PROJECTION_SCALE = 1.0
 # These names existed in the pre-1.1 compiler and remain as inert compatibility
-# symbols while downstream callers migrate.  Contract 1.2 never consults them
+# symbols while downstream callers migrate.  Contract 1.3 never consults them
 # to select a formatting or geometry exception.
 SOURCE_FIDELITY_LINE_SPACING_TEXT = ""
 SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX = 0.0
 # Chromium's measured visual lines are evidence only.  They never become native
-# paragraph boundaries or hard breaks in Contract 1.2.
+# paragraph boundaries or hard breaks in Contract 1.3.
 SOFT_WRAP_MODEL = {
     "representation": "measurement-and-evidence-only",
     "measured_property": "visualLines",
@@ -695,7 +695,7 @@ def _resolve_text_alignment(element: Mapping[str, Any]) -> str:
 
 
 def chart_surface() -> dict[str, Any]:
-    """Return the closed public Contract 1.2 chart protocol.
+    """Return the closed public Contract 1.3 chart protocol.
 
     The chart parser and adapter own enforcement and lowering. This manifest
     is the public description of that implemented surface; it intentionally
@@ -1620,7 +1620,7 @@ def _check_css_value(
         raw = value.strip().lower()
         if parsed is None or parsed[0] <= 0 or parsed[1] not in {"px"}:
             # A unitless positive number is the one non-length line-height
-            # form accepted by Contract 1.2.  ``_parse_length`` normalizes a
+            # form accepted by Contract 1.3.  ``_parse_length`` normalizes a
             # missing unit to px for the general geometry grammar, so inspect
             # the source spelling separately here.
             if not re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)", raw) or float(raw) <= 0:
@@ -1700,7 +1700,7 @@ def _check_css_value(
             findings,
             profile,
             "unsupported_visible_css",
-            "vertical writing modes are outside OfficeCLI Contract 1.2.",
+            "vertical writing modes are outside OfficeCLI Contract 1.3.",
             source_object,
         )
 
@@ -1875,7 +1875,7 @@ def _check_author(
                 findings,
                 "author",
                 "unsupported_hyperlink",
-                "Hyperlink targets are outside the Contract 1.2 native run matrix.",
+                "Hyperlink targets are outside the Contract 1.3 native run matrix.",
                 _node_path(element),
             )
         if tag == "table":

@@ -40,9 +40,9 @@ def test_public_chart_corpus_and_release_authority() -> None:
     assert not report.blocked, report.as_dict()
 
     payload = get_capabilities().as_dict()
-    assert PRODUCT_VERSION == "0.5.2"
-    assert CONTRACT_VERSION == "1.2"
-    assert payload["product"]["version"] == "0.5.2"
+    assert PRODUCT_VERSION == "0.5.3"
+    assert CONTRACT_VERSION == "1.3"
+    assert payload["product"]["version"] == "0.5.3"
     assert payload["data"]["commands"] == [
         "capabilities",
         "doctor",
@@ -51,7 +51,7 @@ def test_public_chart_corpus_and_release_authority() -> None:
         "finalize",
     ]
     contract = payload["data"]["contract"]
-    assert contract["version"] == "1.2"
+    assert contract["version"] == "1.3"
     assert "chart" in contract["object_kinds"]
     chart_surface = contract["chart_surface"]
     assert chart_surface["annotation"] == "data-pptx-chart"

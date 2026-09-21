@@ -1,4 +1,4 @@
-"""Task-oriented V0.5.2 application operations.
+"""Task-oriented V0.5.3 application operations.
 
 The module is deliberately an orchestration layer, not a second renderer.  It
 owns the public command semantics, the Artifact Pair transaction, and the
@@ -517,7 +517,7 @@ def _native_slice_evidence(
     validation: Mapping[str, Any] | None = None,
     issues: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Summarize the native-slice evidence required by Contract 1.2."""
+    """Summarize the native-slice evidence required by Contract 1.3."""
 
     capability = author_capability_manifest()
     compiled_objects = [
@@ -1317,7 +1317,7 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
         if not str(officecli_runtime.get("discovered_version", "")).strip():
             raise ValueError("native-evidence.json must record the actual OfficeCLI runtime")
         if officecli_runtime.get("compatible") is not True:
-            raise ValueError("native-evidence.json OfficeCLI runtime is below the Contract 1.2 floor")
+            raise ValueError("native-evidence.json OfficeCLI runtime is below the Contract 1.3 floor")
         diagnostic_counts = _field_mapping(
             native_evidence.get("diagnostics"), "native evidence diagnostics"
         )
@@ -1365,7 +1365,7 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
         if result_payload.get("product") != {"name": PRODUCT_NAME, "version": PRODUCT_VERSION}:
             raise ValueError("result.json product identity does not match this product")
         if result_payload.get("status") != "VISUAL_REVIEW_REQUIRED":
-            raise ValueError("result.json is not a pending V0.5.2 build")
+            raise ValueError("result.json is not a pending V0.5.3 build")
         build_id = result_payload.get("build_id")
         if not isinstance(build_id, str) or not build_id:
             raise ValueError("result.json must contain a build_id")

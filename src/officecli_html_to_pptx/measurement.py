@@ -655,7 +655,7 @@ EXTRACTION_JS = """
             naturalWidth: isImg ? (el.naturalWidth || 0) : 0,
             naturalHeight: isImg ? (el.naturalHeight || 0) : 0,
             borderRadius: style.borderRadius,
-            // A preset geometry the Contract 1.2 Author shape surface keeps as
+            // A preset geometry the Contract 1.3 Author shape surface keeps as
             // a PowerPoint preset rather than inferring from CSS.  Public
             // Author HTML uses the namespaced annotation.  The private legacy
             // spelling remains a fallback solely for the hidden projection

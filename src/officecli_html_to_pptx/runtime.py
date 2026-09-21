@@ -117,7 +117,7 @@ def officecli_runtime_snapshot(
     which: Callable[[str], str | None] = shutil.which,
     runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> dict[str, Any]:
-    """Return the discovered OfficeCLI version and the Contract 1.2 floor.
+    """Return the discovered OfficeCLI version and the Contract 1.3 floor.
 
     This narrow probe is shared by the direct compiler seam and ``doctor``.
     It deliberately does not inspect Chromium, Node, or output locations, so a
