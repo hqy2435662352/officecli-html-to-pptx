@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <style>
+      * { box-sizing: border-box; }
+      .slide { width: 1920px; height: 1080px; position: relative; }
+      .unsafe { animation: pulse 1s; }
+      @keyframes pulse { from { opacity: 0.5; } to { opacity: 1; } }
+    </style>
+  </head>
+  <body>
+    <section class="slide">
+      <div id="safe-svg" data-pptx-rasterize="localized">
+        <svg width="120" height="80" viewBox="0 0 120 80">
+          <rect width="120" height="80" fill="#172033" />
+          <circle cx="60" cy="40" r="24" fill="#e60012" />
+        </svg>
+      </div>
+      <div id="unsafe" class="unsafe" data-pptx-rasterize="localized" onclick="mutate()">
+        <script>mutate()</script>
+        <canvas width="120" height="80"></canvas>
+        <img src="https://example.invalid/remote.png" alt="network">
+      </div>
+    </section>
+  </body>
+</html>
