@@ -46,6 +46,7 @@ from ..contract import (
 from ..measurement import extract_measurements
 from ..runtime import _version_tuple, officecli_runtime_snapshot
 from ..styles import resolve_pptx_font as _resolve_pptx_font
+from .charts import ChartSpec, ChartSpecError, OfficeCLIChartAdapter, parse_chart_spec
 
 # Alias the runtime authority locally so focused compiler tests can replace the
 # narrow probe without replacing the full doctor (which also checks Chromium,
@@ -190,6 +191,7 @@ class _ObjectIR:
     table_cells: tuple[_TableCellIR, ...] = ()
     row_heights: tuple[float, ...] = ()
     column_widths: tuple[float, ...] = ()
+    chart_spec: ChartSpec | None = None
 
     def as_manifest(self) -> dict[str, Any]:
         manifest = {
@@ -221,6 +223,8 @@ class _ObjectIR:
                     "cells": [cell.as_manifest() for cell in self.table_cells],
                 }
             )
+        if self.kind == "chart" and self.chart_spec is not None:
+            manifest["chart"] = self.chart_spec.as_dict()
         return manifest
 
 
@@ -2394,6 +2398,55 @@ def _table_cell_props(
     return props
 
 
+def _lower_chart(
+    element: dict[str, Any],
+    source_slide: int,
+    source_object: str,
+    name: str,
+    scale_x: float,
+    scale_y: float,
+) -> _ObjectIR:
+    """Lower one measured atomic Author chart through the typed chart seam."""
+    bounds = _bounds(element, scale_x, scale_y)
+    if bounds[2] <= 0 or bounds[3] <= 0:
+        raise _diagnostic(
+            "invalid_chart_geometry",
+            f"Invalid chart geometry on source slide {source_slide}, {source_object}: width and height must be positive.",
+            source_slide,
+            source_object,
+        )
+    raw_spec = element.get("chartSpecText")
+    if not isinstance(raw_spec, str):
+        raise _diagnostic(
+            "chart_spec_missing",
+            f"Chart at {source_object} has no measured JSON chart spec.",
+            source_slide,
+            source_object,
+        )
+    source_identity = str(
+        element.get("chartSourceIdentity") or source_object
+    ).strip() or source_object
+    try:
+        spec = parse_chart_spec(
+            raw_spec,
+            source_object=source_object,
+            source_identity=source_identity,
+        )
+    except ChartSpecError as exc:
+        raise _diagnostic(exc.code, exc.message, source_slide, source_object) from exc
+    props = OfficeCLIChartAdapter.creation_props(spec, bounds)
+    props["name"] = name
+    return _ObjectIR(
+        kind="chart",
+        name=name,
+        source_slide=source_slide,
+        source_object=spec.source_identity,
+        bounds=bounds,
+        props=props,
+        chart_spec=spec,
+    )
+
+
 def _lower_table(
     element: dict[str, Any],
     source_slide: int,
@@ -2714,6 +2767,19 @@ def _lower_slide(
         inherited_backdrop: tuple[int, int, int],
     ) -> None:
         tag = str(element.get("tag", "element") or "element").lower()
+        if element.get("isChart"):
+            chart_name = f"slide-{source_slide:03d}-chart-{len(result.objects) + 1:03d}"
+            result.objects.append(
+                _lower_chart(
+                    element,
+                    source_slide,
+                    source_object,
+                    chart_name,
+                    scale_x,
+                    scale_y,
+                )
+            )
+            return
         is_list = bool(element.get("list"))
         if is_list:
             # One supported top-level list is one Native List Textbox: its
@@ -3007,6 +3073,16 @@ def _batch_for_slides(
                 }
             )
             sources.append(obj)
+            if obj.kind == "chart":
+                if obj.chart_spec is None:
+                    raise RuntimeError(f"Chart object {obj.name} has no typed chart spec")
+                chart_path = f"/slide[{output_index}]/chart[@name={obj.name}]"
+                for command in OfficeCLIChartAdapter.write_commands(
+                    obj.chart_spec, chart_path
+                ):
+                    commands.append(command)
+                    sources.append(obj)
+                continue
             if obj.kind != "table":
                 if obj.paragraphs:
                     object_path = f"/slide[{output_index}]/shape[@name={obj.name}]"

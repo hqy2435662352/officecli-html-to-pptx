@@ -30,6 +30,7 @@ from ..contract import (
     check_contract,
 )
 from .officecli_compiler import OfficeCLICompilationError, compile_officecli
+from .charts import OfficeCLIChartAdapter
 from ..runtime import PPTX_SCREENSHOT_DEFAULT_RENDER, officecli_pptx_screenshot_render
 
 PASS = "PASS"
@@ -1002,6 +1003,21 @@ def compare_manifests(
             mismatch("object kind differs", object=name, expected=left.get("kind"), actual=right.get("kind"))
         if not _approx_equal(left.get("bounds_pt", ()), right.get("bounds_pt", ()), 1.0):
             mismatch("object bounds differ by more than 1pt", object=name)
+        if left.get("kind") == "chart" and right.get("kind") == "chart":
+            if right.get("native_kind") != "chart":
+                mismatch(
+                    "native chart kind differs",
+                    object=name,
+                    actual=right.get("native_kind"),
+                )
+            if left.get("chart", {}) != right.get("chart", {}):
+                mismatch(
+                    "chart semantics differ",
+                    object=name,
+                    expected=left.get("chart", {}),
+                    actual=right.get("chart", {}),
+                )
+            continue
         if _normal_text(
             left.get("text"), normalize_nbsp=allow_officehtml_projection_defaults
         ) != _normal_text(
@@ -1294,13 +1310,15 @@ def _officecli_manifest(pptx_path: Path) -> tuple[dict[str, Any], dict[tuple[int
         str(node.get("format", {}).get("name")): node
         for node in _walk(deep)
         if node.get("format", {}).get("name")
+        and str(node.get("type", ""))
+        in {"shape", "textbox", "picture", "table", "chart"}
     }
     objects: list[dict[str, Any]] = []
     id_to_name: dict[tuple[int, int], str] = {}
     for slide_index, children in enumerate(slides, start=1):
         for child in children:
             kind = str(child.get("type", ""))
-            if kind not in {"shape", "textbox", "picture", "table"}:
+            if kind not in {"shape", "textbox", "picture", "table", "chart"}:
                 continue
             format_data = child.get("format", {})
             name = str(format_data.get("name", ""))
@@ -1320,6 +1338,8 @@ def _officecli_manifest(pptx_path: Path) -> tuple[dict[str, Any], dict[tuple[int
             detailed_format = detailed.get("format", format_data)
             if kind == "table":
                 object_data.update(_officecli_table_manifest(detailed))
+            elif kind == "chart":
+                object_data.update(_officecli_chart_manifest(detailed))
             else:
                 object_data["properties"] = _officecli_properties(detailed_format)
                 object_data["paragraphs"] = _officecli_paragraphs(detailed)
@@ -1339,6 +1359,19 @@ def _officecli_manifest(pptx_path: Path) -> tuple[dict[str, Any], dict[tuple[int
         "object_kind_counts": counts,
         "objects": objects,
     }, id_to_name
+
+
+def _officecli_chart_manifest(chart: Mapping[str, Any]) -> dict[str, Any]:
+    """Read only the material typed chart semantics from a native chart node."""
+    readback = OfficeCLIChartAdapter.readback(chart)
+    return {
+        "chart": {
+            "type": readback.chart_type,
+            "categories": list(readback.categories),
+            "series": [series.as_dict() for series in readback.series],
+        },
+        "native_kind": readback.native_kind,
+    }
 
 
 def _officecli_table_manifest(table: Mapping[str, Any]) -> dict[str, Any]:

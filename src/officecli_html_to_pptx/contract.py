@@ -15,6 +15,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from lxml import html as _lxml_html
 
+from ._internal.charts import ChartSpecError, parse_chart_spec
+
 CONTRACT_VERSION = "1.1"
 OFFICECLI_COMPATIBILITY_BASELINE = "1.0.151"
 SUPPORTED_PROFILES = ("author", "officehtml")
@@ -1052,6 +1054,7 @@ def _stylesheet_rule_has_visible_author_match(
     )
     return any(
         _simple_selector_matches(element, alternative)
+        and _chart_ancestor(element) is None
         and _is_visible_author_element(element, document)
         for alternative in selectors
         for slide in slide_elements
@@ -1080,6 +1083,8 @@ def _is_author_ignored(element: Any) -> bool:
     tokens = _class_tokens(element)
     identifier = str(element.get("id", "") or "")
     if tokens & _AUTHOR_PREVIEW_TOKENS or identifier in _AUTHOR_PREVIEW_TOKENS:
+        return True
+    if _chart_ancestor(element) is not None:
         return True
     return _has_ignored_ancestor(element)
 
@@ -1111,6 +1116,113 @@ def _is_visible_author_element(element: Any, document: Any | None = None) -> boo
         and not _is_hidden(element)
         and (document is None or not _stylesheet_hides_element(document, element))
     )
+
+
+def _chart_ancestor(element: Any) -> Any | None:
+    """Return the owning authored chart, excluding the chart root itself."""
+    for parent in element.iterancestors():
+        if parent.get("data-pptx-chart") is not None:
+            return parent
+    return None
+
+
+def _chart_style_value(document: Any, element: Any, property_name: str) -> str | None:
+    """Resolve the small declaration subset needed for chart geometry checks."""
+    inline = _inline_styles(element)
+    if property_name in inline:
+        return inline[property_name]
+    value: str | None = None
+    for selector, declarations in _stylesheet_rules(document):
+        if any(
+            _selector_matches_element(element, alternative)
+            for alternative in selector.split(",")
+        ) and property_name in declarations:
+            value = declarations[property_name]
+    return value
+
+
+def _check_author_charts(document: Any, findings: list[ContractDiagnostic]) -> None:
+    """Validate the atomic category-chart author object before measurement."""
+    chart_nodes = document.xpath("//*[@data-pptx-chart]")
+    seen_ids: dict[str, Any] = {}
+    for element in chart_nodes:
+        source = _node_path(element)
+        if _chart_ancestor(element) is not None:
+            _emit(
+                findings,
+                "author",
+                "nested_chart",
+                "A data-pptx-chart object cannot be nested inside another authored chart.",
+                source,
+            )
+            continue
+
+        raw_id = str(element.get("id", "") or "")
+        chart_id = raw_id.strip()
+        if chart_id:
+            previous = seen_ids.get(chart_id)
+            if previous is not None:
+                _emit(
+                    findings,
+                    "author",
+                    "duplicate_chart_identity",
+                    f"Trimmed chart id {chart_id!r} must identify one authored chart.",
+                    source,
+                )
+            else:
+                seen_ids[chart_id] = element
+
+        if _is_hidden(element) or _stylesheet_hides_element(document, element):
+            _emit(
+                findings,
+                "author",
+                "hidden_chart",
+                "An authored chart must have a visible container before output is created.",
+                source,
+            )
+
+        for property_name in ("width", "height"):
+            declared = _chart_style_value(document, element, property_name)
+            if declared is None:
+                continue
+            parsed = _parse_length(declared)
+            if parsed is not None and parsed[0] <= 0:
+                _emit(
+                    findings,
+                    "author",
+                    "invalid_chart_geometry",
+                    f"Chart {property_name} must not be zero or negative when declared; got {declared!r}.",
+                    source,
+                )
+
+        spec_nodes = element.xpath(".//script[@data-pptx-chart-spec]")
+        if len(spec_nodes) != 1:
+            _emit(
+                findings,
+                "author",
+                "chart_spec_count",
+                "Each authored chart must contain exactly one data-pptx-chart-spec script.",
+                source,
+            )
+            continue
+        spec_node = spec_nodes[0]
+        if spec_node.get("type") != "application/json":
+            _emit(
+                findings,
+                "author",
+                "chart_spec_type",
+                "The authored chart spec must be an inert script type=application/json.",
+                _node_path(spec_node),
+            )
+            continue
+        try:
+            parse_chart_spec(
+                spec_node.text or "",
+                source_object=source,
+                source_identity=chart_id or source,
+            )
+        except ChartSpecError as exc:
+            _emit(findings, "author", exc.code, exc.message, source)
 
 
 def _parse_length(value: Any) -> tuple[float, str] | None:
@@ -1180,6 +1292,8 @@ def _check_lists(document: Any, findings: list[ContractDiagnostic]) -> None:
     for element in document.iter():
         tag = _element_tag(element)
         if tag not in list_tags:
+            continue
+        if _chart_ancestor(element) is not None:
             continue
         if not _is_visible_author_element(element, document):
             continue
@@ -1516,6 +1630,8 @@ def _check_author(
         _emit(findings, "author", "missing_slides", "Author profile requires at least one .slide element.")
         return
 
+    _check_author_charts(document, findings)
+
     rules = _stylesheet_rules(document)
     for index, slide in enumerate(slides, start=1):
         inline = _inline_styles(slide)
@@ -1539,6 +1655,8 @@ def _check_author(
             )
 
     for element in document.iter():
+        if _chart_ancestor(element) is not None:
+            continue
         if not _is_visible_author_element(element, document):
             continue
         tag = str(element.tag).lower() if isinstance(element.tag, str) else ""
@@ -1664,7 +1782,8 @@ def _check_author(
             )
     for element in document.iter():
         tag = str(element.tag).lower() if isinstance(element.tag, str) else ""
-        author_ignored = _is_author_ignored(element)
+        chart_descendant = _chart_ancestor(element) is not None
+        author_ignored = _is_author_ignored(element) or chart_descendant
         ignored = (
             author_ignored
             or _is_hidden(element)

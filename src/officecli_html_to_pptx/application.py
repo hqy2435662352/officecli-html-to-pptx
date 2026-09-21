@@ -548,6 +548,29 @@ def _native_slice_evidence(
         if item.get("kind") == "shape"
         and (item.get("properties") or {}).get("geometry")
     ]
+    chart_structure = {
+        "compiled": [
+            {
+                "name": item.get("name"),
+                "source_slide": item.get("source_slide"),
+                "bounds_pt": item.get("bounds_pt", []),
+                "chart": item.get("chart", {}),
+            }
+            for item in compiled_objects
+            if item.get("kind") == "chart"
+        ],
+        "readback": [
+            {
+                "name": item.get("name"),
+                "source_slide": item.get("source_slide"),
+                "bounds_pt": item.get("bounds_pt", []),
+                "native_kind": item.get("native_kind"),
+                "chart": item.get("chart", {}),
+            }
+            for item in readback_objects
+            if item.get("kind") == "chart"
+        ],
+    }
     compiler_diagnostics = [
         item.as_dict() for item in compiled.diagnostics
     ]
@@ -564,6 +587,7 @@ def _native_slice_evidence(
         "text_structure": text_structure,
         "normalized_merge_topology": merge_topology,
         "native_geometry": native_geometry,
+        "charts": chart_structure,
         "counts": {
             "authored_object_count": int(compiled.object_count),
             "compiled_object_count": len(compiled_objects),
