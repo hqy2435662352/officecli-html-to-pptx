@@ -555,6 +555,7 @@ def _native_slice_evidence(
                 "source_slide": item.get("source_slide"),
                 "bounds_pt": item.get("bounds_pt", []),
                 "chart": item.get("chart", {}),
+                "chart_seam": item.get("chart_seam", {}),
             }
             for item in compiled_objects
             if item.get("kind") == "chart"
@@ -566,6 +567,7 @@ def _native_slice_evidence(
                 "bounds_pt": item.get("bounds_pt", []),
                 "native_kind": item.get("native_kind"),
                 "chart": item.get("chart", {}),
+                "chart_seam": item.get("chart_seam", {}),
             }
             for item in readback_objects
             if item.get("kind") == "chart"

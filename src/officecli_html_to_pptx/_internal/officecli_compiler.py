@@ -224,7 +224,8 @@ class _ObjectIR:
                 }
             )
         if self.kind == "chart" and self.chart_spec is not None:
-            manifest["chart"] = self.chart_spec.as_dict()
+            manifest["chart"] = self.chart_spec.semantic_dict()
+            manifest["chart_seam"] = self.chart_spec.as_dict()
         return manifest
 
 
@@ -2431,6 +2432,7 @@ def _lower_chart(
             raw_spec,
             source_object=source_object,
             source_identity=source_identity,
+            bounds=bounds,
         )
     except ChartSpecError as exc:
         raise _diagnostic(exc.code, exc.message, source_slide, source_object) from exc
@@ -3048,6 +3050,7 @@ def _batch_for_slides(
         {"command": "set", "path": "/", "props": {"slideSize": "widescreen"}}
     ]
     sources: list[_ObjectIR | None] = [None]
+    chart_part_index = 0
     for output_index, slide in enumerate(slides, start=1):
         commands.append(
             {
@@ -3076,9 +3079,12 @@ def _batch_for_slides(
             if obj.kind == "chart":
                 if obj.chart_spec is None:
                     raise RuntimeError(f"Chart object {obj.name} has no typed chart spec")
+                chart_part_index += 1
                 chart_path = f"/slide[{output_index}]/chart[@name={obj.name}]"
                 for command in OfficeCLIChartAdapter.write_commands(
-                    obj.chart_spec, chart_path
+                    obj.chart_spec,
+                    chart_path,
+                    f"/ppt/slides/charts/chart{chart_part_index}.xml",
                 ):
                     commands.append(command)
                     sources.append(obj)

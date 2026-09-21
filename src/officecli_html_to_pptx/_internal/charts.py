@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import json
 import math
 from typing import Any, Mapping
+from xml.etree import ElementTree
+from xml.sax.saxutils import escape as xml_escape
 
 
 CATEGORY_CHART_TYPES = ("column", "bar", "line")
@@ -47,13 +49,23 @@ class ChartSpec:
     chart_type: str
     categories: tuple[str, ...]
     series: tuple[ChartSeriesSpec, ...]
+    bounds: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
-    def as_dict(self) -> dict[str, Any]:
-        """Return only material chart semantics for manifests and Evidence."""
+    def semantic_dict(self) -> dict[str, Any]:
+        """Return only normalized material chart semantics."""
         return {
             "type": self.chart_type,
             "categories": list(self.categories),
             "series": [series.as_dict() for series in self.series],
+        }
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return seam metadata plus normalized chart semantics for Evidence."""
+        return {
+            "source_identity": self.source_identity,
+            "source_path": self.source_path,
+            "bounds_pt": list(self.bounds),
+            **self.semantic_dict(),
         }
 
 
@@ -61,17 +73,29 @@ class ChartSpec:
 class ChartReadback:
     """Normalized native chart data obtained independently from OfficeCLI."""
 
+    source_identity: str
+    source_path: str
+    bounds: tuple[float, float, float, float]
     native_kind: str
     chart_type: str
     categories: tuple[str, ...]
     series: tuple[ChartSeriesSpec, ...]
 
-    def as_dict(self) -> dict[str, Any]:
+    def semantic_dict(self) -> dict[str, Any]:
         return {
-            "native_kind": self.native_kind,
             "type": self.chart_type,
             "categories": list(self.categories),
             "series": [series.as_dict() for series in self.series],
+        }
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return independent native seam metadata and normalized semantics."""
+        return {
+            "source_identity": self.source_identity,
+            "source_path": self.source_path,
+            "bounds_pt": list(self.bounds),
+            "native_kind": self.native_kind,
+            **self.semantic_dict(),
         }
 
 
@@ -159,6 +183,7 @@ def parse_chart_spec(
     *,
     source_object: str,
     source_identity: str | None = None,
+    bounds: tuple[float, float, float, float] | None = None,
 ) -> ChartSpec:
     """Parse one strict category-chart spec without executing embedded data."""
     root = _parse_json(raw, source_object)
@@ -277,7 +302,21 @@ def parse_chart_spec(
         chart_type=chart_type,
         categories=tuple(categories),
         series=tuple(series),
+        bounds=_normalize_bounds(bounds),
     )
+
+
+def _normalize_bounds(
+    bounds: tuple[float, float, float, float] | None,
+) -> tuple[float, float, float, float]:
+    if bounds is None:
+        return (0.0, 0.0, 0.0, 0.0)
+    if len(bounds) != 4:
+        raise ValueError("Chart bounds must contain exactly four values.")
+    normalized = tuple(float(value) for value in bounds)
+    if not all(math.isfinite(value) for value in normalized):
+        raise ValueError("Chart bounds must contain finite values.")
+    return (normalized[0], normalized[1], normalized[2], normalized[3])
 
 
 def _number_text(value: float) -> str:
@@ -306,9 +345,9 @@ class OfficeCLIChartAdapter:
         bounds: tuple[float, float, float, float],
     ) -> dict[str, str]:
         x, y, width, height = bounds
-        # OfficeCLI's chart add surface accepts a compact series string.  Use
-        # backend-safe placeholders here; the following set commands write the
-        # exact ordered labels and values through the native series paths.
+        # OfficeCLI's chart add surface accepts a compact series string. Use
+        # backend-safe placeholders here; write_commands replaces category XML
+        # literally and then writes ordered series values through native paths.
         placeholder_data = ";".join(
             f"Series{index}:{','.join(_number_text(value) for value in series.values)}"
             for index, series in enumerate(spec.series, start=1)
@@ -325,13 +364,20 @@ class OfficeCLIChartAdapter:
             "height": f"{height:.4f}pt",
         }
 
-    @staticmethod
-    def write_commands(spec: ChartSpec, chart_path: str) -> list[dict[str, Any]]:
+    @classmethod
+    def write_commands(
+        cls,
+        spec: ChartSpec,
+        chart_path: str,
+        chart_part: str,
+    ) -> list[dict[str, Any]]:
         commands: list[dict[str, Any]] = [
             {
-                "command": "set",
-                "path": chart_path,
-                "props": {"categories": ",".join(spec.categories)},
+                "command": "raw-set",
+                "part": chart_part,
+                "xpath": '//*[local-name()="cat"]',
+                "action": "replace",
+                "xml": cls._category_xml(spec.categories),
             }
         ]
         for index, series in enumerate(spec.series, start=1):
@@ -347,11 +393,81 @@ class OfficeCLIChartAdapter:
             )
         return commands
 
+    @staticmethod
+    def _category_xml(categories: tuple[str, ...]) -> str:
+        points = "".join(
+            f'<c:pt idx="{index}"><c:v>{xml_escape(category)}</c:v></c:pt>'
+            for index, category in enumerate(categories)
+        )
+        return (
+            '<c:cat xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+            f"<c:strLit><c:ptCount val=\"{len(categories)}\"/>{points}</c:strLit>"
+            "</c:cat>"
+        )
+
+    @staticmethod
+    def _raw_points(node: ElementTree.Element | None) -> tuple[str, ...]:
+        if node is None:
+            return ()
+        points: list[tuple[int, str]] = []
+        for position, point in enumerate(node.findall("{*}pt")):
+            try:
+                index = int(point.get("idx", position))
+            except (TypeError, ValueError):
+                index = position
+            value_node = point.find("{*}v")
+            points.append((index, value_node.text if value_node is not None and value_node.text is not None else ""))
+        return tuple(value for _, value in sorted(points, key=lambda item: item[0]))
+
+    @classmethod
+    def _raw_chart_data(
+        cls,
+        raw_xml: str,
+    ) -> tuple[tuple[str, ...], tuple[ChartSeriesSpec, ...]]:
+        root = ElementTree.fromstring(raw_xml)
+        series_nodes = root.findall(".//{*}ser")
+        if not series_nodes:
+            return (), ()
+
+        categories: tuple[str, ...] = ()
+        series: list[ChartSeriesSpec] = []
+        for series_node in series_nodes:
+            category_node = series_node.find("{*}cat")
+            if not categories and category_node is not None:
+                literal = category_node.find("{*}strLit")
+                if literal is None:
+                    reference = category_node.find("{*}strRef")
+                    literal = reference.find("{*}strCache") if reference is not None else None
+                categories = cls._raw_points(literal)
+
+            tx = series_node.find("{*}tx")
+            name = ""
+            if tx is not None:
+                name_node = tx.find("{*}v")
+                if name_node is None:
+                    reference = tx.find("{*}strRef")
+                    cache = reference.find("{*}strCache") if reference is not None else None
+                    name_node = cache.find("{*}pt/{*}v") if cache is not None else None
+                name = name_node.text if name_node is not None and name_node.text is not None else ""
+
+            value_node = series_node.find("{*}val")
+            values_source = value_node.find("{*}numLit") if value_node is not None else None
+            if values_source is None and value_node is not None:
+                reference = value_node.find("{*}numRef")
+                values_source = reference.find("{*}numCache") if reference is not None else None
+            raw_values = cls._raw_points(values_source)
+            try:
+                values = tuple(float(value) for value in raw_values)
+            except ValueError:
+                values = ()
+            series.append(ChartSeriesSpec(name, values))
+        return categories, tuple(series)
+
     @classmethod
     def readback(
         cls,
         node: Mapping[str, Any],
-        expected: ChartSpec | None = None,
+        raw_xml: str | None = None,
     ) -> ChartReadback:
         format_data = node.get("format", {})
         raw_chart_type = str(format_data.get("chartType", "") or "").lower()
@@ -371,20 +487,32 @@ class OfficeCLIChartAdapter:
 
         raw_categories = str(format_data.get("categories", "") or "")
         categories = tuple(raw_categories.split(",")) if raw_categories else ()
-        # The compact OfficeCLI property is comma-delimited.  For ordinary
-        # labels this is an exact sequence; retaining the expected sequence for
-        # a matching raw property keeps the typed seam deterministic while the
-        # adapter remains the only place aware of that backend spelling.
-        if expected is not None and raw_categories == ",".join(expected.categories):
-            categories = expected.categories
-        if expected is not None and len(series) == len(expected.series):
-            normalized_series = []
-            for actual, source in zip(series, expected.series):
-                normalized_series.append(
-                    ChartSeriesSpec(actual.name, actual.values)
-                )
-            series = normalized_series
+        if raw_xml is not None:
+            raw_categories, raw_series = cls._raw_chart_data(raw_xml)
+            if raw_categories:
+                categories = raw_categories
+            if raw_series:
+                series = list(raw_series)
+
+        def point_value(value: Any) -> float:
+            text = str(value or "").strip().lower()
+            for suffix in ("pt", "emu", "cm", "mm", "in"):
+                if text.endswith(suffix):
+                    text = text[: -len(suffix)].strip()
+                    break
+            try:
+                return float(text)
+            except ValueError:
+                return 0.0
+
+        bounds = tuple(
+            point_value(format_data.get(key))
+            for key in ("x", "y", "width", "height")
+        )
         return ChartReadback(
+            source_identity=str(format_data.get("name", "") or node.get("path", "")),
+            source_path=str(node.get("path", "") or ""),
+            bounds=(bounds[0], bounds[1], bounds[2], bounds[3]),
             native_kind=str(node.get("type", "") or "").lower(),
             chart_type=chart_type,
             categories=categories,

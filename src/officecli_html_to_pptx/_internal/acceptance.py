@@ -1302,6 +1302,80 @@ def _officecli_picture_metadata(
     }
 
 
+def _officecli_chart_parts(pptx_path: Path) -> dict[tuple[int, str], str]:
+    """Map native chart names to their private Office Open XML chart parts."""
+    chart_parts: dict[tuple[int, str], str] = {}
+    relationship_namespace = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    try:
+        with zipfile.ZipFile(pptx_path) as archive:
+            slide_names = sorted(
+                (
+                    name
+                    for name in archive.namelist()
+                    if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)
+                ),
+                key=lambda name: int(re.search(r"slide(\d+)", name).group(1)),
+            )
+            for slide_name in slide_names:
+                match = re.search(r"slide(\d+)", slide_name)
+                if match is None:
+                    continue
+                slide_number = int(match.group(1))
+                slide_root = ElementTree.fromstring(archive.read(slide_name))
+                rels_name = f"ppt/slides/_rels/slide{slide_number}.xml.rels"
+                relationships = ElementTree.fromstring(archive.read(rels_name))
+                rel_targets = {
+                    relationship.attrib.get("Id", ""): relationship.attrib.get("Target", "")
+                    for relationship in relationships
+                }
+                for frame in (
+                    node
+                    for node in slide_root.iter()
+                    if str(node.tag).rsplit("}", 1)[-1] == "graphicFrame"
+                ):
+                    chart_node = next(
+                        (
+                            node
+                            for node in frame.iter()
+                            if str(node.tag).rsplit("}", 1)[-1] == "chart"
+                        ),
+                        None,
+                    )
+                    if chart_node is None:
+                        continue
+                    name_node = next(
+                        (
+                            node
+                            for node in frame.iter()
+                            if str(node.tag).rsplit("}", 1)[-1] == "cNvPr"
+                        ),
+                        None,
+                    )
+                    name = str(
+                        name_node.attrib.get("name", "")
+                        if name_node is not None
+                        else ""
+                    )
+                    relationship_id = chart_node.attrib.get(
+                        f"{{{relationship_namespace}}}id",
+                        chart_node.attrib.get("r:id", ""),
+                    )
+                    target = rel_targets.get(relationship_id, "")
+                    if not name or not target:
+                        continue
+                    part = (
+                        posixpath.normpath(
+                            posixpath.join("ppt/slides", target)
+                        )
+                        if not target.startswith("/")
+                        else posixpath.normpath(target.lstrip("/"))
+                    )
+                    chart_parts[(slide_number, name)] = f"/{part}"
+    except (KeyError, OSError, ElementTree.ParseError, AttributeError):
+        return {}
+    return chart_parts
+
+
 def _officecli_manifest(pptx_path: Path) -> tuple[dict[str, Any], dict[tuple[int, int], str]]:
     shallow = _run_officecli("get", pptx_path, "/", "--depth", "1", json_output=True)["data"]["results"][0]
     deep = _run_officecli("get", pptx_path, "/", "--depth", "5", json_output=True)["data"]["results"][0]
@@ -1313,6 +1387,7 @@ def _officecli_manifest(pptx_path: Path) -> tuple[dict[str, Any], dict[tuple[int
         and str(node.get("type", ""))
         in {"shape", "textbox", "picture", "table", "chart"}
     }
+    chart_parts = _officecli_chart_parts(pptx_path)
     objects: list[dict[str, Any]] = []
     id_to_name: dict[tuple[int, int], str] = {}
     for slide_index, children in enumerate(slides, start=1):
@@ -1339,7 +1414,13 @@ def _officecli_manifest(pptx_path: Path) -> tuple[dict[str, Any], dict[tuple[int
             if kind == "table":
                 object_data.update(_officecli_table_manifest(detailed))
             elif kind == "chart":
-                object_data.update(_officecli_chart_manifest(detailed))
+                chart_part = chart_parts.get((slide_index, name))
+                if chart_part is None:
+                    raise _AcceptanceToolError(
+                        f"OfficeCLI chart {name!r} on slide {slide_index} has no chart XML part"
+                    )
+                chart_xml = _run_officecli("raw", pptx_path, chart_part)
+                object_data.update(_officecli_chart_manifest(detailed, chart_xml))
             else:
                 object_data["properties"] = _officecli_properties(detailed_format)
                 object_data["paragraphs"] = _officecli_paragraphs(detailed)
@@ -1361,15 +1442,15 @@ def _officecli_manifest(pptx_path: Path) -> tuple[dict[str, Any], dict[tuple[int
     }, id_to_name
 
 
-def _officecli_chart_manifest(chart: Mapping[str, Any]) -> dict[str, Any]:
+def _officecli_chart_manifest(
+    chart: Mapping[str, Any],
+    chart_xml: str,
+) -> dict[str, Any]:
     """Read only the material typed chart semantics from a native chart node."""
-    readback = OfficeCLIChartAdapter.readback(chart)
+    readback = OfficeCLIChartAdapter.readback(chart, raw_xml=chart_xml)
     return {
-        "chart": {
-            "type": readback.chart_type,
-            "categories": list(readback.categories),
-            "series": [series.as_dict() for series in readback.series],
-        },
+        "chart": readback.semantic_dict(),
+        "chart_seam": readback.as_dict(),
         "native_kind": readback.native_kind,
     }
 

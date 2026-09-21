@@ -70,15 +70,109 @@ def test_chart_spec_is_strict_and_typed() -> None:
 
     invalid_specs = (
         '{"type":"column","type":"bar","categories":["Q1"],"series":[{"name":"S","values":[1]}]}',
+        '[]',
+        'null',
         '{"type":"COLUMN","categories":["Q1"],"series":[{"name":"S","values":[1]}]}',
+        '{"type":"column","categories":["Q1"],"series":[{"name":"S"}]}',
         '{"type":"column","categories":["Q1"],"series":[{"name":"S","values":["1"]}]}',
+        '{"type":"column","categories":["Q1"],"series":[{"name":"S","values":[true]}]}',
+        '{"type":"column","categories":["Q1"],"series":[{"name":"S","values":[null]}]}',
         '{"type":"column","categories":["Q1"],"series":[{"name":"S","values":[NaN]}]}',
         '{"type":"column","categories":["Q1"],"series":[{"name":"S","values":[1],"extra":true}]}',
         '{"type":"column","categories":["Q1"],"series":[{"name":"S","values":[1,2]}]}',
+        '{"type":"column","categories":["Q1"],"series":[{"name":"S","values":[1]}] // comment}',
+        '{"type":"column","categories":["Q1"],"series":[{"name":"S","values":[1,]}]}',
     )
     for raw in invalid_specs:
         with pytest.raises(ChartSpecError):
             parse_chart_spec(raw, source_object="slide[1]/div[1]")
+
+
+def _spec_with_sizes(category_count: int, series_count: int) -> str:
+    categories = [f"C{index}" for index in range(category_count)]
+    series = [
+        {
+            "name": f"S{index}",
+            "values": [index + value for value in range(category_count)],
+        }
+        for index in range(series_count)
+    ]
+    return json.dumps(
+        {"type": "column", "categories": categories, "series": series}
+    )
+
+
+def test_category_and_series_limits_accept_boundaries_and_reject_overflow(
+    tmp_path: Path,
+) -> None:
+    for category_count, series_count in ((1, 1), (12, 3)):
+        report = check_author_html(
+            _write(
+                tmp_path,
+                _html(_spec_with_sizes(category_count, series_count)),
+                f"valid-{category_count}-{series_count}.html",
+            )
+        )
+        assert report.status == "PASS", report.as_dict()
+
+    category_overflow = check_author_html(
+        _write(
+            tmp_path,
+            _html(_spec_with_sizes(13, 1)),
+            "category-overflow.html",
+        )
+    )
+    assert category_overflow.status == "BLOCK"
+    assert "chart_category_limit" in {
+        item.code for item in category_overflow.diagnostics
+    }
+
+    series_overflow = check_author_html(
+        _write(
+            tmp_path,
+            _html(_spec_with_sizes(1, 4)),
+            "series-overflow.html",
+        )
+    )
+    assert series_overflow.status == "BLOCK"
+    assert "chart_series_limit" in {
+        item.code for item in series_overflow.diagnostics
+    }
+
+
+def test_repeated_and_comma_categories_preserve_exact_order_in_native_readback(
+    tmp_path: Path,
+) -> None:
+    spec = json.dumps(
+        {
+            "type": "column",
+            "categories": ["North,East", "Repeat", "Repeat"],
+            "series": [{"name": "Revenue", "values": [10, 20, 30]}],
+        }
+    )
+    source_path = _write(tmp_path, _html(spec), "comma-categories.html")
+    output = tmp_path / "comma-categories.pptx"
+
+    built = asyncio.run(build_author_html(source_path, output))
+    assert built.status == "VISUAL_REVIEW_REQUIRED", built.as_dict()
+    evidence = output.with_suffix(".evidence")
+    manifest = json.loads((evidence / "manifest.json").read_text(encoding="utf-8"))
+    readback = json.loads((evidence / "readback.json").read_text(encoding="utf-8"))
+    native = json.loads((evidence / "native-evidence.json").read_text(encoding="utf-8"))
+
+    expected_categories = ["North,East", "Repeat", "Repeat"]
+    assert manifest["objects"][0]["chart"]["categories"] == expected_categories
+    assert readback["objects"][0]["chart"]["categories"] == expected_categories
+    assert native["diagnostics"]["material_delta"] == 0
+    compiled_seam = native["charts"]["compiled"][0]["chart_seam"]
+    readback_seam = native["charts"]["readback"][0]["chart_seam"]
+    assert compiled_seam["source_identity"] == "sales-chart"
+    assert compiled_seam["source_path"] == "slide[1]/div[1]"
+    assert compiled_seam["bounds_pt"] == native["charts"]["compiled"][0]["bounds_pt"]
+    assert readback_seam["source_path"].startswith("/slide[1]/chart[")
+    assert readback_seam["bounds_pt"] == native["charts"]["readback"][0]["bounds_pt"]
+    assert json.loads((evidence / "validate.json").read_text(encoding="utf-8"))["status"] == "PASS"
+    assert json.loads((evidence / "issues.json").read_text(encoding="utf-8"))["status"] == "PASS"
 
 
 def test_check_accepts_atomic_preview_and_measurement_excludes_descendants(
