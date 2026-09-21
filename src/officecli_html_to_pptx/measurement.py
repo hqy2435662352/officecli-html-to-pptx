@@ -1243,16 +1243,21 @@ async def _rasterize_localized_fallbacks(
     source_base_url: str | None = None,
 ) -> None:
     """Capture each opted-in region in a page containing only that region."""
-    for slide_index, slide_data in enumerate(measurements):
-        localized = _localized_elements(slide_data.get("elements", []))
-        if not localized:
-            continue
 
-        payload = await page.evaluate(
-            """(index) => {
+    async def activate_slide(index: int) -> dict | None:
+        """Make one source slide measurable before reading any target bounds."""
+        return await page.evaluate(
+            """(slideIndex) => {
                 const slides = Array.from(document.querySelectorAll('.slide'));
-                const slide = slides[index];
+                const slide = slides[slideIndex];
                 if (!slide) return null;
+                slides.forEach((item, index) => {
+                    const active = index === slideIndex;
+                    item.style.display = active ? 'flex' : 'none';
+                    item.classList.toggle('active', active);
+                });
+                // Force layout after changing display before any target query.
+                slide.offsetHeight;
                 const rect = slide.getBoundingClientRect();
                 return {
                     width: rect.width,
@@ -1261,8 +1266,18 @@ async def _rasterize_localized_fallbacks(
                         .map(style => style.textContent || ''),
                 };
             }""",
-            slide_index,
+            index,
         )
+
+    for slide_index, slide_data in enumerate(measurements):
+        localized = _localized_elements(slide_data.get("elements", []))
+        if not localized:
+            continue
+
+        # EXTRACTION_JS leaves the last slide active.  Re-activate each source
+        # slide before measuring/capturing it so hidden slides never yield a
+        # zero-sized payload or silently lose their localized assets.
+        payload = await activate_slide(slide_index)
         if not payload:
             continue
 
@@ -1415,6 +1430,10 @@ async def _rasterize_localized_fallbacks(
             isolation_evidence = _empty_isolation_evidence()
             try:
                 if capture_allowed and not preflight_codes:
+                    # Keep the source page's target facts tied to this slide;
+                    # the actual PNG is still rendered in a fresh isolated
+                    # page below.
+                    await activate_slide(slide_index)
                     capture_page = await context.new_page()
                     await capture_page.set_content(markup, wait_until="load")
                     await capture_page.wait_for_function(
@@ -1575,6 +1594,12 @@ async def _rasterize_localized_fallbacks(
                     "optInReason": "explicit-author-opt-in",
                 }
             )
+
+    # Restore the post-EXTRACTION_JS state (the final source slide active) so
+    # subsequent SVG fallback work does not inherit whichever localized slide
+    # happened to be processed last.
+    if measurements:
+        await activate_slide(len(measurements) - 1)
 
 
 async def extract_measurements(

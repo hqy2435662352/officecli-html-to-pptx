@@ -78,6 +78,40 @@ def _computed_external_resource_html() -> str:
     )
 
 
+def _multi_slide_localized_html() -> str:
+    regions = (
+        ("one", 40, 50, 200, 100, "#e85d04"),
+        ("two", 260, 90, 220, 110, "#0077b6"),
+        ("three", 500, 150, 180, 90, "#2a9d8f"),
+        ("four", 700, 300, 160, 80, "#8338ec"),
+    )
+    slides = []
+    for index, (name, left, top, width, height, color) in enumerate(regions, 1):
+        slides.append(
+            f'''<section class="slide{' active' if index == 1 else ''}">
+  <div id="localized-{name}" class="localized localized-{name}"
+       data-pptx-rasterize="localized">
+    <svg viewBox="0 0 {width} {height}" width="{width}" height="{height}">
+      <rect width="{width}" height="{height}" rx="12" fill="{color}"/>
+      <circle cx="{width - 35}" cy="{height // 2}" r="18" fill="#ffffff" fill-opacity=".8"/>
+    </svg>
+  </div>
+</section>'''
+        )
+    position_rules = "\n".join(
+        f"  .localized-{name} {{ left: {left}px; top: {top}px; width: {width}px; height: {height}px; }}"
+        for name, left, top, width, height, _ in regions
+    )
+    return f'''<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  * {{ box-sizing: border-box; }}
+  html, body {{ margin: 0; }}
+  .slide {{ width: 960px; height: 540px; position: relative; background: #ffffff; }}
+  .localized {{ position: absolute; }}
+{position_rules}
+</style></head><body>{''.join(slides)}</body></html>'''
+
+
 @pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 @pytest.mark.asyncio
 async def test_public_inline_svg_localized_fallback_is_one_picture(
@@ -180,6 +214,50 @@ async def test_computed_styles_block_applied_external_resource_before_capture(
     assert "localized_external_resource" in fallback["captureFailureCodes"]
     assert fallback["computedSafety"]["resourceStates"]
     assert "src" not in element
+
+
+@pytest.mark.asyncio
+async def test_localized_capture_activates_every_source_slide(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "multi-slide-localized.html"
+    source.write_text(_multi_slide_localized_html(), encoding="utf-8")
+
+    measurements = await extract_measurements(str(source), officecli_mode=True)
+
+    expected = (
+        (40, 50, 200, 100),
+        (260, 90, 220, 110),
+        (500, 150, 180, 90),
+        (700, 300, 160, 80),
+    )
+    assert len(measurements) == len(expected)
+    for slide_index, (slide, bounds) in enumerate(zip(measurements, expected), 1):
+        elements = [
+            item for item in slide["elements"] if "localizedFallback" in item
+        ]
+        assert len(elements) == 1
+        element = elements[0]
+        left, top, width, height = bounds
+        assert element["x"] == pytest.approx(left)
+        assert element["y"] == pytest.approx(top)
+        assert element["width"] == pytest.approx(width)
+        assert element["height"] == pytest.approx(height)
+        assert "src" in element
+
+        fallback = element["localizedFallback"]
+        audit = fallback["captureAudit"]
+        assert fallback["captureFailureCodes"] == []
+        assert audit["pixel_dimensions"]["width"] == width * 2
+        assert audit["pixel_dimensions"]["height"] == height * 2
+        assert audit["expected_pixel_dimensions"]["width"] == width * 2
+        assert audit["expected_pixel_dimensions"]["height"] == height * 2
+        assert audit["density"] == pytest.approx(2.0)
+        assert audit["isolated"] is True
+        assert audit["isolation_evidence"]["passed"] is True
+        assert audit["isolation_evidence"]["target_id_match"] is True
+        assert audit["isolation_evidence"]["outside_paint_pixels"] == 0
+        assert fallback["sourcePath"].startswith(f"slide[{slide_index}]/")
 
 
 @pytest.mark.asyncio
