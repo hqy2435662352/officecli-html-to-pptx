@@ -19,7 +19,11 @@ from officecli_html_to_pptx._internal.charts import (
     OfficeCLIChartAdapter,
     parse_chart_spec,
 )
-from officecli_html_to_pptx.application import build_author_html, check_author_html
+from officecli_html_to_pptx.application import (
+    _native_material_delta_count,
+    build_author_html,
+    check_author_html,
+)
 
 
 def _html(spec: str, *, chart_type: str = "column") -> str:
@@ -62,6 +66,116 @@ def _write(tmp_path: Path, source: str, name: str = "chart.html") -> Path:
     path = tmp_path / name
     path.write_text(source, encoding="utf-8")
     return path
+
+
+def _fault_injection_node() -> dict[str, object]:
+    return {
+        "type": "chart",
+        "path": "/slide[1]/chart[1]",
+        "format": {
+            "name": "presentation-chart",
+            "chartType": "column",
+            "categories": "Q1,Q2,Q3",
+            "x": "0pt",
+            "y": "0pt",
+            "width": "100pt",
+            "height": "100pt",
+        },
+        "children": [
+            {
+                "type": "series",
+                "format": {"name": "Revenue", "values": "10,20,30"},
+            }
+        ],
+    }
+
+
+def _fault_injection_xml(series_color: str | None) -> str:
+    color = (
+        f'<c:spPr><a:solidFill><a:srgbClr val="{series_color[1:]}"/>'
+        "</a:solidFill></c:spPr>"
+        if series_color is not None
+        else ""
+    )
+    return f"""<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart><c:plotArea><c:barChart><c:ser>
+    <c:tx><c:v>Revenue</c:v></c:tx>
+    <c:cat><c:strLit><c:ptCount val="3"/><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt><c:pt idx="2"><c:v>Q3</c:v></c:pt></c:strLit></c:cat>
+    <c:val><c:numLit><c:ptCount val="3"/><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt><c:pt idx="2"><c:v>30</c:v></c:pt></c:numLit></c:val>
+    {color}
+  </c:ser></c:barChart></c:plotArea></c:chart>
+</c:chartSpace>"""
+
+
+def _fault_injection_manifest(
+    chart: dict[str, object], seam: dict[str, object]
+) -> dict[str, object]:
+    return {
+        "slide_count": 1,
+        "slide_size_pt": {"width": 1920.0, "height": 1080.0},
+        "object_kind_counts": {"chart": 1},
+        "objects": [
+            {
+                "kind": "chart",
+                "name": "presentation-chart",
+                "native_kind": "chart",
+                "bounds_pt": [0.0, 0.0, 100.0, 100.0],
+                "chart": chart,
+                "chart_seam": seam,
+            }
+        ],
+    }
+
+
+def _fault_injection_expected(color: str) -> dict[str, object]:
+    chart: dict[str, object] = {
+        "type": "column",
+        "categories": ["Q1", "Q2", "Q3"],
+        "series": [{"name": "Revenue", "values": [10.0, 20.0, 30.0]}],
+        "labels": "none",
+    }
+    if color != "auto":
+        chart["series_colors"] = [color]
+    return _fault_injection_manifest(
+        chart,
+        {"series_colors": [color]},
+    )
+
+
+@pytest.mark.parametrize("native_color", ["#112233", None])
+def test_explicit_color_fault_injection_is_material(
+    native_color: str | None,
+) -> None:
+    readback = OfficeCLIChartAdapter.readback(
+        _fault_injection_node(),
+        raw_xml=_fault_injection_xml(native_color),
+        expected_series_colors=("#AA00BB",),
+    )
+
+    assert readback.series[0].color == (native_color or "auto")
+    actual = _fault_injection_manifest(
+        readback.semantic_dict(),
+        readback.as_dict(),
+    )
+    assert _native_material_delta_count(
+        _fault_injection_expected("#AA00BB"), actual
+    ) > 0
+
+
+def test_auto_color_fault_injection_ignores_office_rgb_materially() -> None:
+    readback = OfficeCLIChartAdapter.readback(
+        _fault_injection_node(),
+        raw_xml=_fault_injection_xml("#112233"),
+        expected_series_colors=("auto",),
+    )
+
+    assert readback.series[0].color == "auto"
+    assert readback.office_series_colors == ("#112233",)
+    actual = _fault_injection_manifest(
+        readback.semantic_dict(),
+        readback.as_dict(),
+    )
+    assert _native_material_delta_count(_fault_injection_expected("auto"), actual) == 0
 
 
 def test_chart_presentation_is_normalized_at_the_existing_typed_seam() -> None:

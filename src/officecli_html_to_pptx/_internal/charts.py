@@ -714,7 +714,7 @@ class OfficeCLIChartAdapter:
 
     @staticmethod
     def _raw_series_color(node: ElementTree.Element) -> str | None:
-        color_node = node.find(".//{*}spPr/{*}solidFill/{*}srgbClr")
+        color_node = node.find(".//{*}spPr//{*}solidFill/{*}srgbClr")
         if color_node is None:
             return None
         value = str(color_node.get("val", "") or "").strip()
@@ -955,11 +955,18 @@ class OfficeCLIChartAdapter:
                     if index < len(office_series_colors)
                     else None
                 )
+                # An omitted author color is the one case where the expected
+                # manifest supplies information the backend cannot preserve:
+                # the authored mode is ``auto`` even if Office chose an RGB.
+                # Explicit authored colors must remain the independent native
+                # readback value so missing or changed backend colors produce
+                # a material comparison finding.
+                readback_color = "auto" if authored_color == "auto" else item.color
                 normalized_series.append(
                     ChartSeriesSpec(
                         item.name,
                         item.values,
-                        color=authored_color,
+                        color=readback_color,
                         office_color=office_color,
                     )
                 )
