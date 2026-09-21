@@ -142,6 +142,16 @@ def _fault_injection_expected(color: str) -> dict[str, object]:
     )
 
 
+@pytest.mark.parametrize("length", ["25.4cm", "10in", "9144000emu"])
+def test_chart_readback_normalizes_physical_lengths_to_points(length: str) -> None:
+    node = _fault_injection_node()
+    node["format"]["width"] = length
+
+    readback = OfficeCLIChartAdapter.readback(node)
+
+    assert readback.bounds == pytest.approx((0.0, 0.0, 720.0, 100.0))
+
+
 @pytest.mark.parametrize("native_color", ["#112233", None])
 def test_explicit_color_fault_injection_is_material(
     native_color: str | None,

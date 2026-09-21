@@ -12,6 +12,8 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from officecli_html_to_pptx.application import (
     build_author_html,
     check_author_html,
@@ -94,6 +96,10 @@ def test_public_four_slide_workflow_proves_native_charts_and_finalize(
     assert {item["chart"]["type"] for item in readback_charts} == expected_types
     assert all(item["native_kind"] == "chart" for item in readback_charts)
     assert len(compiled_charts) == len(readback_charts) == 6
+    for chart in readback_charts:
+        assert chart["chart_seam"]["bounds_pt"] == pytest.approx(
+            chart["bounds_pt"]
+        )
 
     assert validation["status"] == "PASS"
     assert validation["returncode"] == 0

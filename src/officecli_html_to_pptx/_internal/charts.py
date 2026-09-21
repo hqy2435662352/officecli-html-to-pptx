@@ -16,6 +16,8 @@ from typing import Any, Mapping
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape as xml_escape
 
+from .pptx_reader import length_to_points
+
 
 CATEGORY_CHART_TYPES = ("column", "bar", "line")
 PART_TO_WHOLE_CHART_TYPES = ("pie", "doughnut")
@@ -972,19 +974,8 @@ class OfficeCLIChartAdapter:
                 )
             series = normalized_series
 
-        def point_value(value: Any) -> float:
-            text = str(value or "").strip().lower()
-            for suffix in ("pt", "emu", "cm", "mm", "in"):
-                if text.endswith(suffix):
-                    text = text[: -len(suffix)].strip()
-                    break
-            try:
-                return float(text)
-            except ValueError:
-                return 0.0
-
         bounds = tuple(
-            point_value(format_data.get(key))
+            length_to_points(format_data.get(key))
             for key in ("x", "y", "width", "height")
         )
         return ChartReadback(
