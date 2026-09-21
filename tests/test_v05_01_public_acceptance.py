@@ -36,10 +36,10 @@ def test_public_corpus_is_four_author_slides_and_keeps_projection_corpus_separat
 
 def test_release_authorities_publish_product_contract_and_five_commands() -> None:
     payload = get_capabilities().as_dict()
-    assert PRODUCT_VERSION == "0.5.1"
-    assert CONTRACT_VERSION == "1.1"
-    assert payload["product"]["version"] == "0.5.1"
-    assert payload["data"]["contract"]["version"] == "1.1"
+    assert PRODUCT_VERSION == "0.5.2"
+    assert CONTRACT_VERSION == "1.2"
+    assert payload["product"]["version"] == "0.5.2"
+    assert payload["data"]["contract"]["version"] == "1.2"
     assert payload["data"]["commands"] == [
         "capabilities",
         "doctor",

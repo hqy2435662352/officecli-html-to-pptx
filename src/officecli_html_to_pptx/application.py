@@ -1,4 +1,4 @@
-"""Task-oriented V0.5.1 application operations.
+"""Task-oriented V0.5.2 application operations.
 
 The module is deliberately an orchestration layer, not a second renderer.  It
 owns the public command semantics, the Artifact Pair transaction, and the
@@ -83,6 +83,7 @@ EVIDENCE_FILES = (
     "result.json",
     "visual-review.json",
 )
+_OFFICECLI_ISSUE_COUNT_RE = re.compile(r"\bFound\s+(\d+)\s+issue\(s\)", re.IGNORECASE)
 _PUBLISH_RETRIES = 40
 _PUBLISH_RETRY_DELAY_SECONDS = 0.25
 
@@ -313,14 +314,25 @@ def _build_target_error(output_path: Path, evidence_path: Path) -> CommandResult
 
 
 def _validate_build_output(path: Path) -> dict[str, Any]:
-    """Collect OfficeCLI validation without treating issues as a failure."""
+    """Collect the OfficeCLI validation result for the Artifact Pair."""
     text = str(_run_officecli("validate", path))
-    return {"status": "PASS", "output": text}
+    return {
+        "status": "PASS",
+        "output": text,
+        "returncode": 0,
+    }
 
 
 def _collect_issues(path: Path) -> dict[str, Any]:
     text = str(_run_officecli("view", path, "issues"))
-    return {"status": "PASS", "output": text}
+    match = _OFFICECLI_ISSUE_COUNT_RE.search(text)
+    issue_count = int(match.group(1)) if match else None
+    return {
+        "status": "PASS",
+        "output": text,
+        "issue_count": issue_count,
+        "returncode": 0,
+    }
 
 
 def _collect_readback(
@@ -497,8 +509,10 @@ def _native_slice_evidence(
     compiled: OfficeCLICompilationResult,
     readback: Mapping[str, Any],
     runtime: Mapping[str, Any],
+    validation: Mapping[str, Any] | None = None,
+    issues: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Summarize only the native-slice evidence required by Contract 1.1."""
+    """Summarize the native-slice evidence required by Contract 1.2."""
 
     capability = author_capability_manifest()
     compiled_objects = [
@@ -576,6 +590,12 @@ def _native_slice_evidence(
             if item.get("kind") == "chart"
         ],
     }
+    compiled_chart_count = sum(
+        item.get("kind") == "chart" for item in compiled_objects
+    )
+    readback_chart_count = sum(
+        item.get("kind") == "chart" for item in readback_objects
+    )
     compiler_diagnostics = [
         item.as_dict() for item in compiled.diagnostics
     ]
@@ -593,12 +613,19 @@ def _native_slice_evidence(
         "normalized_merge_topology": merge_topology,
         "native_geometry": native_geometry,
         "charts": chart_structure,
+        "validation": dict(validation or {}),
+        "issues": dict(issues or {}),
         "counts": {
             "authored_object_count": int(compiled.object_count),
             "compiled_object_count": len(compiled_objects),
             "readback_object_count": len(readback_objects),
             "compiled_object_kind_counts": _manifest_object_counts(compiled.manifest),
             "readback_object_kind_counts": _manifest_object_counts(readback),
+            "chart_counts": {
+                "authored": compiled_chart_count,
+                "compiled": compiled_chart_count,
+                "readback": readback_chart_count,
+            },
         },
         "diagnostics": {
             "unsupported": sum(
@@ -823,6 +850,8 @@ async def build_author_html(
             compiled=compiled,
             readback=readback,
             runtime=diagnosis.data.get("runtime", {}),
+            validation=validation,
+            issues=issues,
         )
         staged_evidence.mkdir(parents=True, exist_ok=False)
         comparison_dir = staged_evidence / "comparisons"
@@ -1193,6 +1222,10 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
             "issues.json",
         ):
             _read_json(evidence_path / name, name)
+        validation = _read_json(evidence_path / "validate.json", "validate.json")
+        issues = _read_json(evidence_path / "issues.json", "issues.json")
+        if validation.get("status") != "PASS":
+            raise ValueError("validate.json does not record OfficeCLI validation PASS")
         native_evidence = _read_json(
             evidence_path / "native-evidence.json", "native-evidence.json"
         )
@@ -1210,7 +1243,7 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
         if not str(officecli_runtime.get("discovered_version", "")).strip():
             raise ValueError("native-evidence.json must record the actual OfficeCLI runtime")
         if officecli_runtime.get("compatible") is not True:
-            raise ValueError("native-evidence.json OfficeCLI runtime is below the Contract 1.1 floor")
+            raise ValueError("native-evidence.json OfficeCLI runtime is below the Contract 1.2 floor")
         diagnostic_counts = _field_mapping(
             native_evidence.get("diagnostics"), "native evidence diagnostics"
         )
@@ -1222,12 +1255,29 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
         counts = _field_mapping(native_evidence.get("counts"), "native evidence counts")
         if counts.get("readback_object_count") != len(readback.get("objects", []) or []):
             raise ValueError("native-evidence.json readback object count does not match readback.json")
+        chart_counts = counts.get("chart_counts", {})
+        if isinstance(chart_counts, Mapping) and any(chart_counts.values()):
+            if chart_counts.get("authored") != chart_counts.get("compiled"):
+                raise ValueError("native-evidence.json authored and compiled chart counts differ")
+            if chart_counts.get("compiled") != chart_counts.get("readback"):
+                raise ValueError("native-evidence.json compiled and readback chart counts differ")
+            if issues.get("status") != "PASS" or issues.get("issue_count") != 0:
+                raise ValueError("issues.json must record zero OfficeCLI issues for native-chart finalization")
+            charts = _field_mapping(native_evidence.get("charts"), "native evidence charts")
+            compiled_charts = charts.get("compiled", [])
+            readback_charts = charts.get("readback", [])
+            if not isinstance(compiled_charts, list) or not isinstance(readback_charts, list):
+                raise ValueError("native-evidence.json chart evidence must contain lists")
+            if len(compiled_charts) != chart_counts.get("compiled") or len(readback_charts) != chart_counts.get("readback"):
+                raise ValueError("native-evidence.json chart evidence count does not match chart_counts")
+            if any(item.get("native_kind") != "chart" for item in readback_charts if isinstance(item, Mapping)):
+                raise ValueError("native-evidence.json readback chart proof is not native")
         if result_payload.get("schema_version") != 1:
             raise ValueError("result.json has an unsupported schema_version")
         if result_payload.get("product") != {"name": PRODUCT_NAME, "version": PRODUCT_VERSION}:
             raise ValueError("result.json product identity does not match this product")
         if result_payload.get("status") != "VISUAL_REVIEW_REQUIRED":
-            raise ValueError("result.json is not a pending V0.5.1 build")
+            raise ValueError("result.json is not a pending V0.5.2 build")
         build_id = result_payload.get("build_id")
         if not isinstance(build_id, str) or not build_id:
             raise ValueError("result.json must contain a build_id")

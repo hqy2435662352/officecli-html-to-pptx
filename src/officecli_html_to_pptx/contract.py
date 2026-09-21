@@ -15,18 +15,31 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from lxml import html as _lxml_html
 
-from ._internal.charts import ChartSpecError, parse_chart_spec
+from ._internal.charts import (
+    CATEGORY_CHART_TYPES,
+    CHART_TYPES,
+    DOUGHNUT_HOLE_SIZE,
+    PART_TO_WHOLE_CHART_TYPES,
+    ChartSpecError,
+    parse_chart_spec,
+)
 
-CONTRACT_VERSION = "1.1"
+CONTRACT_VERSION = "1.2"
 OFFICECLI_COMPATIBILITY_BASELINE = "1.0.151"
 SUPPORTED_PROFILES = ("author", "officehtml")
-SUPPORTED_OBJECT_KINDS = frozenset({"shape", "textbox", "picture", "table"})
+SUPPORTED_OBJECT_KINDS = frozenset({"shape", "textbox", "picture", "table", "chart"})
+# The Contract 1.2 chart surface is Author-only. OfficeHTML remains the
+# V0.5.1 import/projection profile and must continue to reject deferred chart
+# objects instead of implying chart round-trip support.
+_OFFICEHTML_SUPPORTED_OBJECT_KINDS = frozenset(
+    {"shape", "textbox", "picture", "table"}
+)
 AUTHOR_CANVAS_SIZES = ((1920.0, "px", 1080.0, "px"), (960.0, "px", 540.0, "px"))
 AUTHOR_PICTURE_SOURCE = "data:image/..."
 AUTHOR_EXTERNAL_RESOURCES_ALLOWED = False
 AUTHOR_TABLE_CELL_SPANS = True
 SHAPE_GEOMETRY_ATTRIBUTE = "data-pptx-shape-geometry"
-# This is the Contract 1.1 authority for the public native-shape annotation.
+# This is the Contract 1.2 authority for the public native-shape annotation.
 # Keep the order stable: it is part of the machine-readable capability output
 # and mirrors the public ticket's acceptance checklist.
 SHAPE_GEOMETRY_TOKENS = (
@@ -173,7 +186,7 @@ _UNSUPPORTED_CSS_PROPERTIES = frozenset(
         "text-transform",
         "text-shadow",
         # Letter spacing is measurable by Chromium but is not part of the
-        # Contract 1.1 native run matrix.  It must fail closed rather than
+        # Contract 1.2 native run matrix.  It must fail closed rather than
         # silently disappear in the PowerPoint text body.
         "letter-spacing",
         "transition",
@@ -272,17 +285,17 @@ TEXT_ALIGNMENT_MAPPING = {
 }
 LINE_HEIGHT_PROPERTY = "line-height"
 PARAGRAPH_SPACING_PROPERTIES = ("margin-top", "margin-bottom")
-# Contract 1.1 deliberately has no CSS-pixel projection: a used line-height in
+# Contract 1.2 deliberately has no CSS-pixel projection: a used line-height in
 # px is divided by the element font size directly.  The scale constant remains
 # public for older callers, but its only valid value is the identity scale.
 LINE_HEIGHT_PX_PROJECTION_SCALE = 1.0
 # These names existed in the pre-1.1 compiler and remain as inert compatibility
-# symbols while downstream callers migrate.  Contract 1.1 never consults them
+# symbols while downstream callers migrate.  Contract 1.2 never consults them
 # to select a formatting or geometry exception.
 SOURCE_FIDELITY_LINE_SPACING_TEXT = ""
 SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX = 0.0
 # Chromium's measured visual lines are evidence only.  They never become native
-# paragraph boundaries or hard breaks in Contract 1.1.
+# paragraph boundaries or hard breaks in Contract 1.2.
 SOFT_WRAP_MODEL = {
     "representation": "measurement-and-evidence-only",
     "measured_property": "visualLines",
@@ -674,6 +687,85 @@ def _resolve_text_alignment(element: Mapping[str, Any]) -> str:
     return value if value in TEXT_ALIGNMENT_VALUES else TEXT_ALIGNMENT_DEFAULT
 
 
+def chart_surface() -> dict[str, Any]:
+    """Return the closed public Contract 1.2 chart protocol.
+
+    The chart parser and adapter own enforcement and lowering. This manifest
+    is the public description of that implemented surface; it intentionally
+    does not expose OfficeCLI paths, commands, or backend format strings.
+    """
+    return {
+        "annotation": "data-pptx-chart",
+        "spec_annotation": "data-pptx-chart-spec",
+        "spec_mime_type": "application/json",
+        "atomic": True,
+        "identity": {
+            "explicit": "trimmed HTML id",
+            "fallback": "deterministic source path",
+        },
+        "geometry": "measured outer chart-container box",
+        "types": list(CHART_TYPES),
+        "category_charts": {
+            "types": list(CATEGORY_CHART_TYPES),
+            "series": {"min": 1, "max": 3},
+            "categories": {"min": 1, "max": 12},
+            "values": "exact category cardinality; finite JSON numbers only",
+        },
+        "part_to_whole_charts": {
+            "types": list(PART_TO_WHOLE_CHART_TYPES),
+            "series": {"exact": 1},
+            "categories": {"min": 2, "max": 6},
+            "values": "finite, non-negative JSON numbers with positive sum",
+        },
+        "categories": {
+            "type": "string",
+            "non_empty_after_trim": True,
+            "duplicates": "preserved",
+            "order": "material",
+        },
+        "series": {
+            "name": "unique non-empty string after trim",
+            "order": "material",
+            "color": "optional six-digit #RRGGBB; omitted is authored auto",
+        },
+        "presentation": {
+            "title": "optional plain non-empty string",
+            "legend": ["none", "top", "bottom", "left", "right"],
+            "labels": ["none", "value", "percent"],
+            "axis_titles": "optional plain titles for category/value axes on Cartesian charts",
+            "number_format": [
+                "general",
+                "integer",
+                "integer-group",
+                "decimal1",
+                "decimal1-group",
+                "percent0",
+                "percent1",
+            ],
+        },
+        "defaults": {
+            "legend": "none",
+            "labels": "none",
+            "series_color": "auto",
+            "doughnut_hole_size": DOUGHNUT_HOLE_SIZE,
+        },
+        "preview_descendants": "excluded-from-generic-lowering",
+        "strict_json": {
+            "duplicate_keys": "rejected",
+            "unknown_fields": "rejected-recursively",
+            "non_finite_constants": "rejected",
+        },
+        "fallback": "unsupported",
+        "exclusions": [
+            "chart-specific command",
+            "OfficeCLI format-string passthrough",
+            "authored holeSize",
+            "general or chart fallback",
+            "advanced chart families",
+        ],
+    }
+
+
 def author_capability_manifest() -> dict[str, Any]:
     """Return the Author support claims owned by the Contract checker."""
     return {
@@ -702,6 +794,7 @@ def author_capability_manifest() -> dict[str, Any]:
             "external_resources": AUTHOR_EXTERNAL_RESOURCES_ALLOWED,
         },
         "table_cell_spans": AUTHOR_TABLE_CELL_SPANS,
+        "chart_surface": chart_surface(),
     }
 
 _CSS_BLOCK_RE = re.compile(r"(?P<selectors>[^{}]+)\{(?P<body>[^{}]*)\}", re.DOTALL)
@@ -1435,7 +1528,7 @@ def _check_css_value(
         raw = value.strip().lower()
         if parsed is None or parsed[0] <= 0 or parsed[1] not in {"px"}:
             # A unitless positive number is the one non-length line-height
-            # form accepted by Contract 1.1.  ``_parse_length`` normalizes a
+            # form accepted by Contract 1.2.  ``_parse_length`` normalizes a
             # missing unit to px for the general geometry grammar, so inspect
             # the source spelling separately here.
             if not re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)", raw) or float(raw) <= 0:
@@ -1515,7 +1608,7 @@ def _check_css_value(
             findings,
             profile,
             "unsupported_visible_css",
-            "vertical writing modes are outside OfficeCLI Contract 1.1.",
+            "vertical writing modes are outside OfficeCLI Contract 1.2.",
             source_object,
         )
 
@@ -1684,7 +1777,7 @@ def _check_author(
                 findings,
                 "author",
                 "unsupported_hyperlink",
-                "Hyperlink targets are outside the Contract 1.1 native run matrix.",
+                "Hyperlink targets are outside the Contract 1.2 native run matrix.",
                 _node_path(element),
             )
         if tag == "table":
@@ -1921,7 +2014,7 @@ def _check_officehtml(
                 source,
             )
         seen_paths.add(source)
-        if kind not in SUPPORTED_OBJECT_KINDS:
+        if kind not in _OFFICEHTML_SUPPORTED_OBJECT_KINDS:
             _emit(
                 findings,
                 "officehtml",
@@ -2078,6 +2171,7 @@ __all__ = [
     "SUPPORTED_CSS_PROPERTIES",
     "ContractDiagnostic",
     "ContractReport",
+    "chart_surface",
     "author_capability_manifest",
     "paragraph_layout_surface",
     "shape_geometry_surface",

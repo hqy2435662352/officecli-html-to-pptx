@@ -35,6 +35,35 @@ meaningful visible details that the brief or reference establishes.
    visible external resources out of the normal workbench unless the Contract
    explicitly accepts that form.
 
+### Explicit native charts (Contract 1.2)
+
+When a chart is needed, make its semantics explicit instead of drawing bars,
+lines, or slices as ordinary HTML. Mark one measured outer container with
+`data-pptx-chart` and put exactly one inert
+`<script type="application/json" data-pptx-chart-spec>` inside it. The strict
+JSON spec is the sole source of chart type, ordered categories, ordered series,
+values, and closed presentation tokens; do not put a second spec in the
+container or use OfficeCLI command syntax in Author HTML.
+
+The case-sensitive `type` must be one of `column`, `bar`, `line`, `pie`, or
+`doughnut`. Category charts accept 1–3 series and 1–12 categories. Pie and
+doughnut charts accept one series, 2–6 categories, finite non-negative values,
+and a positive total. Categories must be non-empty strings after trimming and
+may repeat; series names must be unique after trimming; values must be finite
+JSON numbers. Use only the semantic presentation tokens reported by
+`capabilities --json`: title, legend `none`/`top`/`bottom`/`left`/`right`,
+labels `none`/`value`/`percent`, Cartesian axis titles, the seven semantic
+number formats, and optional six-digit `#RRGGBB` series colors. Omit a color to
+record authored `auto`. `percent` labels and axes are type-specific; authored
+`holeSize` is rejected and doughnut uses its fixed private default.
+
+The outer container's measured box controls placement and size. A browser
+preview may be included for authoring, but every descendant is excluded from
+generic lowering and never becomes a second native object. Keep the container
+visible, measurable, and non-zero-sized. Unknown fields, duplicate JSON keys,
+non-finite constants, nested chart containers, unsupported combinations, and
+chart fallback fail the Contract check.
+
 ### Native shape geometry
 
 For a visible shape that needs a non-rectangular native PowerPoint preset, use

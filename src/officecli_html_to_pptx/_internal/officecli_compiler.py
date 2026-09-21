@@ -527,7 +527,7 @@ def _paragraph_line_spacing(
     pixels = re.search(r"(?:px|pt)\s*$", str(raw_line_height).strip(), re.IGNORECASE)
     font_size = element_size if pixels else (run_size or element_size)
     # The keyword arguments remain accepted for callers from the previous
-    # compiler surface, but Contract 1.1 has one line-height rule for every
+    # compiler surface, but Contract 1.2 has one line-height rule for every
     # native paragraph: positive px is divided by the element font size with
     # no content- or profile-specific projection.
     return _line_spacing(
@@ -1685,7 +1685,7 @@ def _border_radius(element: dict[str, Any]) -> float:
     return max(0.0, float(match.group(0))) if match else 0.0
 
 
-# The preset geometries the Contract 1.1 Author shape surface carries as
+# The preset geometries the Contract 1.2 Author shape surface carries as
 # PowerPoint presets rather than inferring from CSS.  The authority lives in the
 # Contract module so the compiler and public capability manifest cannot drift.
 DECLARED_SHAPE_GEOMETRIES = SHAPE_GEOMETRY_TOKEN_SET
@@ -1703,7 +1703,7 @@ def _is_fifty_percent_radius(element: dict[str, Any]) -> bool:
 
 
 def _ellipse_inference_allowed(element: dict[str, Any]) -> bool:
-    """Apply the Contract 1.1 tolerance for CSS 50% ellipse inference."""
+    """Apply the Contract 1.2 tolerance for CSS 50% ellipse inference."""
     if not _is_fifty_percent_radius(element):
         return False
     width = _number(element.get("width"))
@@ -2312,7 +2312,7 @@ def _table_cell_paragraph_props(
     if any(props != first for props in projected[1:]):
         raise _diagnostic(
             "unsupported_table_paragraph_format",
-            f"Table cell paragraph properties differ on source slide {source_slide}, {source_object}; OfficeCLI Contract 1.1 exposes these properties at cell scope.",
+            f"Table cell paragraph properties differ on source slide {source_slide}, {source_object}; OfficeCLI Contract 1.2 exposes these properties at cell scope.",
             source_slide,
             source_object,
         )
@@ -3151,7 +3151,7 @@ def _batch_for_slides(
                     if cell.paragraphs:
                         cell_path = f"{table_path}/tr[{row_index}]/tc[{column_index}]"
                         # OfficeCLI's table-cell setter is the public paragraph
-                        # formatting surface for Contract 1.1: align,
+                        # formatting surface for Contract 1.2: align,
                         # linespacing, spacebefore, spaceafter, and direction
                         # fan out to every paragraph in the cell.  Those
                         # properties were projected into ``cell.props`` above;
@@ -3303,7 +3303,7 @@ async def compile_officecli(
         raise _contract_failure(contract)
 
     # This is intentionally before Chromium measurement and before the first
-    # temporary PPTX is created.  Contract 1.1 depends on OfficeCLI 1.0.151's
+    # temporary PPTX is created.  Contract 1.2 depends on OfficeCLI 1.0.151's
     # native line-break and merge behavior and must not leave a misleading
     # partial artifact when an older runtime is selected.
     runtime_snapshot = _require_officecli_runtime()

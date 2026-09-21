@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "officecli-html-to-pptx"
-version = "0.5.1"
+version = "0.5.2"
 description = "Build new editable PowerPoint decks from Contract-checked Author HTML through OfficeCLI."
 readme = "README.md"
 license = "MIT"
