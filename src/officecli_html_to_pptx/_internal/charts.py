@@ -1,4 +1,4 @@
-"""Private category-chart semantics and the narrow OfficeCLI chart adapter.
+"""Private native-chart semantics and the narrow OfficeCLI chart adapter.
 
 The Author Contract owns the JSON shape and its validation.  This module keeps
 that normalized value model separate from OfficeCLI's string-based chart
@@ -17,7 +17,12 @@ from xml.sax.saxutils import escape as xml_escape
 
 
 CATEGORY_CHART_TYPES = ("column", "bar", "line")
-_CATEGORY_CHART_TYPE_SET = frozenset(CATEGORY_CHART_TYPES)
+PART_TO_WHOLE_CHART_TYPES = ("pie", "doughnut")
+CHART_TYPES = CATEGORY_CHART_TYPES + PART_TO_WHOLE_CHART_TYPES
+_CHART_TYPE_SET = frozenset(CHART_TYPES)
+_PART_TO_WHOLE_TYPE_SET = frozenset(PART_TO_WHOLE_CHART_TYPES)
+_CHART_LABEL_MODES = frozenset({"none", "value", "percent"})
+DOUGHNUT_HOLE_SIZE = 50
 
 
 class ChartSpecError(ValueError):
@@ -31,7 +36,7 @@ class ChartSpecError(ValueError):
 
 @dataclass(frozen=True)
 class ChartSeriesSpec:
-    """One ordered, named category-chart series."""
+    """One ordered, named native-chart series."""
 
     name: str
     values: tuple[float, ...]
@@ -50,14 +55,20 @@ class ChartSpec:
     categories: tuple[str, ...]
     series: tuple[ChartSeriesSpec, ...]
     bounds: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    data_labels: str = "none"
+    doughnut_hole_size: int | None = None
 
     def semantic_dict(self) -> dict[str, Any]:
         """Return only normalized material chart semantics."""
-        return {
+        result: dict[str, Any] = {
             "type": self.chart_type,
             "categories": list(self.categories),
             "series": [series.as_dict() for series in self.series],
+            "labels": self.data_labels,
         }
+        if self.doughnut_hole_size is not None:
+            result["hole_size"] = self.doughnut_hole_size
+        return result
 
     def as_dict(self) -> dict[str, Any]:
         """Return seam metadata plus normalized chart semantics for Evidence."""
@@ -80,13 +91,19 @@ class ChartReadback:
     chart_type: str
     categories: tuple[str, ...]
     series: tuple[ChartSeriesSpec, ...]
+    data_labels: str = "none"
+    doughnut_hole_size: int | None = None
 
     def semantic_dict(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "type": self.chart_type,
             "categories": list(self.categories),
             "series": [series.as_dict() for series in self.series],
         }
+        result["labels"] = self.data_labels
+        if self.doughnut_hole_size is not None:
+            result["hole_size"] = self.doughnut_hole_size
+        return result
 
     def as_dict(self) -> dict[str, Any]:
         """Return independent native seam metadata and normalized semantics."""
@@ -185,21 +202,26 @@ def parse_chart_spec(
     source_identity: str | None = None,
     bounds: tuple[float, float, float, float] | None = None,
 ) -> ChartSpec:
-    """Parse one strict category-chart spec without executing embedded data."""
+    """Parse one strict native-chart spec without executing embedded data."""
     root = _parse_json(raw, source_object)
     root = _expect_object(root, source_object, "root")
+    chart_type = _required_string(root, "type", source_object, "root")
+    if chart_type not in _CHART_TYPE_SET:
+        raise ChartSpecError(
+            "unsupported_chart_type",
+            f"Chart type {chart_type!r} at {source_object} is outside the native-chart surface.",
+        )
     _reject_unknown_fields(
         root,
-        frozenset({"type", "categories", "series"}),
+        frozenset({"type", "categories", "series", "presentation", "holeSize"}),
         source_object,
         "root",
     )
 
-    chart_type = _required_string(root, "type", source_object, "root")
-    if chart_type not in _CATEGORY_CHART_TYPE_SET:
+    if "holeSize" in root:
         raise ChartSpecError(
-            "unsupported_chart_type",
-            f"Chart type {chart_type!r} at {source_object} is outside the category-chart surface.",
+            "part_to_whole_hole_size_unsupported",
+            f"Authored holeSize at {source_object} is not part of the native-chart Contract.",
         )
 
     categories_value = root.get("categories")
@@ -208,7 +230,12 @@ def parse_chart_spec(
             "invalid_chart_categories",
             f"Chart spec categories at {source_object} must be a non-empty JSON array.",
         )
-    if len(categories_value) > 12:
+    if chart_type in _PART_TO_WHOLE_TYPE_SET and not 2 <= len(categories_value) <= 6:
+        raise ChartSpecError(
+            "part_to_whole_category_limit",
+            f"Chart spec at {source_object} supports 2 to 6 categories for {chart_type} charts.",
+        )
+    if chart_type in CATEGORY_CHART_TYPES and len(categories_value) > 12:
         raise ChartSpecError(
             "chart_category_limit",
             f"Chart spec at {source_object} supports at most 12 categories.",
@@ -223,12 +250,22 @@ def parse_chart_spec(
         categories.append(category.strip())
 
     series_value = root.get("series")
-    if not isinstance(series_value, list) or not series_value:
+    if not isinstance(series_value, list):
         raise ChartSpecError(
             "invalid_chart_series",
             f"Chart spec series at {source_object} must be a non-empty JSON array.",
         )
-    if len(series_value) > 3:
+    if chart_type in _PART_TO_WHOLE_TYPE_SET and len(series_value) != 1:
+        raise ChartSpecError(
+            "part_to_whole_series_count",
+            f"Chart spec at {source_object} requires exactly one series for {chart_type} charts.",
+        )
+    if chart_type in CATEGORY_CHART_TYPES and not series_value:
+        raise ChartSpecError(
+            "invalid_chart_series",
+            f"Chart spec series at {source_object} must be a non-empty JSON array.",
+        )
+    if chart_type in CATEGORY_CHART_TYPES and len(series_value) > 3:
         raise ChartSpecError(
             "chart_series_limit",
             f"Chart spec at {source_object} supports at most 3 series.",
@@ -291,6 +328,56 @@ def parse_chart_spec(
             values.append(converted)
         series.append(ChartSeriesSpec(normalized_name, tuple(values)))
 
+    data_labels = "none"
+    presentation_value = root.get("presentation")
+    if presentation_value is not None:
+        presentation = _expect_object(presentation_value, source_object, "presentation")
+        if chart_type in _PART_TO_WHOLE_TYPE_SET:
+            if "categoryAxis" in presentation or "valueAxis" in presentation:
+                raise ChartSpecError(
+                    "part_to_whole_axis_unsupported",
+                    f"Pie and doughnut charts at {source_object} cannot declare categoryAxis or valueAxis.",
+                )
+            if "holeSize" in presentation:
+                raise ChartSpecError(
+                    "part_to_whole_hole_size_unsupported",
+                    f"Authored holeSize at {source_object} is not part of the native-chart Contract.",
+                )
+        _reject_unknown_fields(
+            presentation,
+            frozenset({"labels"}),
+            source_object,
+            "presentation",
+        )
+        raw_labels = presentation.get("labels", "none")
+        if not isinstance(raw_labels, str) or raw_labels not in _CHART_LABEL_MODES:
+            raise ChartSpecError(
+                "invalid_chart_labels",
+                f"Chart labels at {source_object} must be one of none, value, or percent.",
+            )
+        data_labels = raw_labels
+    if data_labels == "percent" and chart_type in CATEGORY_CHART_TYPES:
+        raise ChartSpecError(
+            "chart_percent_labels_type",
+            f"Percent labels are supported only for pie and doughnut charts at {source_object}.",
+        )
+
+    doughnut_hole_size: int | None = None
+    if chart_type in _PART_TO_WHOLE_TYPE_SET:
+        values = series[0].values
+        if any(value < 0 for value in values):
+            raise ChartSpecError(
+                "part_to_whole_negative_value",
+                f"{chart_type.title()} chart values at {source_object} must be non-negative.",
+            )
+        if sum(values) <= 0:
+            raise ChartSpecError(
+                "part_to_whole_zero_total",
+                f"{chart_type.title()} chart values at {source_object} must have a positive total.",
+            )
+        if chart_type == "doughnut":
+            doughnut_hole_size = DOUGHNUT_HOLE_SIZE
+
     identity = str(
         source_identity if source_identity is not None else source_object
     ).strip()
@@ -303,6 +390,8 @@ def parse_chart_spec(
         categories=tuple(categories),
         series=tuple(series),
         bounds=_normalize_bounds(bounds),
+        data_labels=data_labels,
+        doughnut_hole_size=doughnut_hole_size,
     )
 
 
@@ -326,9 +415,9 @@ def _number_text(value: float) -> str:
 
 
 class OfficeCLIChartAdapter:
-    """Private mapping between normalized category charts and OfficeCLI props."""
+    """Private mapping between normalized native charts and OfficeCLI props."""
 
-    _TYPE_MAP = {chart_type: chart_type for chart_type in CATEGORY_CHART_TYPES}
+    _TYPE_MAP = {chart_type: chart_type for chart_type in CHART_TYPES}
     _READBACK_TYPE_MAP = {
         "column": "column",
         "columnclustered": "column",
@@ -336,6 +425,8 @@ class OfficeCLIChartAdapter:
         "barclustered": "bar",
         "line": "line",
         "lineclustered": "line",
+        "pie": "pie",
+        "doughnut": "doughnut",
     }
 
     @classmethod
@@ -352,7 +443,7 @@ class OfficeCLIChartAdapter:
             f"Series{index}:{','.join(_number_text(value) for value in series.values)}"
             for index, series in enumerate(spec.series, start=1)
         )
-        return {
+        props = {
             "chartType": cls._TYPE_MAP[spec.chart_type],
             "data": placeholder_data,
             "categories": ",".join(
@@ -363,6 +454,10 @@ class OfficeCLIChartAdapter:
             "width": f"{width:.4f}pt",
             "height": f"{height:.4f}pt",
         }
+        props["dataLabels"] = spec.data_labels
+        if spec.doughnut_hole_size is not None:
+            props["holeSize"] = str(spec.doughnut_hole_size)
+        return props
 
     @classmethod
     def write_commands(
@@ -463,6 +558,33 @@ class OfficeCLIChartAdapter:
             series.append(ChartSeriesSpec(name, values))
         return categories, tuple(series)
 
+    @staticmethod
+    def _raw_presentation(
+        raw_xml: str,
+    ) -> tuple[str | None, int | None]:
+        root = ElementTree.fromstring(raw_xml)
+        labels: str | None = None
+        labels_node = root.find(".//{*}dLbls")
+        if labels_node is not None:
+            show_value = labels_node.find("{*}showVal")
+            show_percent = labels_node.find("{*}showPercent")
+            value_enabled = show_value is not None and show_value.get("val") == "1"
+            percent_enabled = show_percent is not None and show_percent.get("val") == "1"
+            if percent_enabled:
+                labels = "percent"
+            elif value_enabled:
+                labels = "value"
+            else:
+                labels = "none"
+        hole_node = root.find(".//{*}doughnutChart/{*}holeSize")
+        hole_size: int | None = None
+        if hole_node is not None:
+            try:
+                hole_size = int(hole_node.get("val", ""))
+            except (TypeError, ValueError):
+                hole_size = None
+        return labels, hole_size
+
     @classmethod
     def readback(
         cls,
@@ -472,6 +594,16 @@ class OfficeCLIChartAdapter:
         format_data = node.get("format", {})
         raw_chart_type = str(format_data.get("chartType", "") or "").lower()
         chart_type = cls._READBACK_TYPE_MAP.get(raw_chart_type, raw_chart_type)
+        data_labels = str(format_data.get("dataLabels", "none") or "none").lower()
+        if data_labels not in _CHART_LABEL_MODES:
+            data_labels = "none"
+        doughnut_hole_size: int | None = None
+        raw_hole_size = format_data.get("holeSize")
+        if raw_hole_size not in (None, ""):
+            try:
+                doughnut_hole_size = int(float(str(raw_hole_size).strip()))
+            except (TypeError, ValueError):
+                doughnut_hole_size = None
         series_nodes = [
             child
             for child in node.get("children", []) or []
@@ -493,6 +625,11 @@ class OfficeCLIChartAdapter:
                 categories = raw_categories
             if raw_series:
                 series = list(raw_series)
+            raw_labels, raw_hole_size = cls._raw_presentation(raw_xml)
+            if raw_labels is not None:
+                data_labels = raw_labels
+            if raw_hole_size is not None:
+                doughnut_hole_size = raw_hole_size
 
         def point_value(value: Any) -> float:
             text = str(value or "").strip().lower()
@@ -517,11 +654,16 @@ class OfficeCLIChartAdapter:
             chart_type=chart_type,
             categories=categories,
             series=tuple(series),
+            data_labels=data_labels,
+            doughnut_hole_size=doughnut_hole_size,
         )
 
 
 __all__ = [
+    "CHART_TYPES",
     "CATEGORY_CHART_TYPES",
+    "DOUGHNUT_HOLE_SIZE",
+    "PART_TO_WHOLE_CHART_TYPES",
     "ChartReadback",
     "ChartSeriesSpec",
     "ChartSpec",
