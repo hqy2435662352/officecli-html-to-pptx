@@ -46,7 +46,7 @@ def test_capabilities_are_author_only_and_use_product_envelope(
     assert payload["status"] == "PASS"
     assert payload["product"] == {
         "name": "officecli-html-to-pptx",
-        "version": "0.5.1",
+        "version": "0.5.2",
     }
     assert payload["data"]["commands"] == [
         "capabilities",
@@ -242,7 +242,7 @@ def _patch_successful_build(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         application,
         "_collect_readback",
-        lambda _: {
+        lambda *_: {
             "slide_count": 1,
             "slide_size_pt": {"width": 960.0, "height": 540.0},
             "object_kind_counts": {"shape": 1},

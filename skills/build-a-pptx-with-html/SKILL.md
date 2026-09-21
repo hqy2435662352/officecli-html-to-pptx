@@ -28,7 +28,7 @@ keep compiler and validation logic out of this Skill.
 
 ## Boundaries
 
-This is the Product Version `0.5.1` new-deck workflow. Begin with HTML,
+This is the Product Version `0.5.2` new-deck workflow. Begin with HTML,
 references, or a brief and create a new PPTX. A task that starts by editing an
 existing PPTX belongs to the separate presentation-editing workflow.
 
@@ -55,14 +55,20 @@ not install or upgrade a runtime without explicit user permission. A failed
 Contract check is a remediation signal, not authorization to change the
 Contract or product source.
 
-For Product 0.5.1, the Contract version is 1.1 and the public native slices
-are authored paragraph/hard-break/empty-paragraph structure, the frozen run and
-paragraph matrix, legal rectangular merged tables with normalized topology, and
-the closed `data-pptx-shape-geometry` preset allowlist. Browser `visualLines`
-remain measurement/evidence only. The public four-slide corpus is
-`tests/fixtures/v05_01_public_corpus.html`; the V0.4 projection corpus is a
-separate regression asset and never counts toward this gate. Charts are
-reserved for V0.5.2 and general localized fallback for V0.6.
+For Product 0.5.2, the Contract version is 1.2. It retains the V0.5.1 native
+paragraph, frozen text, merged-table, and `data-pptx-shape-geometry` slices and
+adds explicitly authored native `column`, `bar`, `line`, `pie`, and `doughnut`
+charts. Author one chart as an atomic `data-pptx-chart` container with exactly
+one inert `script type="application/json" data-pptx-chart-spec`. The strict
+JSON spec is the only source of chart semantics; the measured outer container
+is the geometry authority. Optional preview content and the entire descendant
+subtree are excluded from generic lowering, so they cannot become duplicate
+shapes, textboxes, pictures, or charts. Use the `chart_surface` section of
+`capabilities --json` for exact limits, tokens, defaults, and exclusions.
+Browser `visualLines` remain measurement/evidence only. The public four-slide
+corpus is `tests/fixtures/v05_02_public_corpus.html`; the V0.5.1 corpus and
+V0.4 projection corpus remain separate regression assets and never count toward
+the V0.5.2 chart gate. General localized fallback remains reserved for V0.6.
 
 ## Contract-first sequence
 
@@ -125,7 +131,8 @@ decision needs an otherwise unknown flag or artifact rule.
 **Completion criterion:** a new matching PPTX and Evidence Bundle exist, and
 the Core Product reports that the structural build stages passed for that
 Artifact Pair. The bundle includes an independent OfficeCLI readback and the
-native-slice evidence required by Contract 1.1; the actual OfficeCLI runtime
+  native-slice evidence required by Contract 1.2, including chart counts and
+  normalized chart readback; the actual OfficeCLI runtime
 must be at least `1.0.151`.
 
 ### 4. Review and finalize

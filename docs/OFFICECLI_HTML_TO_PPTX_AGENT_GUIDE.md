@@ -51,18 +51,19 @@ page dimensions.
 - Validate the delivered PPTX with OfficeCLI, inspect text and structure, and
   review a screenshot of every slide.
 - Report known baseline findings separately from regressions.
-- Product 0.5.1 keeps the five public commands unchanged and requires Contract
-  1.1 with OfficeCLI `>=1.0.151`; a lower runtime must fail before measurement
+- Product 0.5.2 keeps the five public commands unchanged and requires Contract
+  1.2 with OfficeCLI `>=1.0.151`; a lower runtime must fail before measurement
   or output creation.
 - For a public release gate, retain the four-slide corpus, independent
   OfficeCLI readback, `validate`/`issues`, and one reviewed Comparison Image per
   slide. Record the actual runtime, text structure/matrix, normalized merge
-  topology, native geometry, object/readback counts, diagnostics/material delta,
-  and Gate 3 result. Do not add a V0.6 fallback taxonomy.
+  topology, native geometry, chart structures and counts, object/readback
+  counts, diagnostics/material delta, and Gate 3 result. Do not add a V0.6
+  fallback taxonomy.
 
 ## Environment setup
 
-The current Contract 1.1 release is pinned to OfficeCLI `1.0.151`. Windows and Linux are
+The current Contract 1.2 release is pinned to OfficeCLI `1.0.151`. Windows and Linux are
 supported build platforms; `doctor --json` decides for the machine in front of
 you, and `capabilities --json` reports the running platform alongside the
 supported set.
@@ -70,7 +71,8 @@ supported set.
 From the repository root on Windows PowerShell:
 
 ```powershell
-Set-Location 'D:\Opencodeworkspace\html-to-pptx\officecli-html-to-pptx-mvp'
+$RepoRoot = 'C:\path\to\officecli-html-to-pptx'
+Set-Location $RepoRoot
 
 .\.venv\Scripts\python.exe --version
 officecli --version
@@ -663,7 +665,7 @@ record the original and temporary paths.
 
 ## Supported surface and non-goals
 
-Contract 1.1 supports:
+Contract 1.2 supports:
 
 - slides and slide backgrounds;
 - rectangles and rounded rectangles;
@@ -673,10 +675,14 @@ Contract 1.1 supports:
 - native tables, rows, columns, cells, and legal rectangular `rowspan`/`colspan`
   merges with normalized topology;
 - public `data-pptx-shape-geometry` tokens from the closed capability allowlist;
+- one atomic `data-pptx-chart` container with exactly one inert JSON
+  `data-pptx-chart-spec` script; `column`, `bar`, `line`, `pie`, and `doughnut`
+  native charts with strict ordered data and the closed presentation tokens
+  reported by `capabilities --json`; and
 - the formatting fields enumerated by the Contract.
 
-Contract 1.1 does not promise editable charts, master/theme
-reconstruction, connectors, groups, SmartArt, equations, media, animations,
+Contract 1.2 does not promise chart fallback, master/theme reconstruction,
+connectors, groups, SmartArt, equations, media, animations,
 notes, comments, complete hyperlink round trips, complex gradients, filters,
 clipping paths, complex shadows, arbitrary SVG-to-path conversion, automatic
 slide design, arbitrary HTML, responsive websites, or in-place PPTX patching
@@ -690,7 +696,7 @@ use another renderer. Never hide the loss.
 ## Final agent checklist
 
 - [ ] Correct repository root and task input confirmed.
-- [ ] Installed OfficeCLI version is at least `1.0.151` and matches Contract 1.1.
+- [ ] Installed OfficeCLI version is at least `1.0.151` and matches Contract 1.2.
 - [ ] Explicit `author` or `officehtml` profile selected.
 - [ ] Author HTML remains a browser-reviewable workbench when applicable.
 - [ ] Matching Contract report is `PASS`.
@@ -700,6 +706,8 @@ use another renderer. Never hide the loss.
 - [ ] Required text is preserved character-for-character.
 - [ ] Pictures are independent, visible objects.
 - [ ] Tables are native and have the expected dimensions.
+- [ ] Authored/compiled/readback native chart counts and normalized chart
+      structures agree; preview descendants are not duplicate objects.
 - [ ] `officecli validate` passed.
 - [ ] Every `officecli view issues` entry is resolved or classified.
 - [ ] Every slide has a reviewed screenshot.

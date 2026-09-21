@@ -46,6 +46,7 @@ from ..contract import (
 from ..measurement import extract_measurements
 from ..runtime import _version_tuple, officecli_runtime_snapshot
 from ..styles import resolve_pptx_font as _resolve_pptx_font
+from .charts import ChartSpec, ChartSpecError, OfficeCLIChartAdapter, parse_chart_spec
 
 # Alias the runtime authority locally so focused compiler tests can replace the
 # narrow probe without replacing the full doctor (which also checks Chromium,
@@ -190,6 +191,7 @@ class _ObjectIR:
     table_cells: tuple[_TableCellIR, ...] = ()
     row_heights: tuple[float, ...] = ()
     column_widths: tuple[float, ...] = ()
+    chart_spec: ChartSpec | None = None
 
     def as_manifest(self) -> dict[str, Any]:
         manifest = {
@@ -221,6 +223,9 @@ class _ObjectIR:
                     "cells": [cell.as_manifest() for cell in self.table_cells],
                 }
             )
+        if self.kind == "chart" and self.chart_spec is not None:
+            manifest["chart"] = self.chart_spec.semantic_dict()
+            manifest["chart_seam"] = self.chart_spec.as_dict()
         return manifest
 
 
@@ -522,7 +527,7 @@ def _paragraph_line_spacing(
     pixels = re.search(r"(?:px|pt)\s*$", str(raw_line_height).strip(), re.IGNORECASE)
     font_size = element_size if pixels else (run_size or element_size)
     # The keyword arguments remain accepted for callers from the previous
-    # compiler surface, but Contract 1.1 has one line-height rule for every
+    # compiler surface, but Contract 1.2 has one line-height rule for every
     # native paragraph: positive px is divided by the element font size with
     # no content- or profile-specific projection.
     return _line_spacing(
@@ -1680,7 +1685,7 @@ def _border_radius(element: dict[str, Any]) -> float:
     return max(0.0, float(match.group(0))) if match else 0.0
 
 
-# The preset geometries the Contract 1.1 Author shape surface carries as
+# The preset geometries the Contract 1.2 Author shape surface carries as
 # PowerPoint presets rather than inferring from CSS.  The authority lives in the
 # Contract module so the compiler and public capability manifest cannot drift.
 DECLARED_SHAPE_GEOMETRIES = SHAPE_GEOMETRY_TOKEN_SET
@@ -1698,7 +1703,7 @@ def _is_fifty_percent_radius(element: dict[str, Any]) -> bool:
 
 
 def _ellipse_inference_allowed(element: dict[str, Any]) -> bool:
-    """Apply the Contract 1.1 tolerance for CSS 50% ellipse inference."""
+    """Apply the Contract 1.2 tolerance for CSS 50% ellipse inference."""
     if not _is_fifty_percent_radius(element):
         return False
     width = _number(element.get("width"))
@@ -2307,7 +2312,7 @@ def _table_cell_paragraph_props(
     if any(props != first for props in projected[1:]):
         raise _diagnostic(
             "unsupported_table_paragraph_format",
-            f"Table cell paragraph properties differ on source slide {source_slide}, {source_object}; OfficeCLI Contract 1.1 exposes these properties at cell scope.",
+            f"Table cell paragraph properties differ on source slide {source_slide}, {source_object}; OfficeCLI Contract 1.2 exposes these properties at cell scope.",
             source_slide,
             source_object,
         )
@@ -2392,6 +2397,56 @@ def _table_cell_props(
         if descriptor is not None:
             props[f"border.{side}"] = descriptor
     return props
+
+
+def _lower_chart(
+    element: dict[str, Any],
+    source_slide: int,
+    source_object: str,
+    name: str,
+    scale_x: float,
+    scale_y: float,
+) -> _ObjectIR:
+    """Lower one measured atomic Author chart through the typed chart seam."""
+    bounds = _bounds(element, scale_x, scale_y)
+    if bounds[2] <= 0 or bounds[3] <= 0:
+        raise _diagnostic(
+            "invalid_chart_geometry",
+            f"Invalid chart geometry on source slide {source_slide}, {source_object}: width and height must be positive.",
+            source_slide,
+            source_object,
+        )
+    raw_spec = element.get("chartSpecText")
+    if not isinstance(raw_spec, str):
+        raise _diagnostic(
+            "chart_spec_missing",
+            f"Chart at {source_object} has no measured JSON chart spec.",
+            source_slide,
+            source_object,
+        )
+    source_identity = str(
+        element.get("chartSourceIdentity") or source_object
+    ).strip() or source_object
+    try:
+        spec = parse_chart_spec(
+            raw_spec,
+            source_object=source_object,
+            source_identity=source_identity,
+            bounds=bounds,
+        )
+    except ChartSpecError as exc:
+        raise _diagnostic(exc.code, exc.message, source_slide, source_object) from exc
+    props = OfficeCLIChartAdapter.creation_props(spec, bounds)
+    props["name"] = name
+    return _ObjectIR(
+        kind="chart",
+        name=name,
+        source_slide=source_slide,
+        source_object=spec.source_identity,
+        bounds=bounds,
+        props=props,
+        chart_spec=spec,
+    )
 
 
 def _lower_table(
@@ -2714,6 +2769,19 @@ def _lower_slide(
         inherited_backdrop: tuple[int, int, int],
     ) -> None:
         tag = str(element.get("tag", "element") or "element").lower()
+        if element.get("isChart"):
+            chart_name = f"slide-{source_slide:03d}-chart-{len(result.objects) + 1:03d}"
+            result.objects.append(
+                _lower_chart(
+                    element,
+                    source_slide,
+                    source_object,
+                    chart_name,
+                    scale_x,
+                    scale_y,
+                )
+            )
+            return
         is_list = bool(element.get("list"))
         if is_list:
             # One supported top-level list is one Native List Textbox: its
@@ -2982,6 +3050,7 @@ def _batch_for_slides(
         {"command": "set", "path": "/", "props": {"slideSize": "widescreen"}}
     ]
     sources: list[_ObjectIR | None] = [None]
+    chart_part_index = 0
     for output_index, slide in enumerate(slides, start=1):
         commands.append(
             {
@@ -3007,6 +3076,19 @@ def _batch_for_slides(
                 }
             )
             sources.append(obj)
+            if obj.kind == "chart":
+                if obj.chart_spec is None:
+                    raise RuntimeError(f"Chart object {obj.name} has no typed chart spec")
+                chart_part_index += 1
+                chart_path = f"/slide[{output_index}]/chart[@name={obj.name}]"
+                for command in OfficeCLIChartAdapter.write_commands(
+                    obj.chart_spec,
+                    chart_path,
+                    f"/ppt/slides/charts/chart{chart_part_index}.xml",
+                ):
+                    commands.append(command)
+                    sources.append(obj)
+                continue
             if obj.kind != "table":
                 if obj.paragraphs:
                     object_path = f"/slide[{output_index}]/shape[@name={obj.name}]"
@@ -3069,7 +3151,7 @@ def _batch_for_slides(
                     if cell.paragraphs:
                         cell_path = f"{table_path}/tr[{row_index}]/tc[{column_index}]"
                         # OfficeCLI's table-cell setter is the public paragraph
-                        # formatting surface for Contract 1.1: align,
+                        # formatting surface for Contract 1.2: align,
                         # linespacing, spacebefore, spaceafter, and direction
                         # fan out to every paragraph in the cell.  Those
                         # properties were projected into ``cell.props`` above;
@@ -3221,7 +3303,7 @@ async def compile_officecli(
         raise _contract_failure(contract)
 
     # This is intentionally before Chromium measurement and before the first
-    # temporary PPTX is created.  Contract 1.1 depends on OfficeCLI 1.0.151's
+    # temporary PPTX is created.  Contract 1.2 depends on OfficeCLI 1.0.151's
     # native line-break and merge behavior and must not leave a misleading
     # partial artifact when an older runtime is selected.
     runtime_snapshot = _require_officecli_runtime()

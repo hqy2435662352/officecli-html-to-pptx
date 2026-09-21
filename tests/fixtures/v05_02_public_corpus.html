@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>V0.5.2 public native chart acceptance corpus</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+      body { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+      .slide {
+        position: relative;
+        display: none;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #f8fafc;
+      }
+      .slide.active { display: block; }
+      .eyebrow {
+        position: absolute;
+        left: 120px;
+        top: 56px;
+        color: #64748b;
+        font-size: 22px;
+        line-height: 1.2;
+        font-weight: 700;
+      }
+      .title {
+        position: absolute;
+        left: 120px;
+        top: 110px;
+        width: 1680px;
+        height: 80px;
+        color: #0f172a;
+        font-size: 48px;
+        line-height: 1.15;
+        font-weight: 700;
+      }
+      .subtitle {
+        position: absolute;
+        left: 120px;
+        top: 200px;
+        width: 1680px;
+        height: 46px;
+        color: #475569;
+        font-size: 26px;
+        line-height: 1.25;
+      }
+      .chart {
+        position: absolute;
+        width: 760px;
+        height: 500px;
+      }
+      .chart-preview {
+        position: absolute;
+        left: 28px;
+        top: 28px;
+        width: 240px;
+        height: 32px;
+        color: #94a3b8;
+        font-size: 16px;
+        line-height: 1.2;
+      }
+      .note {
+        position: absolute;
+        left: 120px;
+        top: 900px;
+        width: 1680px;
+        height: 70px;
+        color: #475569;
+        font-size: 22px;
+        line-height: 1.25;
+      }
+      .integrated-copy {
+        position: absolute;
+        left: 120px;
+        top: 240px;
+        width: 520px;
+        height: 360px;
+        padding: 24px;
+        border: 3px solid #1d4ed8;
+        border-radius: 24px;
+        background: #eff6ff;
+        color: #1e293b;
+        font-size: 26px;
+        line-height: 1.35;
+      }
+      .integrated-copy p { margin: 0 0 16px 0; }
+      .integrated-copy p:last-child { margin-bottom: 0; }
+      .integrated-copy strong { color: #0f6b78; }
+      .integrated-table {
+        position: absolute;
+        left: 700px;
+        top: 240px;
+        width: 560px;
+        height: 360px;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font-size: 24px;
+        line-height: 1.25;
+      }
+      .integrated-table th, .integrated-table td {
+        height: 90px;
+        padding: 12px;
+        border: 3px solid #475569;
+        text-align: center;
+        vertical-align: middle;
+      }
+      .integrated-table th { background: #1d4ed8; color: #ffffff; }
+      .integrated-table td { background: #ffffff; }
+      .integrated-table .group { background: #dbeafe; text-align: left; }
+      .integrated-badge {
+        position: absolute;
+        left: 120px;
+        top: 700px;
+        width: 520px;
+        height: 130px;
+        padding: 22px;
+        border: 3px solid #0f766e;
+        background: #ccfbf1;
+        color: #134e4a;
+        font-size: 27px;
+        line-height: 1.2;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="slide active" aria-label="categorical comparison charts">
+        <div class="eyebrow">PUBLIC CORPUS · 01 / CATEGORICAL COMPARISON</div>
+        <div class="title">区域收入与成本 · native categorical charts</div>
+        <div class="subtitle">Ordered categories and explicit series colors remain editable native chart semantics.</div>
+        <div class="chart" data-pptx-chart id="regional-column" style="left:120px;top:300px">
+          <div class="chart-preview">browser preview: column</div>
+          <svg aria-hidden="true" width="420" height="220"><rect width="420" height="220" fill="#e2e8f0"></rect></svg>
+          <script type="application/json" data-pptx-chart-spec>{"type":"column","categories":["North","East","South","West"],"series":[{"name":"Revenue","values":[120,180,150,210],"color":"#2563EB"},{"name":"Cost","values":[80,110,100,130],"color":"#F97316"}],"presentation":{"title":"Regional revenue and cost","legend":"bottom","labels":"value","valueAxis":{"numberFormat":"integer-group"}}}</script>
+        </div>
+        <div class="chart" data-pptx-chart id="regional-bar" style="left:980px;top:300px">
+          <div class="chart-preview">browser preview: bar</div>
+          <svg aria-hidden="true" width="420" height="220"><rect width="420" height="220" fill="#e2e8f0"></rect></svg>
+          <script type="application/json" data-pptx-chart-spec>{"type":"bar","categories":["North","East","South","West"],"series":[{"name":"Revenue","values":[120,180,150,210],"color":"#2563EB"},{"name":"Cost","values":[80,110,100,130],"color":"#F97316"}],"presentation":{"title":"Horizontal comparison","legend":"right","labels":"none","categoryAxis":{"title":"Region"},"valueAxis":{"title":"Amount","numberFormat":"integer-group"}}}</script>
+        </div>
+        <div class="note">Native chart count: 2 · category order and series order are material.</div>
+      </section>
+
+      <section class="slide" aria-label="multi-series line trend">
+        <div class="eyebrow">PUBLIC CORPUS · 02 / MULTI-SERIES TREND</div>
+        <div class="title">月度趋势 · line chart with ordered series</div>
+        <div class="subtitle">The chart spec is the only data source; the preview subtree is inert and excluded.</div>
+        <div class="chart" data-pptx-chart id="monthly-trend" style="left:240px;top:300px;width:1440px;height:500px">
+          <div class="chart-preview">browser preview: line trend</div>
+          <canvas aria-hidden="true" width="920" height="320"></canvas>
+          <script type="application/json" data-pptx-chart-spec>{"type":"line","categories":["Jan","Feb","Mar","Apr","May","Jun"],"series":[{"name":"New customers","values":[24,31,38,44,52,60],"color":"#0F766E"},{"name":"Renewals","values":[18,22,28,33,39,45],"color":"#7C3AED"},{"name":"Churn","values":[6,7,5,8,7,6],"color":"#DC2626"}],"presentation":{"title":"Monthly customer movement","legend":"top","labels":"none","categoryAxis":{"title":"Month"},"valueAxis":{"title":"Accounts","numberFormat":"integer"}}}</script>
+        </div>
+        <div class="note">Native chart count: 1 · three ordered series · no stacked or fallback semantics.</div>
+      </section>
+
+      <section class="slide" aria-label="part to whole charts">
+        <div class="eyebrow">PUBLIC CORPUS · 03 / PART TO WHOLE</div>
+        <div class="title">渠道构成 · pie and doughnut semantics</div>
+        <div class="subtitle">Non-negative values with a positive total preserve the exact category sequence.</div>
+        <div class="chart" data-pptx-chart id="channel-pie" style="left:120px;top:300px">
+          <div class="chart-preview">browser preview: pie</div>
+          <div aria-hidden="true" style="width:260px;height:260px;border-radius:50%;background:#dbeafe"></div>
+          <script type="application/json" data-pptx-chart-spec>{"type":"pie","categories":["Direct","Partner","Online","Other"],"series":[{"name":"Share","values":[42,28,20,10],"color":"#2563EB"}],"presentation":{"title":"Channel share","legend":"bottom","labels":"percent"}}</script>
+        </div>
+        <div class="chart" data-pptx-chart id="channel-doughnut" style="left:980px;top:300px">
+          <div class="chart-preview">browser preview: doughnut</div>
+          <div aria-hidden="true" style="width:260px;height:260px;border-radius:50%;border:60px solid #ccfbf1"></div>
+          <script type="application/json" data-pptx-chart-spec>{"type":"doughnut","categories":["Direct","Partner","Online","Other"],"series":[{"name":"Share","values":[42,28,20,10],"color":"#0F766E"}],"presentation":{"title":"Channel share","legend":"right","labels":"value"}}</script>
+        </div>
+        <div class="note">Native chart count: 2 · doughnut hole size is the fixed private default.</div>
+      </section>
+
+      <section class="slide" aria-label="integrated business page">
+        <div class="eyebrow">PUBLIC CORPUS · 04 / INTEGRATED BUSINESS PAGE</div>
+        <div class="title">业务增长控制台 · V0.5.1 objects plus V0.5.2 chart</div>
+        <div class="integrated-copy">
+          <p>本页组合既有 Contract 1.2 能力与一个显式原生图表。</p>
+          <p>指标由 <strong>可编辑文本</strong>、合并表格、原生形状和图表表达，而不是整页截图。</p>
+        </div>
+        <table class="integrated-table" aria-label="business metrics">
+          <thead><tr><th colspan="2">业务指标</th><th>状态</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="2" class="group">Native adoption</td><td>Chart objects</td><td>PASS</td></tr>
+            <tr><td>Readback</td><td>PASS</td></tr>
+            <tr><td class="group">Gate 3</td><td>Semantic review</td><td>PASS</td></tr>
+          </tbody>
+        </table>
+        <div class="integrated-badge" data-pptx-shape-geometry="roundRect">0 unsupported · 0 unresolved · 0 material delta</div>
+        <div class="chart" data-pptx-chart id="integrated-mix" style="left:1300px;top:250px;width:480px;height:500px">
+          <div class="chart-preview">browser preview: integrated chart</div>
+          <svg aria-hidden="true" width="340" height="230"><rect width="340" height="230" fill="#e2e8f0"></rect></svg>
+          <script type="application/json" data-pptx-chart-spec>{"type":"column","categories":["Text","Table","Shape","Chart"],"series":[{"name":"Native objects","values":[3,2,1,1],"color":"#1D4ED8"}],"presentation":{"title":"Native object inventory","legend":"none","labels":"value","valueAxis":{"numberFormat":"integer"}}}</script>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

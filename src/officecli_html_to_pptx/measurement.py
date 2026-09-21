@@ -405,12 +405,43 @@ EXTRACTION_JS = """
         const relX = rect.left - slideRect.left;
         const relY = rect.top - slideRect.top;
 
-        if (rect.width < 1 || rect.height < 1) return null;
+        if (rect.width < 1 || rect.height < 1) {
+            if (el.hasAttribute('data-pptx-chart')) {
+                const zeroSizeSpecNodes = Array.from(
+                    el.querySelectorAll('script[data-pptx-chart-spec]')
+                );
+                return {
+                    tag: el.tagName.toLowerCase(),
+                    x: relX,
+                    y: relY,
+                    width: rect.width,
+                    height: rect.height,
+                    isChart: true,
+                    chartSpecText: zeroSizeSpecNodes.length === 1
+                        ? (zeroSizeSpecNodes[0].textContent || '')
+                        : null,
+                    chartSpecCount: zeroSizeSpecNodes.length,
+                    chartSourceIdentity: (el.getAttribute('id') || '').trim() || null,
+                    children: []
+                };
+            }
+            return null;
+        }
         if (relX + rect.width <= 0 || relY + rect.height <= 0) return null;
         if (relX >= slideRect.width || relY >= slideRect.height) return null;
 
         let directText = getDirectText(el);
         const tag = el.tagName.toLowerCase();
+        const isChart = el.hasAttribute('data-pptx-chart');
+        const chartSpecNodes = isChart
+            ? Array.from(el.querySelectorAll('script[data-pptx-chart-spec]'))
+            : [];
+        const chartSpecText = chartSpecNodes.length === 1
+            ? (chartSpecNodes[0].textContent || '')
+            : null;
+        const chartSourceIdentity = isChart
+            ? ((el.getAttribute('id') || '').trim() || null)
+            : null;
 
         let markerColor = null;
         // List facts for the lowering seam.  The marker is never injected as
@@ -491,7 +522,7 @@ EXTRACTION_JS = """
             naturalWidth: isImg ? (el.naturalWidth || 0) : 0,
             naturalHeight: isImg ? (el.naturalHeight || 0) : 0,
             borderRadius: style.borderRadius,
-            // A preset geometry the Contract 1.1 Author shape surface keeps as
+            // A preset geometry the Contract 1.2 Author shape surface keeps as
             // a PowerPoint preset rather than inferring from CSS.  Public
             // Author HTML uses the namespaced annotation.  The private legacy
             // spelling remains a fallback solely for the hidden projection
@@ -540,6 +571,10 @@ EXTRACTION_JS = """
             list: listFacts,
             listItem: listItemFacts,
             isSvgDataUri: isSvgDataUri,
+            isChart: isChart,
+            chartSpecText: chartSpecText,
+            chartSpecCount: chartSpecNodes.length,
+            chartSourceIdentity: chartSourceIdentity,
             children: []
         };
 
@@ -554,10 +589,12 @@ EXTRACTION_JS = """
             data.imageId = imageId;
         }
 
-        for (const child of el.children) {
-            if (['script', 'style', 'link', 'meta'].includes(child.tagName.toLowerCase())) continue;
-            const childData = measureElement(child, slideRect, depth + 1);
-            if (childData) data.children.push(childData);
+        if (!isChart) {
+            for (const child of el.children) {
+                if (['script', 'style', 'link', 'meta'].includes(child.tagName.toLowerCase())) continue;
+                const childData = measureElement(child, slideRect, depth + 1);
+                if (childData) data.children.push(childData);
+            }
         }
 
         // Table cells remain one native OfficeCLI object.  Their block-level
@@ -633,7 +670,7 @@ EXTRACTION_JS = """
         }
 
         // Measure ::before and ::after pseudo-elements as synthetic children
-        for (const pseudo of ['::before', '::after']) {
+        for (const pseudo of isChart ? [] : ['::before', '::after']) {
             try {
                 const ps = getComputedStyle(el, pseudo);
                 if (!ps.content || ps.content === 'none' || ps.content === 'normal') continue;
@@ -711,7 +748,7 @@ EXTRACTION_JS = """
             if (lines.length > 1) data.visualLines = lines;
         }
 
-        const isContainer = !data.text && !data.paragraphs && !isImg && !isSvg && !hasVisibleBg && !hasBorder &&
+        const isContainer = !isChart && !data.text && !data.paragraphs && !isImg && !isSvg && !hasVisibleBg && !hasBorder &&
                            !isTableElement && !data.list && !data.listItem &&
                            data.backgroundImage === null && !data.inlineRuns;
         if (isContainer && data.children.length === 1 && depth > 0) {

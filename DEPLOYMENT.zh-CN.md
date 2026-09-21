@@ -1,10 +1,10 @@
-# officecli-html-to-pptx V0.5.1 部署与使用指南
+# officecli-html-to-pptx V0.5.2 部署与使用指南
 
 ## 交付范围
 
 本 ZIP 是客户试用包，包含：
 
-- `core/officecli_html_to_pptx-0.5.1-py3-none-any.whl`：Python Core Product；
+- `core/officecli_html_to_pptx-0.5.2-py3-none-any.whl`：Python Core Product；
 - `plugins/officecli-html-to-pptx/`：skills-only Codex Plugin；
 - `.agents/plugins/marketplace.json`：本地 Plugin marketplace 清单；
 - 本部署与使用指南、README 和 MIT License。
@@ -37,7 +37,7 @@ OfficeCLI、Python、Node.js 和 Codex 的安装来源由部署方管理。本�
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.5.1-py3-none-any.whl
+.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.5.2-py3-none-any.whl
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
@@ -62,7 +62,7 @@ exit code `2` 和可操作的诊断。
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install ./core/officecli_html_to_pptx-0.5.1-py3-none-any.whl
+.venv/bin/python -m pip install ./core/officecli_html_to_pptx-0.5.2-py3-none-any.whl
 .venv/bin/python -m playwright install --with-deps chromium
 .venv/bin/officecli-html-to-pptx capabilities --json
 .venv/bin/officecli-html-to-pptx doctor --json
@@ -199,22 +199,31 @@ proposal.evidence/
 交付时保留整个 PPTX/Evidence Pair，不要只复制 PPTX，也不要混用不同 build 的
 PPTX、JSON 或 Comparison Image。
 
-V0.5.1 的 tracked public corpus 是
-`tests/fixtures/v05_01_public_corpus.html`，固定约四页：文本/CJK/hard break、
-合并表格、native geometry，以及组合业务页。V0.4 projection corpus 仍是独立
-的内部回归资产，不进入 V0.5.1 public gate 或能力计数。完成发布验收时必须执行
+V0.5.2 的 tracked public corpus 是
+`tests/fixtures/v05_02_public_corpus.html`，固定四页：column/bar categorical
+comparison、multi-series line trend、pie/doughnut part-to-whole，以及组合
+业务页。每个 `data-pptx-chart` 都是一个 atomic native object；可选 preview
+及其全部 descendants 不会再被 generic lowering。V0.5.1 的 corpus 和 V0.4
+projection corpus 仍是独立的回归资产，不进入 V0.5.2 chart gate 或能力计数。
+完成发布验收时必须执行
 `capabilities -> doctor -> check -> fresh build -> independent readback ->
-validate/issues -> Gate 3 -> finalize`；`unsupported`、`unresolved` 和
-`material_delta` 必须都是零，minor findings 仍可推导为 `PASS_WITH_FINDINGS`。
+validate/issues -> four-slide semantic Gate 3 -> finalize`；authored/compiled/
+readback chart counts 必须一致，OfficeCLI validation PASS、issues zero，且
+`unsupported`、`unresolved` 和 `material_delta` 必须都是零，minor findings
+仍可推导为 `PASS_WITH_FINDINGS`。
 
-## V0.5.1 正式边界
+## V0.5.2 正式边界
 
-支持：从 Contract 1.1 checked Author HTML 新建 PPTX；可编辑的文本框、闭合
-形状几何、data-URI 图片、合法矩形 rowspan/colspan 合并表格，以及冻结的
-文本段落/run 矩阵。
+支持：从 Contract 1.2 checked Author HTML 新建 PPTX；可编辑的文本框、闭合
+形状几何、data-URI 图片、合法矩形 rowspan/colspan 合并表格、冻结的文本
+段落/run 矩阵，以及显式 authored 的 native `column`、`bar`、`line`、`pie`
+和 `doughnut` charts。图表只接受 `capabilities --json` 发布的严格 JSON
+protocol、数据 limits、presentation tokens 和 private doughnut default。
 
-不支持：编辑已有 PPTX、任意网页/CSS、外部图片 URL、原生图表、
-SmartArt、动画、音视频以及 master/layout/theme 的完整保真。
+不支持：编辑已有 PPTX、任意网页/CSS、外部图片 URL、chart fallback、
+SmartArt、动画、音视频以及 master/layout/theme 的完整保真。未知 chart
+field/type、arbitrary Office format strings、authored `holeSize` 和其他
+chart families 会在 check/build 前 fail closed。
 
 本包是实验性交付，不承诺向后兼容。出现问题时请保留输入 HTML、完整 Evidence
 Bundle、`doctor --json` 输出和产品版本号。
