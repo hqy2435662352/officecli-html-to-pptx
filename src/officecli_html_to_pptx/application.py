@@ -44,6 +44,11 @@ from ._internal.officecli_compiler import (
     OfficeCLICompilationResult,
     compile_officecli,
 )
+from ._internal.localized_evidence import (
+    LOCALIZED_DIAGNOSTIC_KEYS,
+    audit_localized_fallbacks,
+    validate_localized_evidence,
+)
 from .protocol import (
     Artifact,
     CommandResult,
@@ -636,7 +641,22 @@ def _native_slice_evidence(
     compiler_diagnostics = [
         item.as_dict() for item in compiled.diagnostics
     ]
-    return {
+    localized = audit_localized_fallbacks(compiled.manifest, readback)
+    diagnostics = {
+        "unsupported": sum(
+            item["code"].startswith("unsupported_")
+            for item in compiler_diagnostics
+        ) + int(localized["diagnostics"]["unsupported"]),
+        "unresolved": sum(
+            item["code"].startswith("unresolved_")
+            for item in compiler_diagnostics
+        ) + int(localized["diagnostics"]["unresolved"]),
+        "material_delta": _native_material_delta_count(
+            compiled.manifest, readback
+        ) + int(localized["diagnostics"]["material_delta"]),
+        "compiler": compiler_diagnostics,
+    }
+    evidence = {
         "schema_version": NATIVE_EVIDENCE_SCHEMA_VERSION,
         "product_version": PRODUCT_VERSION,
         "contract_version": CONTRACT_VERSION,
@@ -670,22 +690,27 @@ def _native_slice_evidence(
                 "readback": readback_chart_count,
             },
         },
-        "diagnostics": {
-            "unsupported": sum(
-                item["code"].startswith("unsupported_")
-                for item in compiler_diagnostics
-            ),
-            "unresolved": sum(
-                item["code"].startswith("unresolved_")
-                for item in compiler_diagnostics
-            ),
-            "material_delta": _native_material_delta_count(
-                compiled.manifest, readback
-            ),
-            "compiler": compiler_diagnostics,
-        },
+        "diagnostics": diagnostics,
         "gate3": {"status": "PENDING", "slide_count": int(compiled.slide_count)},
     }
+    if localized["records"]:
+        evidence["localized_fallback"] = localized
+        evidence["counts"].update(
+            {
+                "native_object_count": localized["counts"]["native_object_count"],
+                "native_object_kind_counts": localized["counts"]["native_object_kind_counts"],
+                "native_ratio": localized["counts"]["native_ratio"],
+                "rasterized_count": localized["counts"]["rasterized_count"],
+            }
+        )
+        evidence["diagnostics"].update(
+            {
+                key: int(value)
+                for key, value in localized["diagnostics"].items()
+                if key not in {"unsupported", "unresolved", "material_delta"}
+            }
+        )
+    return evidence
 
 
 def _publish_file(source: Path, target: Path) -> None:
@@ -1270,6 +1295,7 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
             "issues.json",
         ):
             _read_json(evidence_path / name, name)
+        manifest = _read_json(evidence_path / "manifest.json", "manifest.json")
         validation = _read_json(evidence_path / "validate.json", "validate.json")
         issues = _read_json(evidence_path / "issues.json", "issues.json")
         if validation.get("status") != "PASS":
@@ -1300,6 +1326,20 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
                 raise ValueError(
                     f"native-evidence.json {key} must be zero before finalization"
                 )
+        localized_evidence = native_evidence.get("localized_fallback")
+        if localized_evidence is not None:
+            for key in LOCALIZED_DIAGNOSTIC_KEYS:
+                if diagnostic_counts.get(key, 0) != 0:
+                    raise ValueError(
+                        f"native-evidence.json {key} must be zero before finalization"
+                    )
+            localized_errors = validate_localized_evidence(
+                _field_mapping(localized_evidence, "localized fallback evidence"),
+                manifest,
+                readback,
+            )
+            if localized_errors:
+                raise ValueError("; ".join(localized_errors))
         counts = _field_mapping(native_evidence.get("counts"), "native evidence counts")
         if counts.get("readback_object_count") != len(readback.get("objects", []) or []):
             raise ValueError("native-evidence.json readback object count does not match readback.json")

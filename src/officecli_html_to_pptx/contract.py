@@ -23,6 +23,7 @@ from ._internal.charts import (
     ChartSpecError,
     parse_chart_spec,
 )
+from ._internal.localized_evidence import localized_fallback_surface
 
 CONTRACT_VERSION = "1.2"
 OFFICECLI_COMPATIBILITY_BASELINE = "1.0.151"
@@ -768,42 +769,6 @@ def chart_surface() -> dict[str, Any]:
     }
 
 
-def localized_fallback_surface() -> dict[str, Any]:
-    """Declare the first, deliberately narrow localized picture seam.
-
-    The release integration owns the public Contract version and the complete
-    disposition/evidence policy.  This small declaration is the typed boundary
-    needed by the first end-to-end compiler slice.
-    """
-    return {
-        "annotation": LOCALIZED_FALLBACK_ATTRIBUTE,
-        "token": LOCALIZED_FALLBACK_TOKEN,
-        "case_sensitive": True,
-        "atomic": True,
-        "identity": {
-            "explicit": "trimmed HTML id",
-            "fallback": "deterministic source path",
-        },
-        "geometry": "measured outer border box",
-        "density": {"pixels_per_point": 2},
-        "disposition": "rasterized",
-        "editable": False,
-        "fallback": "explicit-author-opt-in",
-        "accepted_content": ["static HTML/CSS", "inline SVG", "data URI pictures"],
-        "rejected_content": [
-            "script execution",
-            "runtime canvas",
-            "iframe",
-            "network resources",
-            "audio/video",
-            "WebGL",
-            "animation",
-            "interaction-dependent state",
-        ],
-        "preview_descendants": "excluded-from-generic-lowering",
-    }
-
-
 def author_capability_manifest() -> dict[str, Any]:
     """Return the Author support claims owned by the Contract checker."""
     return {
@@ -833,7 +798,7 @@ def author_capability_manifest() -> dict[str, Any]:
         },
         "table_cell_spans": AUTHOR_TABLE_CELL_SPANS,
         "chart_surface": chart_surface(),
-        "localized_fallback": localized_fallback_surface(),
+        "localized_fallback_surface": localized_fallback_surface(),
     }
 
 _CSS_BLOCK_RE = re.compile(r"(?P<selectors>[^{}]+)\{(?P<body>[^{}]*)\}", re.DOTALL)
