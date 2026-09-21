@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -178,6 +179,7 @@ def test_part_to_whole_percent_labels_are_type_specific() -> None:
     ("chart_type", "labels"),
     [("pie", "none"), ("pie", "value"), ("doughnut", "percent")],
 )
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 def test_build_proves_one_native_part_to_whole_chart_and_readback(
     tmp_path: Path,
     chart_type: str,

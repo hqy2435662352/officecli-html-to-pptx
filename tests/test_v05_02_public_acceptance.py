@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -60,6 +61,7 @@ def test_public_chart_corpus_and_release_authority() -> None:
     assert chart_surface["fallback"] == "unsupported"
 
 
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 def test_public_four_slide_workflow_proves_native_charts_and_finalize(
     tmp_path: Path,
 ) -> None:

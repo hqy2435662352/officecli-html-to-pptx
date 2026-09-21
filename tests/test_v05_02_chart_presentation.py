@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -315,6 +316,7 @@ def test_adapter_keeps_backend_format_strings_private() -> None:
     assert "color" not in series_commands[1]["props"]
 
 
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 def test_build_round_trips_closed_presentation_and_auto_color_evidence(
     tmp_path: Path,
 ) -> None:
@@ -366,6 +368,7 @@ def test_build_round_trips_closed_presentation_and_auto_color_evidence(
 
 
 @pytest.mark.parametrize("chart_type", ["column", "bar", "line", "pie", "doughnut"])
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 def test_property_matrix_clean_runtime_probe_covers_every_chart_family(
     tmp_path: Path,
     chart_type: str,
@@ -404,6 +407,7 @@ def test_property_matrix_clean_runtime_probe_covers_every_chart_family(
     assert native["diagnostics"]["material_delta"] == 0
 
 
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 def test_clean_runtime_property_matrix_probe_covers_every_public_token(
     tmp_path: Path,
 ) -> None:

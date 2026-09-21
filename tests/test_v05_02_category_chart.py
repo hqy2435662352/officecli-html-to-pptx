@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -140,6 +141,7 @@ def test_category_and_series_limits_accept_boundaries_and_reject_overflow(
     }
 
 
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 def test_repeated_and_comma_categories_preserve_exact_order_in_native_readback(
     tmp_path: Path,
 ) -> None:
@@ -289,6 +291,7 @@ def test_check_blocks_hidden_or_zero_size_chart(
 
 
 @pytest.mark.parametrize("chart_type", ["column", "bar", "line"])
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 def test_build_creates_one_native_chart_and_zero_material_delta(
     tmp_path: Path,
     chart_type: str,
@@ -325,6 +328,7 @@ def test_build_creates_one_native_chart_and_zero_material_delta(
     assert json.loads((evidence / "issues.json").read_text(encoding="utf-8"))["status"] == "PASS"
 
 
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 def test_build_uses_deterministic_source_path_without_html_id(tmp_path: Path) -> None:
     source_path = _write(
         tmp_path,
