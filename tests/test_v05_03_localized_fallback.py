@@ -11,6 +11,7 @@ import pytest
 
 from officecli_html_to_pptx._internal.officecli_compiler import compile_officecli
 from officecli_html_to_pptx._internal.acceptance import _officecli_manifest
+from officecli_html_to_pptx._internal.localized_evidence import audit_localized_fallbacks
 from officecli_html_to_pptx.application import build_author_html, check_author_html
 from officecli_html_to_pptx.contract import check_contract
 from officecli_html_to_pptx.measurement import extract_measurements
@@ -71,6 +72,14 @@ async def test_localized_region_lowers_to_one_picture_with_readable_asset(
     assert obj["disposition"] == "rasterized"
     assert obj["editable"] is False
     assert obj["metadata"]["localized_fallback"]["asset_sha256"]
+    localized = obj["localized_fallback"]
+    assert localized["asset"]["pixel_dimensions"] == [480, 240]
+    assert localized["asset"]["pixel_width"] == 480
+    assert localized["asset"]["pixel_height"] == 240
+    assert localized["asset"]["density"] == 2.0
+    assert localized["paint"] == {"nonblank": True, "blank": False}
+    assert localized["approved"] is True
+    assert localized["reason"] == "explicit_author_opt_in"
 
     readback, _ = _officecli_manifest(output, result.manifest)
     readback_obj = readback["objects"][0]
@@ -78,6 +87,16 @@ async def test_localized_region_lowers_to_one_picture_with_readable_asset(
     assert readback_obj["source_identity"] == "hero"
     assert readback_obj["localized_fallback"]["readback"]["asset_present"] is True
     assert readback_obj["bounds_pt"] == pytest.approx(obj["bounds_pt"])
+    evidence = audit_localized_fallbacks(result.manifest, readback)
+    assert evidence["diagnostics"] == {
+        "unapproved_rasterized": 0,
+        "blank_rasterized": 0,
+        "contaminated_rasterized": 0,
+        "failed_isolation": 0,
+        "unsupported": 0,
+        "unresolved": 0,
+        "material_delta": 0,
+    }
     assert output.is_file()
 
 

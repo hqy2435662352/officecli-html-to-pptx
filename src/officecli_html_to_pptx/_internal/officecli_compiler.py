@@ -189,8 +189,11 @@ class LocalizedFallbackSpec:
     pixel_width: int
     pixel_height: int
     density: float
+    density_verified: bool
+    nonblank: bool
     excluded_descendant_count: int
     opt_in_reason: str
+    approved: bool
     isolated: bool
     isolation: str
 
@@ -204,13 +207,24 @@ class LocalizedFallbackSpec:
                 "mime": self.asset_mime,
                 "sha256": self.asset_sha256,
                 "pixel_dimensions": [self.pixel_width, self.pixel_height],
+                "pixel_width": self.pixel_width,
+                "pixel_height": self.pixel_height,
+                "density": self.density,
+                "density_verified": self.density_verified,
             },
             "asset_mime": self.asset_mime,
             "asset_sha256": self.asset_sha256,
             "pixel_dimensions": [self.pixel_width, self.pixel_height],
             "density": self.density,
+            "density_verified": self.density_verified,
+            "paint": {
+                "nonblank": self.nonblank,
+                "blank": not self.nonblank,
+            },
             "excluded_descendant_count": self.excluded_descendant_count,
             "opt_in_reason": self.opt_in_reason,
+            "reason": "explicit_author_opt_in" if self.approved else self.opt_in_reason,
+            "approved": self.approved,
             "isolation": {
                 "isolated": self.isolated,
                 "method": self.isolation,
@@ -2880,12 +2894,18 @@ def _lower_slide(
                 pixel_width=int(pixel_width),
                 pixel_height=int(pixel_height),
                 density=2.0,
+                density_verified=bool(localized.get("densityVerified")),
+                nonblank=bool(localized.get("nonblank")),
                 excluded_descendant_count=int(
                     localized.get("excludedDescendantCount") or 0
                 ),
                 opt_in_reason=str(
                     localized.get("optInReason") or "explicit-author-opt-in"
                 ),
+                approved=str(
+                    localized.get("optInReason") or "explicit-author-opt-in"
+                )
+                == "explicit-author-opt-in",
                 isolated=True,
                 isolation=str(
                     localized.get("isolation") or "fresh-page-single-region"
