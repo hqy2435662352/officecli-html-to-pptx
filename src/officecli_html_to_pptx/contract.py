@@ -24,7 +24,10 @@ from ._internal.charts import (
     parse_chart_spec,
 )
 from ._internal.localized_evidence import localized_fallback_surface
-from ._internal.localized_capture import validate_localized_document
+from ._internal.localized_capture import (
+    localized_source_path,
+    validate_localized_document,
+)
 
 CONTRACT_VERSION = "1.2"
 OFFICECLI_COMPATIBILITY_BASELINE = "1.0.151"
@@ -1241,8 +1244,27 @@ def _check_author_localized_fallbacks(
 ) -> None:
     """Validate the exact opt-in and identity needed by the first slice."""
     seen_ids: dict[str, Any] = {}
+    for candidate in document.xpath("//*[@id]"):
+        raw_id = str(candidate.get("id", "") or "").strip()
+        if not raw_id:
+            continue
+        previous = seen_ids.get(raw_id)
+        if previous is not None and (
+            previous.get(LOCALIZED_FALLBACK_ATTRIBUTE) is not None
+            or candidate.get(LOCALIZED_FALLBACK_ATTRIBUTE) is not None
+        ):
+            _emit(
+                findings,
+                "author",
+                "duplicate_localized_fallback_identity",
+                f"Trimmed HTML id {raw_id!r} must be unique when used as a localized source identity.",
+                localized_source_path(candidate),
+            )
+        else:
+            seen_ids[raw_id] = candidate
+
     for element in document.xpath(f"//*[@{LOCALIZED_FALLBACK_ATTRIBUTE}]"):
-        source = _node_path(element)
+        source = localized_source_path(element)
         token = element.get(LOCALIZED_FALLBACK_ATTRIBUTE)
         if token != LOCALIZED_FALLBACK_TOKEN:
             _emit(
@@ -1285,20 +1307,6 @@ def _check_author_localized_fallbacks(
                     f"Localized fallback {property_name} must be positive when declared.",
                     source,
                 )
-
-        raw_id = str(element.get("id", "") or "").strip()
-        if raw_id:
-            previous = seen_ids.get(raw_id)
-            if previous is not None:
-                _emit(
-                    findings,
-                    "author",
-                    "duplicate_localized_fallback_identity",
-                    f"Trimmed HTML id {raw_id!r} must identify one localized fallback region.",
-                    source,
-                )
-            else:
-                seen_ids[raw_id] = element
 
 
 def _chart_style_value(document: Any, element: Any, property_name: str) -> str | None:

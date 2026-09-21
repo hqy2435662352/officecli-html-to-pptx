@@ -2838,13 +2838,16 @@ def _lower_slide(
         tag = str(element.get("tag", "element") or "element").lower()
         localized = element.get("localizedFallback")
         if isinstance(localized, dict):
+            localized_source_object = str(
+                localized.get("sourcePath") or source_object
+            ).strip() or source_object
             bounds = _bounds(element, scale_x, scale_y)
             if bounds[2] <= 0 or bounds[3] <= 0:
                 raise _diagnostic(
                     "invalid_localized_fallback_geometry",
-                    f"Invalid localized fallback geometry on source slide {source_slide}, {source_object}: width and height must be positive.",
+                    f"Invalid localized fallback geometry on source slide {source_slide}, {localized_source_object}: width and height must be positive.",
                     source_slide,
-                    source_object,
+                    localized_source_object,
                 )
             capture_failures = localized.get("captureFailureCodes")
             if isinstance(capture_failures, (list, tuple)) and capture_failures:
@@ -2853,12 +2856,14 @@ def _lower_slide(
                 )
                 raise _diagnostic(
                     "unresolved_localized_fallback_capture",
-                    f"Localized fallback capture for {source_object} failed safety audit: {failures or 'unknown failure'}.",
+                    f"Localized fallback capture for {localized_source_object} failed safety audit: {failures or 'unknown failure'}.",
                     source_slide,
-                    source_object,
+                    localized_source_object,
                 )
             source_identity = str(
-                localized.get("sourceIdentity") or source_object
+                localized.get("sourceIdentity")
+                or localized.get("sourcePath")
+                or source_object
             ).strip() or source_object
             source = element.get("src")
             if not isinstance(source, str) or not source.startswith("data:image/png"):
@@ -2866,9 +2871,11 @@ def _lower_slide(
                     "unresolved_localized_fallback_asset",
                     f"Localized fallback {source_identity!r} has no deterministic PNG asset.",
                     source_slide,
-                    source_object,
+                    localized_source_object,
                 )
-            mime, data = _decode_picture_source(element, source_slide, source_object)
+            mime, data = _decode_picture_source(
+                element, source_slide, localized_source_object
+            )
             actual_hash = hashlib.sha256(data).hexdigest()
             expected_hash = str(localized.get("assetSha256") or "")
             if mime != "image/png" or not expected_hash or actual_hash != expected_hash:
@@ -2876,7 +2883,7 @@ def _lower_slide(
                     "unresolved_localized_fallback_asset",
                     f"Localized fallback {source_identity!r} has an invalid or unstable PNG asset.",
                     source_slide,
-                    source_object,
+                    localized_source_object,
                 )
             pixel_width, pixel_height = _intrinsic_dimensions(mime, data)
             declared_width = int(localized.get("pixelWidth") or 0)
@@ -2893,11 +2900,11 @@ def _lower_slide(
                     "unresolved_localized_fallback_asset",
                     f"Localized fallback {source_identity!r} lacks the required 2 pixels-per-point isolated PNG proof.",
                     source_slide,
-                    source_object,
+                    localized_source_object,
                 )
             spec = LocalizedFallbackSpec(
                 source_identity=source_identity,
-                source_path=source_object,
+                source_path=localized_source_object,
                 source_slide=source_slide,
                 bounds_pt=bounds,
                 asset_mime=mime,
@@ -2926,7 +2933,7 @@ def _lower_slide(
                 element,
                 bounds,
                 source_slide,
-                source_object,
+                localized_source_object,
             )
             picture_metadata = {
                 "mime": mime,
@@ -2940,7 +2947,7 @@ def _lower_slide(
             }
             add_object(
                 element,
-                source_object,
+                localized_source_object,
                 "picture",
                 "",
                 picture_props,

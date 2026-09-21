@@ -150,14 +150,62 @@ class LocalizedCaptureAudit:
         }
 
 
+def localized_source_path(element: Any) -> str:
+    """Return the deterministic Author path for one DOM element."""
+    try:
+        tree = element.getroottree()
+        slides = tree.getroot().xpath(
+            "//*[contains(concat(' ', normalize-space(@class), ' '), ' slide ')]"
+        )
+        ancestors = element.xpath(
+            "ancestor-or-self::*[contains(concat(' ', normalize-space(@class), ' '), ' slide ')]"
+        )
+        if not ancestors:
+            return str(tree.getpath(element))
+        slide = ancestors[-1]
+        slide_path = str(tree.getpath(slide))
+        slide_index = next(
+            (
+                index
+                for index, candidate in enumerate(slides, start=1)
+                if str(tree.getpath(candidate)) == slide_path
+            ),
+            None,
+        )
+        if slide_index is None:
+            return str(tree.getpath(element))
+
+        parts: list[str] = []
+        current = element
+        while str(tree.getpath(current)) != slide_path:
+            parent = current.getparent()
+            if parent is None:
+                return str(tree.getpath(element))
+            position = next(
+                (
+                    index
+                    for index, sibling in enumerate(parent, start=1)
+                    if str(tree.getpath(sibling)) == str(tree.getpath(current))
+                ),
+                None,
+            )
+            if position is None:
+                return str(tree.getpath(element))
+            parts.append(f"{str(current.tag).lower()}[{position}]")
+            current = parent
+        parts.reverse()
+        return f"slide[{slide_index}]" + (
+            "/" + "/".join(parts) if parts else ""
+        )
+    except (AttributeError, TypeError, ValueError):
+        return f"<{getattr(element, 'tag', 'region')}>"
+
+
 def _source_object(element: Any) -> str:
     explicit_id = str(element.get("id", "") or "").strip()
     if explicit_id:
         return explicit_id
-    try:
-        return str(element.getroottree().getpath(element))
-    except (AttributeError, TypeError):
-        return f"<{getattr(element, 'tag', 'region')}>"
+    return localized_source_path(element)
 
 
 def _iter_elements(element: Any) -> Iterable[Any]:
@@ -775,6 +823,7 @@ __all__ = [
     "LocalizedPolicyFinding",
     "LocalizedRegion",
     "audit_localized_capture",
+    "localized_source_path",
     "validate_localized_document",
     "validate_localized_geometry",
     "validate_localized_region_overlap",

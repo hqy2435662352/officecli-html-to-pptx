@@ -39,6 +39,18 @@ EXTRACTION_JS = """
     let _svgCounter = 0;
     let _imageCounter = 0;
     let _localizedCounter = 0;
+    function authoredSourcePath(slideNumber, slide, element) {
+        const parts = [];
+        let current = element;
+        while (current && current !== slide) {
+            const parent = current.parentElement;
+            if (!parent) break;
+            const position = Array.from(parent.children).indexOf(current) + 1;
+            parts.unshift(`${current.tagName.toLowerCase()}[${position}]`);
+            current = parent;
+        }
+        return `slide[${slideNumber}]` + (parts.length ? '/' + parts.join('/') : '');
+    }
     const INLINE_TAGS = new Set([
         'span','strong','em','b','i','a','code','mark','sub','sup',
         'small','u','s','del','abbr','cite','q','time','var','kbd',
@@ -391,7 +403,7 @@ EXTRACTION_JS = """
         }
     }
 
-    function measureElement(el, slideRect, depth) {
+    function measureElement(el, slide, slideRect, depth, slideNumber) {
         if (depth > 15) return null;
 
         const style = getComputedStyle(el);
@@ -428,6 +440,8 @@ EXTRACTION_JS = """
         if (localizedToken !== null) {
             const localizedId = 'pptx-localized-' + (_localizedCounter++);
             el.setAttribute('data-pptx-localized-id', localizedId);
+            const sourcePath = authoredSourcePath(slideNumber, slide, el);
+            const explicitId = (el.getAttribute('id') || '').trim();
             return {
                 tag: el.tagName.toLowerCase(),
                 x: relX,
@@ -439,7 +453,8 @@ EXTRACTION_JS = """
                 localizedId: localizedId,
                 localizedFallback: {
                     token: localizedToken,
-                    sourceIdentity: (el.getAttribute('id') || '').trim() || null,
+                    sourceIdentity: explicitId || sourcePath,
+                    sourcePath: sourcePath,
                     excludedDescendantCount: el.querySelectorAll('*').length,
                     isolated: false,
                 },
@@ -633,7 +648,13 @@ EXTRACTION_JS = """
         if (!isChart) {
             for (const child of el.children) {
                 if (['script', 'style', 'link', 'meta'].includes(child.tagName.toLowerCase())) continue;
-                const childData = measureElement(child, slideRect, depth + 1);
+                const childData = measureElement(
+                    child,
+                    slide,
+                    slideRect,
+                    depth + 1,
+                    slideNumber,
+                );
                 if (childData) data.children.push(childData);
             }
         }
@@ -840,7 +861,13 @@ EXTRACTION_JS = """
 
         for (const child of slide.children) {
             if (['script', 'style', 'link', 'meta'].includes(child.tagName.toLowerCase())) continue;
-            const measured = measureElement(child, slideRect, 0);
+            const measured = measureElement(
+                child,
+                slide,
+                slideRect,
+                0,
+                slideIndex + 1,
+            );
             if (measured) slideData.elements.push(measured);
         }
 
@@ -986,8 +1013,12 @@ async def _rasterize_localized_fallbacks(
             localized_id = str(element.get("localizedId") or "")
             fallback = element.setdefault("localizedFallback", {})
             source_object = str(
-                fallback.get("sourceIdentity") or localized_id or "localized"
+                fallback.get("sourcePath")
+                or fallback.get("sourceIdentity")
+                or localized_id
+                or "localized"
             )
+            fallback["sourcePath"] = source_object
             bounds_pt = (
                 float(element.get("x") or 0.0) / css_pixels_per_point,
                 float(element.get("y") or 0.0) / css_pixels_per_point,

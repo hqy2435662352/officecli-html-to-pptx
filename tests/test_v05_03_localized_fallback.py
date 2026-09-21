@@ -103,17 +103,85 @@ async def test_localized_region_lowers_to_one_picture_with_readable_asset(
 
 
 @pytest.mark.asyncio
-async def test_localized_region_without_id_uses_deterministic_source_path(
+async def test_explicit_trimmed_id_is_unique_identity_with_separate_source_path(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "localized-explicit-id.html"
+    source.write_text(_html().replace('id="hero"', 'id=" hero "'), encoding="utf-8")
+
+    checked = check_author_html(source)
+    assert checked.status == "PASS", checked.as_dict()
+    measurements = await extract_measurements(str(source), officecli_mode=True)
+    fallback = measurements[0]["elements"][0]["localizedFallback"]
+    assert fallback["sourceIdentity"] == "hero"
+    assert fallback["sourcePath"] == "slide[1]/div[1]"
+
+    output = tmp_path / "localized-explicit-id.pptx"
+    result = await compile_officecli(str(source), "author", str(output))
+    obj = result.manifest["objects"][0]
+    assert obj["source_identity"] == "hero"
+    assert obj["source_object"] == "slide[1]/div[1]"
+    assert obj["localized_fallback"]["source_identity"] == "hero"
+    assert obj["localized_fallback"]["source_path"] == "slide[1]/div[1]"
+
+
+@pytest.mark.asyncio
+async def test_localized_region_without_id_uses_stable_source_path_across_runs(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "localized-no-id.html"
     source.write_text(_html().replace(' id="hero"', ""), encoding="utf-8")
-    measurements = await extract_measurements(str(source), officecli_mode=True)
-    assert measurements[0]["elements"][0]["localizedFallback"]["sourceIdentity"] is None
+
+    first = await extract_measurements(str(source), officecli_mode=True)
+    second = await extract_measurements(str(source), officecli_mode=True)
+    for measurements in (first, second):
+        fallback = measurements[0]["elements"][0]["localizedFallback"]
+        assert fallback["sourceIdentity"] == "slide[1]/div[1]"
+        assert fallback["sourcePath"] == "slide[1]/div[1]"
+        assert fallback["captureAudit"]["source_object"] == "slide[1]/div[1]"
+        assert "pptx-localized-" not in repr(fallback)
 
     output = tmp_path / "localized-no-id.pptx"
     result = await compile_officecli(str(source), "author", str(output))
-    assert result.manifest["objects"][0]["source_identity"] == "slide[1]/div[1]"
+    obj = result.manifest["objects"][0]
+    assert obj["source_identity"] == "slide[1]/div[1]"
+    assert obj["source_object"] == "slide[1]/div[1]"
+    assert obj["localized_fallback"]["source_identity"] == "slide[1]/div[1]"
+    assert obj["localized_fallback"]["source_path"] == "slide[1]/div[1]"
+
+    readback, _ = _officecli_manifest(output, result.manifest)
+    readback_obj = readback["objects"][0]
+    assert readback_obj["source_identity"] == "slide[1]/div[1]"
+    assert readback_obj["localized_fallback"]["source_path"] == "slide[1]/div[1]"
+    evidence = audit_localized_fallbacks(result.manifest, readback)
+    assert evidence["records"][0]["source_identity"] == "slide[1]/div[1]"
+    assert evidence["records"][0]["source_path"] == "slide[1]/div[1]"
+    assert evidence["diagnostics"]["material_delta"] == 0
+
+
+def test_duplicate_trimmed_localized_ids_block_with_stable_source_context(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "localized-duplicate-id.html"
+    source.write_text(
+        _html()
+        .replace('id="hero"', 'id=" hero "')
+        .replace(
+            "</section>",
+            '<div id="hero"></div></section>',
+        ),
+        encoding="utf-8",
+    )
+
+    checked = check_author_html(source)
+    assert checked.status == "BLOCK", checked.as_dict()
+    duplicate = next(
+        item
+        for item in checked.diagnostics
+        if item.code == "duplicate_localized_fallback_identity"
+    )
+    assert duplicate.source_object == "slide[1]/div[2]"
+    assert "hero" in duplicate.message
 
 
 def test_localized_fallback_token_is_exact_and_required(tmp_path: Path) -> None:
