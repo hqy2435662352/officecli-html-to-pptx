@@ -63,6 +63,21 @@ def _adversarial_html() -> str:
 </section></body></html>"""
 
 
+def _computed_animation_html() -> str:
+    return _svg_html().replace(
+        ".localized { position: absolute; left: 80px; top: 70px; width: 240px; height: 120px; }",
+        ".localized { position: absolute; left: 80px; top: 70px; width: 240px; height: 120px; animation: pulse 1s; }\n"
+        "  @keyframes pulse { from { opacity: .8; } to { opacity: 1; } }",
+    )
+
+
+def _computed_external_resource_html() -> str:
+    return _svg_html().replace(
+        ".localized { position: absolute; left: 80px; top: 70px; width: 240px; height: 120px; }",
+        ".localized { position: absolute; left: 80px; top: 70px; width: 240px; height: 120px; background-image: url('https://example.test/remote.png'); }",
+    )
+
+
 @pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 @pytest.mark.asyncio
 async def test_public_inline_svg_localized_fallback_is_one_picture(
@@ -82,6 +97,10 @@ async def test_public_inline_svg_localized_fallback_is_one_picture(
     assert picture["source_identity"] == "svg-fallback"
     assert picture["disposition"] == "rasterized"
     assert picture["editable"] is False
+    persisted_isolation = picture["localized_fallback"]["isolation"]["evidence"]
+    assert persisted_isolation["passed"] is True
+    assert persisted_isolation["target_id_match"] is True
+    assert persisted_isolation["outside_paint_pixels"] == 0
 
     readback, _ = _officecli_manifest(output, compiled.manifest)
     assert len(readback["objects"]) == 1
@@ -103,7 +122,6 @@ def test_public_adversarial_localized_content_blocks_without_artifact_pair(
         "localized_executable_content",
         "localized_unsupported_tag",
         "localized_external_resource",
-        "localized_animation",
         "localized_interactive_content",
         "localized_atomic_descendant",
     } <= codes
@@ -112,6 +130,56 @@ def test_public_adversarial_localized_content_blocks_without_artifact_pair(
     assert built.status == "BLOCK", built.as_dict()
     assert not output.exists()
     assert not output.with_suffix(".evidence").exists()
+
+
+@pytest.mark.asyncio
+async def test_computed_styles_block_stylesheet_animation_before_capture(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "computed-animation.html"
+    output = tmp_path / "computed-animation.pptx"
+    source.write_text(_computed_animation_html(), encoding="utf-8")
+
+    # The source-only Contract preflight deliberately does not implement CSS
+    # selector matching. Chromium's computed style is the authority here.
+    checked = check_author_html(source)
+    assert checked.status == "PASS", checked.as_dict()
+    measurements = await extract_measurements(str(source), officecli_mode=True)
+    element = next(
+        item
+        for item in measurements[0]["elements"]
+        if "localizedFallback" in item
+    )
+    assert "localized_animation" in element["localizedFallback"][
+        "captureFailureCodes"
+    ]
+    assert "src" not in element
+
+    built = await build_author_html(source, output)
+    assert built.status == "BLOCK", built.as_dict()
+    assert not output.exists()
+    assert not output.with_suffix(".evidence").exists()
+
+
+@pytest.mark.asyncio
+async def test_computed_styles_block_applied_external_resource_before_capture(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "computed-resource.html"
+    source.write_text(_computed_external_resource_html(), encoding="utf-8")
+
+    checked = check_author_html(source)
+    assert checked.status == "PASS", checked.as_dict()
+    measurements = await extract_measurements(str(source), officecli_mode=True)
+    element = next(
+        item
+        for item in measurements[0]["elements"]
+        if "localizedFallback" in item
+    )
+    fallback = element["localizedFallback"]
+    assert "localized_external_resource" in fallback["captureFailureCodes"]
+    assert fallback["computedSafety"]["resourceStates"]
+    assert "src" not in element
 
 
 @pytest.mark.asyncio
@@ -130,6 +198,19 @@ async def test_isolated_capture_excludes_overlapping_sibling_and_overflow_blocks
     fallback = element["localizedFallback"]
     assert fallback["isolated"] is True
     assert fallback["captureAudit"]["contamination_fraction"] == 0.0
+    isolation = fallback["captureAudit"]["isolation_evidence"]
+    assert isolation["passed"] is True
+    assert isolation["target_id_match"] is True
+    assert isolation["authored_top_level_target_count"] == 1
+    assert isolation["authored_top_level_target"] is True
+    assert isolation["authored_sibling_count"] == 0
+    assert isolation["no_authored_siblings"] is True
+    assert isolation["master_layout_background_count"] == 0
+    assert isolation["no_master_layout_background"] is True
+    assert isolation["transparent_cleared_container"] is True
+    assert isolation["outside_paint_pixels"] == 0
+    assert isolation["outside_pixel_count"] > 0
+    assert isolation["pixel_outside_wrapper_zero"] is True
     image = Image.open(BytesIO(b64decode(element["src"].split(",", 1)[1]))).convert(
         "RGBA"
     )

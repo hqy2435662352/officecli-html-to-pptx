@@ -15,6 +15,8 @@ import logging
 import math
 import os
 from pathlib import Path
+import re
+from urllib.parse import unquote, urlparse
 
 from PIL import Image
 
@@ -50,6 +52,76 @@ EXTRACTION_JS = """
             current = parent;
         }
         return `slide[${slideNumber}]` + (parts.length ? '/' + parts.join('/') : '');
+    }
+
+    function hasPositiveCssTime(value) {
+        return String(value || '').split(',').some(item => {
+            const match = item.trim().match(/^(-?(?:\\d*\\.\\d+|\\d+))(ms|s)?$/i);
+            if (!match) return false;
+            return parseFloat(match[1]) > 0;
+        });
+    }
+
+    function localizedComputedSafetyFacts(el, slide, slideNumber) {
+        const animationNodes = [];
+        const transitionNodes = [];
+        const resourceStates = [];
+        const imageStates = [];
+        const nodes = [el, ...Array.from(el.querySelectorAll('*'))];
+        const resourceProperties = [
+            'backgroundImage', 'maskImage', 'webkitMaskImage',
+            'listStyleImage', 'content',
+        ];
+        for (const node of nodes) {
+            const style = getComputedStyle(node);
+            const sourcePath = authoredSourcePath(slideNumber, slide, node);
+            const animationName = String(style.animationName || '').trim();
+            if (animationName && animationName !== 'none') {
+                animationNodes.push({
+                    sourcePath: sourcePath,
+                    animationName: animationName,
+                    animationDuration: String(style.animationDuration || ''),
+                    animationPlayState: String(style.animationPlayState || ''),
+                });
+            }
+            const transitionProperty = String(style.transitionProperty || '').trim();
+            if (
+                transitionProperty
+                && transitionProperty !== 'none'
+                && hasPositiveCssTime(style.transitionDuration)
+            ) {
+                transitionNodes.push({
+                    sourcePath: sourcePath,
+                    transitionProperty: transitionProperty,
+                    transitionDuration: String(style.transitionDuration || ''),
+                });
+            }
+            for (const property of resourceProperties) {
+                const value = String(style[property] || '').trim();
+                if (/url\\s*\\(/i.test(value)) {
+                    resourceStates.push({
+                        sourcePath: sourcePath,
+                        property: property,
+                        value: value,
+                    });
+                }
+            }
+            if (node.tagName && node.tagName.toLowerCase() === 'img') {
+                imageStates.push({
+                    sourcePath: sourcePath,
+                    currentSrc: String(node.currentSrc || node.getAttribute('src') || ''),
+                    complete: Boolean(node.complete),
+                    naturalWidth: Number(node.naturalWidth || 0),
+                    naturalHeight: Number(node.naturalHeight || 0),
+                });
+            }
+        }
+        return {
+            animationNodes: animationNodes,
+            transitionNodes: transitionNodes,
+            resourceStates: resourceStates,
+            imageStates: imageStates,
+        };
     }
     const INLINE_TAGS = new Set([
         'span','strong','em','b','i','a','code','mark','sub','sup',
@@ -457,6 +529,11 @@ EXTRACTION_JS = """
                     sourcePath: sourcePath,
                     excludedDescendantCount: el.querySelectorAll('*').length,
                     isolated: false,
+                    computedSafety: localizedComputedSafetyFacts(
+                        el,
+                        slide,
+                        slideNumber,
+                    ),
                 },
             };
         }
@@ -961,6 +1038,203 @@ def _localized_elements(elements: list[dict]) -> list[dict]:
     ]
 
 
+_LOCALIZED_COMPUTED_URL_RE = re.compile(
+    r"url\(\s*(?:\"(?P<double>.*?)\"|'(?P<single>.*?)'|(?P<bare>[^)]*))\s*\)",
+    re.IGNORECASE | re.DOTALL,
+)
+_ISOLATION_STRUCTURAL_KEYS = (
+    "target_id_match",
+    "authored_top_level_target",
+    "no_authored_siblings",
+    "no_master_layout_background",
+    "transparent_cleared_container",
+)
+
+
+def _empty_isolation_evidence() -> dict[str, object]:
+    return {
+        "capture_document": "fresh-page-single-region",
+        "target_id_match": False,
+        "authored_top_level_target_count": 0,
+        "authored_top_level_target": False,
+        "authored_sibling_count": 0,
+        "no_authored_siblings": False,
+        "master_layout_background_count": 0,
+        "no_master_layout_background": False,
+        "transparent_cleared_container": False,
+        "outside_paint_pixels": None,
+        "outside_pixel_count": None,
+        "outside_paint_fraction": None,
+        "pixel_outside_wrapper_zero": False,
+        "passed": False,
+    }
+
+
+def _isolation_contamination_fraction(evidence: dict[str, object]) -> float:
+    """Turn failed capture-document facts into a derived contamination signal."""
+    failed = sum(
+        1 for key in _ISOLATION_STRUCTURAL_KEYS if evidence.get(key) is not True
+    )
+    return failed / len(_ISOLATION_STRUCTURAL_KEYS)
+
+
+def _capture_resource_allowed(value: str, source_base_url: str | None) -> bool:
+    value = str(value or "").strip().strip("\"'")
+    if not value:
+        return True
+    if value.lower().startswith("data:image/"):
+        return True
+    parsed = urlparse(value)
+    if parsed.scheme.lower() != "file":
+        return False
+    if not source_base_url:
+        return False
+
+    def file_url_path(url: str) -> Path:
+        parsed_url = urlparse(url)
+        raw_path = unquote(parsed_url.path)
+        if os.name == "nt":
+            # ``file:///C:/...`` parses as ``/C:/...``.  Keeping that leading
+            # slash makes pathlib treat the drive as a relative path, which
+            # would reject a local asset that the source Contract permits.
+            if parsed_url.netloc and parsed_url.netloc.lower() != "localhost":
+                return Path("\\\\" + parsed_url.netloc + raw_path.replace("/", "\\"))
+            return Path(raw_path.lstrip("/"))
+        return Path(raw_path)
+
+    try:
+        root = file_url_path(source_base_url).resolve()
+        candidate = file_url_path(value).resolve()
+        return candidate.is_file() and candidate.is_relative_to(root)
+    except (OSError, ValueError):
+        return False
+
+
+def _localized_computed_policy_failures(
+    computed: object,
+    *,
+    source_base_url: str | None,
+) -> list[str]:
+    """Apply only Chromium-resolved safety facts; no selector matching here."""
+    if not isinstance(computed, dict):
+        return []
+    failures: list[str] = []
+    if computed.get("animationNodes"):
+        failures.append("localized_animation")
+    if computed.get("transitionNodes"):
+        failures.append("localized_animation")
+    for item in computed.get("resourceStates") or ():
+        if not isinstance(item, dict):
+            continue
+        values = _LOCALIZED_COMPUTED_URL_RE.findall(str(item.get("value") or ""))
+        urls = [next((part for part in match if part), "") for match in values]
+        if any(not _capture_resource_allowed(url, source_base_url) for url in urls):
+            failures.append("localized_external_resource")
+    for item in computed.get("imageStates") or ():
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("currentSrc") or "")
+        if source and not _capture_resource_allowed(source, source_base_url):
+            failures.append("localized_external_resource")
+        if source and (
+            item.get("complete") is not True
+            or float(item.get("naturalWidth") or 0) <= 0
+            or float(item.get("naturalHeight") or 0) <= 0
+        ):
+            failures.append("localized_external_resource")
+    return list(dict.fromkeys(failures))
+
+
+def _inspect_isolated_frame(
+    frame_png: bytes | None,
+    capture_payload: dict[str, object],
+    device_scale: float,
+) -> dict[str, object]:
+    """Measure alpha paint outside the target border box in the fresh page."""
+    evidence: dict[str, object] = {
+        "outside_paint_pixels": None,
+        "outside_pixel_count": None,
+        "outside_paint_fraction": None,
+        "pixel_outside_wrapper_zero": False,
+    }
+    if not frame_png:
+        return evidence
+    try:
+        with Image.open(BytesIO(frame_png)) as frame:
+            frame.load()
+            frame_width, frame_height = frame.size
+            alpha = frame.convert("RGBA").getchannel("A")
+            left = max(
+                0,
+                min(
+                    frame_width,
+                    math.floor(float(capture_payload.get("x") or 0.0) * device_scale),
+                ),
+            )
+            top = max(
+                0,
+                min(
+                    frame_height,
+                    math.floor(float(capture_payload.get("y") or 0.0) * device_scale),
+                ),
+            )
+            right = max(
+                left,
+                min(
+                    frame_width,
+                    math.ceil(
+                        (
+                            float(capture_payload.get("x") or 0.0)
+                            + float(capture_payload.get("width") or 0.0)
+                        )
+                        * device_scale
+                    ),
+                ),
+            )
+            bottom = max(
+                top,
+                min(
+                    frame_height,
+                    math.ceil(
+                        (
+                            float(capture_payload.get("y") or 0.0)
+                            + float(capture_payload.get("height") or 0.0)
+                        )
+                        * device_scale
+                    ),
+                ),
+            )
+
+            def painted_outside(box: tuple[int, int, int, int]) -> int:
+                histogram = alpha.crop(box).histogram()
+                return sum(histogram[1:])
+
+            outside = 0
+            if top:
+                outside += painted_outside((0, 0, frame_width, top))
+            if bottom < frame_height:
+                outside += painted_outside((0, bottom, frame_width, frame_height))
+            if left:
+                outside += painted_outside((0, top, left, bottom))
+            if right < frame_width:
+                outside += painted_outside((right, top, frame_width, bottom))
+            wrapper_pixels = max(0, right - left) * max(0, bottom - top)
+            outside_pixels = max(0, frame_width * frame_height - wrapper_pixels)
+            evidence.update(
+                {
+                    "outside_paint_pixels": outside,
+                    "outside_pixel_count": outside_pixels,
+                    "outside_paint_fraction": (
+                        outside / outside_pixels if outside_pixels else 0.0
+                    ),
+                    "pixel_outside_wrapper_zero": outside == 0,
+                }
+            )
+    except Exception:
+        logger.debug("Failed to inspect localized capture frame")
+    return evidence
+
+
 async def _rasterize_localized_fallbacks(
     browser,
     page,
@@ -1030,10 +1304,16 @@ async def _rasterize_localized_fallbacks(
                 bounds_pt,
                 slide_bounds_pt,
             )
+            computed_failures = _localized_computed_policy_failures(
+                fallback.get("computedSafety"),
+                source_base_url=source_base_url,
+            )
+            fallback["computedSafetyFailureCodes"] = computed_failures
             capture_facts[localized_id] = {
                 "source_object": source_object,
                 "bounds_pt": bounds_pt,
-                "preflight_codes": [finding.code for finding in geometry_findings],
+                "preflight_codes": [finding.code for finding in geometry_findings]
+                + computed_failures,
             }
             regions.append(
                 LocalizedRegion(
@@ -1083,17 +1363,23 @@ async def _rasterize_localized_fallbacks(
                 localized_id,
             )
             if not capture_payload:
+                isolation_evidence = _empty_isolation_evidence()
                 audit = audit_localized_capture(
                     None,
                     bounds_pt=bounds_pt,
                     source_object=source_object,
+                    contamination_fraction=_isolation_contamination_fraction(
+                        isolation_evidence
+                    ),
                     isolated=False,
                     excluded_descendants=int(
                         fallback.get("excludedDescendantCount") or 0
                     ),
+                    isolation_evidence=isolation_evidence,
                 )
                 fallback.update(
                     {
+                        "isolationEvidence": isolation_evidence,
                         "captureAudit": audit.as_dict(),
                         "captureFailureCodes": [
                             *preflight_codes,
@@ -1126,6 +1412,7 @@ async def _rasterize_localized_fallbacks(
             )
             png_bytes: bytes | None = None
             frame_png: bytes | None = None
+            isolation_evidence = _empty_isolation_evidence()
             try:
                 if capture_allowed and not preflight_codes:
                     capture_page = await context.new_page()
@@ -1135,6 +1422,59 @@ async def _rasterize_localized_fallbacks(
                             image.complete && image.naturalWidth > 0)""",
                         timeout=PLAYWRIGHT_TIMEOUT_MS,
                     )
+                    document_facts = await capture_page.evaluate(
+                        """(value) => {
+                            const container = document.querySelector(
+                                '[data-pptx-localized-capture="true"]'
+                            );
+                            if (!container) return null;
+                            const matches = Array.from(
+                                container.querySelectorAll('[data-pptx-localized-id]')
+                            ).filter(
+                                node => node.getAttribute('data-pptx-localized-id') === value
+                            );
+                            const target = matches.length === 1 ? matches[0] : null;
+                            const topLevel = Array.from(container.children);
+                            const siblings = topLevel.filter(node => node !== target);
+                            const outsideScaffold = Array.from(document.body.children)
+                                .filter(node => node !== container);
+                            const forbidden = Array.from(document.querySelectorAll(
+                                '[data-pptx-master], [data-pptx-layout], [data-pptx-background], .master, .layout, .master-slide, .layout-slide, .slide-background, .master-background, .layout-background'
+                            )).filter(
+                                node => !target || (node !== target && !target.contains(node))
+                            );
+                            const transparent = node => {
+                                const style = getComputedStyle(node);
+                                const color = String(style.backgroundColor || '').toLowerCase();
+                                return (
+                                    (color === 'transparent' || /,\\s*0\\)?$/.test(color))
+                                    && style.backgroundImage === 'none'
+                                );
+                            };
+                            return {
+                                target_id_match: matches.length === 1
+                                    && target !== null
+                                    && target.parentElement === container,
+                                authored_top_level_target_count: topLevel.filter(
+                                    node => node === target
+                                ).length,
+                                authored_top_level_target: topLevel.length === 1
+                                    && target !== null
+                                    && target.parentElement === container,
+                                authored_sibling_count: siblings.length + outsideScaffold.length,
+                                no_authored_siblings: siblings.length === 0
+                                    && outsideScaffold.length === 0,
+                                master_layout_background_count: forbidden.length,
+                                no_master_layout_background: forbidden.length === 0,
+                                transparent_cleared_container: transparent(container)
+                                    && transparent(document.body)
+                                    && transparent(document.documentElement),
+                            };
+                        }""",
+                        localized_id,
+                    )
+                    if isinstance(document_facts, dict):
+                        isolation_evidence.update(document_facts)
                     target = capture_page.locator(
                         f'[data-pptx-localized-id="{localized_id}"]'
                     ).first
@@ -1153,108 +1493,52 @@ async def _rasterize_localized_fallbacks(
                         omit_background=True,
                     )
             except Exception:
-                logger.debug("Failed to rasterize localized fallback %s", localized_id)
+                logger.debug(
+                    "Failed to rasterize localized fallback %s",
+                    localized_id,
+                    exc_info=True,
+                )
             finally:
                 await context.close()
 
-            point_width = float(capture_payload.get("width") or 0) / css_pixels_per_point
-            point_height = float(capture_payload.get("height") or 0) / css_pixels_per_point
-            overflow = False
-            if frame_png:
-                try:
-                    with Image.open(BytesIO(frame_png)) as frame:
-                        frame.load()
-                        frame_width, frame_height = frame.size
-                        alpha = frame.convert("RGBA").getchannel("A")
-                        left = max(
-                            0,
-                            min(
-                                frame_width,
-                                math.floor(
-                                    float(capture_payload.get("x") or 0.0)
-                                    * device_scale
-                                )
-                            ),
-                        )
-                        top = max(
-                            0,
-                            min(
-                                frame_height,
-                                math.floor(
-                                    float(capture_payload.get("y") or 0.0)
-                                    * device_scale
-                                )
-                            ),
-                        )
-                        right = max(
-                            left,
-                            min(
-                                frame_width,
-                                math.ceil(
-                                    (
-                                        float(capture_payload.get("x") or 0.0)
-                                        + float(capture_payload.get("width") or 0.0)
-                                    )
-                                    * device_scale
-                                ),
-                            ),
-                        )
-                        bottom = max(
-                            top,
-                            min(
-                                frame_height,
-                                math.ceil(
-                                    (
-                                        float(capture_payload.get("y") or 0.0)
-                                        + float(capture_payload.get("height") or 0.0)
-                                    )
-                                    * device_scale
-                                ),
-                            ),
-                        )
-
-                        def painted_outside(box: tuple[int, int, int, int]) -> int:
-                            histogram = alpha.crop(box).histogram()
-                            return sum(histogram[1:])
-
-                        outside = 0
-                        if top:
-                            outside += painted_outside((0, 0, frame_width, top))
-                        if bottom < frame_height:
-                            outside += painted_outside(
-                                (0, bottom, frame_width, frame_height)
-                            )
-                        if left:
-                            outside += painted_outside((0, top, left, bottom))
-                        if right < frame_width:
-                            outside += painted_outside(
-                                (right, top, frame_width, bottom)
-                            )
-                        overflow = outside > 0
-                except Exception:
-                    logger.debug(
-                        "Failed to inspect localized overflow for %s", localized_id
-                    )
+            pixel_evidence = _inspect_isolated_frame(
+                frame_png,
+                capture_payload,
+                device_scale,
+            )
+            isolation_evidence.update(pixel_evidence)
+            isolation_evidence["passed"] = bool(
+                all(
+                    isolation_evidence.get(key) is True
+                    for key in _ISOLATION_STRUCTURAL_KEYS
+                )
+                and isolation_evidence.get("pixel_outside_wrapper_zero") is True
+            )
+            overflow = bool(
+                isolation_evidence.get("outside_paint_pixels") is not None
+                and isolation_evidence.get("pixel_outside_wrapper_zero") is False
+            )
+            contamination_fraction = _isolation_contamination_fraction(
+                isolation_evidence
+            )
+            isolated = isolation_evidence["passed"] is True
 
             audit = audit_localized_capture(
                 png_bytes,
                 bounds_pt=bounds_pt,
                 source_object=source_object,
-                contamination_fraction=0.0,
+                contamination_fraction=contamination_fraction,
                 overflow=overflow,
-                isolated=bool(
-                    capture_allowed
-                    and not preflight_codes
-                    and png_bytes is not None
-                    and frame_png is not None
-                ),
+                isolated=isolated,
                 excluded_descendants=int(
                     fallback.get("excludedDescendantCount") or 0
                 ),
+                isolation_evidence=isolation_evidence,
             )
             failure_codes = [*preflight_codes, *audit.failure_codes]
             fallback.update(
                 {
+                    "isolationEvidence": isolation_evidence,
                     "captureAudit": audit.as_dict(),
                     "captureFailureCodes": list(dict.fromkeys(failure_codes)),
                     "effectivelyTransparent": audit.effectively_transparent,
@@ -1283,8 +1567,11 @@ async def _rasterize_localized_fallbacks(
                     "density": 2.0,
                     "nonblank": audit.nonblank,
                     "densityVerified": True,
-                    "isolated": True,
-                    "isolation": "fresh-page-single-region",
+                    "isolated": audit.isolated,
+                    "isolation": str(
+                        isolation_evidence.get("capture_document")
+                        or "fresh-page-single-region"
+                    ),
                     "optInReason": "explicit-author-opt-in",
                 }
             )

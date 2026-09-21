@@ -196,6 +196,7 @@ class LocalizedFallbackSpec:
     approved: bool
     isolated: bool
     isolation: str
+    isolation_evidence: dict[str, Any]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -228,7 +229,9 @@ class LocalizedFallbackSpec:
             "isolation": {
                 "isolated": self.isolated,
                 "method": self.isolation,
+                "evidence": dict(self.isolation_evidence),
             },
+            "isolation_evidence": dict(self.isolation_evidence),
         }
 
 
@@ -2902,6 +2905,14 @@ def _lower_slide(
                     source_slide,
                     localized_source_object,
                 )
+            isolation_evidence = localized.get("isolationEvidence")
+            if not isinstance(isolation_evidence, dict):
+                capture_audit = localized.get("captureAudit")
+                isolation_evidence = (
+                    capture_audit.get("isolation_evidence", {})
+                    if isinstance(capture_audit, dict)
+                    else {}
+                )
             spec = LocalizedFallbackSpec(
                 source_identity=source_identity,
                 source_path=localized_source_object,
@@ -2928,6 +2939,7 @@ def _lower_slide(
                 isolation=str(
                     localized.get("isolation") or "fresh-page-single-region"
                 ),
+                isolation_evidence=dict(isolation_evidence),
             )
             picture_props, fallback_props = _picture_props(
                 element,

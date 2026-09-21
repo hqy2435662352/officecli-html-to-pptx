@@ -16,7 +16,7 @@ from io import BytesIO
 import math
 from pathlib import Path
 import re
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import unquote, urlparse
 
 from PIL import Image, UnidentifiedImageError
@@ -62,7 +62,6 @@ _IMPORT_RE = re.compile(r"@import\b", re.I)
 _KEYFRAMES_RE = re.compile(r"@(?:-webkit-)?keyframes\b", re.I)
 _ANIMATION_PROPERTY_RE = re.compile(r"^(?:-webkit-)?(?:animation|transition)(?:-.+)?$")
 _EVENT_ATTRIBUTE_RE = re.compile(r"^on[a-z][a-z0-9_-]*$", re.I)
-_CSS_BLOCK_RE = re.compile(r"(?P<selectors>[^{}]+)\{(?P<body>[^{}]*)\}", re.S)
 
 
 @dataclass(frozen=True)
@@ -117,6 +116,7 @@ class LocalizedCaptureAudit:
     isolated: bool
     excluded_descendants: int
     failure_codes: tuple[str, ...]
+    isolation_evidence: dict[str, Any]
 
     @property
     def passed(self) -> bool:
@@ -145,6 +145,7 @@ class LocalizedCaptureAudit:
             "overflow": self.overflow,
             "isolated": self.isolated,
             "excluded_descendants": self.excluded_descendants,
+            "isolation_evidence": dict(self.isolation_evidence),
             "failure_codes": list(self.failure_codes),
             "passed": self.passed,
         }
@@ -287,75 +288,6 @@ def _is_external_or_unsafe_url(value: str, *, base_dir: Path | None) -> bool:
 
 def _finding(code: str, message: str, source: str) -> LocalizedPolicyFinding:
     return LocalizedPolicyFinding(code, message, source)
-
-
-def _selector_targets(selector: str, element: Any) -> bool:
-    """Best-effort match for the simple selectors used by Author fixtures.
-
-    Full CSS matching belongs to Chromium.  The safety gate only needs to
-    notice a stylesheet rule that can apply an animation or external URL to a
-    region; class, id, and terminal-tag tokens cover that decision without
-    growing a second selector engine.
-    """
-    selector = selector.strip()
-    if not selector or selector.startswith("@"):
-        return False
-    element_id = str(element.get("id", "") or "").strip()
-    classes = set(str(element.get("class", "") or "").split())
-    tag = str(getattr(element, "tag", "")).lower()
-    if element_id and re.search(rf"#{re.escape(element_id)}(?:\b|$)", selector):
-        return True
-    if any(re.search(rf"\.{re.escape(token)}(?:\b|$)", selector) for token in classes):
-        return True
-    terminal = re.search(r"(?:^|[\s>+~])([a-zA-Z][a-zA-Z0-9_-]*)\s*(?::[-\w]+)?$", selector)
-    return bool(terminal and terminal.group(1).lower() == tag)
-
-
-def _stylesheet_findings(
-    document: Any,
-    region: Any,
-) -> list[LocalizedPolicyFinding]:
-    findings: list[LocalizedPolicyFinding] = []
-    targets = list(_iter_elements(region))
-    for style in document.xpath("//style") if hasattr(document, "xpath") else ():
-        css = str(style.text or "")
-        for match in _CSS_BLOCK_RE.finditer(css):
-            selectors = match.group("selectors").strip()
-            if selectors.startswith("@"):
-                continue
-            if not any(
-                _selector_targets(selector, target)
-                for selector in selectors.split(",")
-                for target in targets
-            ):
-                continue
-            declarations: dict[str, str] = {}
-            for declaration in _split_declarations(match.group("body")):
-                if ":" not in declaration:
-                    continue
-                name, value = declaration.split(":", 1)
-                name = name.strip().lower()
-                if name:
-                    declarations[name] = value.strip()
-            for property_name, value in declarations.items():
-                if _ANIMATION_PROPERTY_RE.match(property_name):
-                    findings.append(
-                        _finding(
-                            "localized_animation",
-                            f"CSS {property_name} is not permitted in a static localized region.",
-                            _source_object(region),
-                        )
-                    )
-                for url in _URL_RE.finditer(value):
-                    if _is_external_or_unsafe_url(url.group("value"), base_dir=None):
-                        findings.append(
-                            _finding(
-                                "localized_external_resource",
-                                "External CSS resources are not deterministic.",
-                                _source_object(region),
-                            )
-                        )
-    return findings
 
 
 def validate_localized_document(
@@ -542,8 +474,6 @@ def validate_localized_document(
                         _source_object(style),
                     )
                 )
-
-        findings.extend(_stylesheet_findings(element.getroottree().getroot(), element))
 
     return tuple(findings)
 
@@ -732,6 +662,7 @@ def audit_localized_capture(
     overflow: bool = False,
     isolated: bool = True,
     excluded_descendants: int = 0,
+    isolation_evidence: Mapping[str, Any] | None = None,
 ) -> LocalizedCaptureAudit:
     """Audit a PNG capture against fixed 2 px/pt and safety evidence.
 
@@ -812,6 +743,7 @@ def audit_localized_capture(
         isolated=isolated,
         excluded_descendants=excluded_descendants,
         failure_codes=failures,
+        isolation_evidence=dict(isolation_evidence or {}),
     )
 
 

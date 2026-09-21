@@ -62,7 +62,6 @@ def test_adversarial_fixture_keeps_safe_region_and_blocks_unsafe_region() -> Non
         "localized_executable_content",
         "localized_unsupported_tag",
         "localized_external_resource",
-        "localized_animation",
         "localized_interactive_content",
     }
     assert not any("safe-svg" in item.source_object for item in findings)
