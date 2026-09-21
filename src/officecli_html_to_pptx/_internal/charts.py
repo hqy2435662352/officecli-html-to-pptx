@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
+import re
 from typing import Any, Mapping
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape as xml_escape
@@ -22,6 +23,31 @@ CHART_TYPES = CATEGORY_CHART_TYPES + PART_TO_WHOLE_CHART_TYPES
 _CHART_TYPE_SET = frozenset(CHART_TYPES)
 _PART_TO_WHOLE_TYPE_SET = frozenset(PART_TO_WHOLE_CHART_TYPES)
 _CHART_LABEL_MODES = frozenset({"none", "value", "percent"})
+_CHART_LEGEND_POSITIONS = frozenset({"none", "top", "bottom", "left", "right"})
+_CHART_NUMBER_FORMATS = frozenset(
+    {
+        "general",
+        "integer",
+        "integer-group",
+        "decimal1",
+        "decimal1-group",
+        "percent0",
+        "percent1",
+    }
+)
+_NUMBER_FORMAT_MAP = {
+    "general": "General",
+    "integer": "0",
+    "integer-group": "#,##0",
+    "decimal1": "0.0",
+    "decimal1-group": "#,##0.0",
+    "percent0": "0%",
+    "percent1": "0.0%",
+}
+_NUMBER_FORMAT_REVERSE_MAP = {
+    value.lower(): key for key, value in _NUMBER_FORMAT_MAP.items()
+}
+_SERIES_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 DOUGHNUT_HOLE_SIZE = 50
 
 
@@ -40,6 +66,8 @@ class ChartSeriesSpec:
 
     name: str
     values: tuple[float, ...]
+    color: str = "auto"
+    office_color: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {"name": self.name, "values": list(self.values)}
@@ -57,6 +85,11 @@ class ChartSpec:
     bounds: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     data_labels: str = "none"
     doughnut_hole_size: int | None = None
+    title: str | None = None
+    legend: str = "none"
+    category_axis_title: str | None = None
+    value_axis_title: str | None = None
+    value_axis_number_format: str = "general"
 
     def semantic_dict(self) -> dict[str, Any]:
         """Return only normalized material chart semantics."""
@@ -68,6 +101,18 @@ class ChartSpec:
         }
         if self.doughnut_hole_size is not None:
             result["hole_size"] = self.doughnut_hole_size
+        if self.title is not None:
+            result["title"] = self.title
+        if self.legend != "none":
+            result["legend"] = self.legend
+        if self.category_axis_title is not None:
+            result["category_axis_title"] = self.category_axis_title
+        if self.value_axis_title is not None:
+            result["value_axis_title"] = self.value_axis_title
+        if self.value_axis_number_format != "general":
+            result["value_axis_number_format"] = self.value_axis_number_format
+        if any(series.color != "auto" for series in self.series):
+            result["series_colors"] = [series.color for series in self.series]
         return result
 
     def as_dict(self) -> dict[str, Any]:
@@ -76,6 +121,15 @@ class ChartSpec:
             "source_identity": self.source_identity,
             "source_path": self.source_path,
             "bounds_pt": list(self.bounds),
+            "series_colors": [series.color for series in self.series],
+            "presentation": {
+                "title": self.title,
+                "legend": self.legend,
+                "labels": self.data_labels,
+                "category_axis_title": self.category_axis_title,
+                "value_axis_title": self.value_axis_title,
+                "value_axis_number_format": self.value_axis_number_format,
+            },
             **self.semantic_dict(),
         }
 
@@ -93,6 +147,12 @@ class ChartReadback:
     series: tuple[ChartSeriesSpec, ...]
     data_labels: str = "none"
     doughnut_hole_size: int | None = None
+    title: str | None = None
+    legend: str = "none"
+    category_axis_title: str | None = None
+    value_axis_title: str | None = None
+    value_axis_number_format: str = "general"
+    office_series_colors: tuple[str | None, ...] = ()
 
     def semantic_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -103,6 +163,18 @@ class ChartReadback:
         result["labels"] = self.data_labels
         if self.doughnut_hole_size is not None:
             result["hole_size"] = self.doughnut_hole_size
+        if self.title is not None:
+            result["title"] = self.title
+        if self.legend != "none":
+            result["legend"] = self.legend
+        if self.category_axis_title is not None:
+            result["category_axis_title"] = self.category_axis_title
+        if self.value_axis_title is not None:
+            result["value_axis_title"] = self.value_axis_title
+        if self.value_axis_number_format != "general":
+            result["value_axis_number_format"] = self.value_axis_number_format
+        if any(series.color != "auto" for series in self.series):
+            result["series_colors"] = [series.color for series in self.series]
         return result
 
     def as_dict(self) -> dict[str, Any]:
@@ -112,6 +184,20 @@ class ChartReadback:
             "source_path": self.source_path,
             "bounds_pt": list(self.bounds),
             "native_kind": self.native_kind,
+            "series_colors": [series.color for series in self.series],
+            "presentation": {
+                "title": self.title,
+                "legend": self.legend,
+                "labels": self.data_labels,
+                "category_axis_title": self.category_axis_title,
+                "value_axis_title": self.value_axis_title,
+                "value_axis_number_format": self.value_axis_number_format,
+            },
+            **(
+                {"office_series_colors": list(self.office_series_colors)}
+                if self.office_series_colors
+                else {}
+            ),
             **self.semantic_dict(),
         }
 
@@ -277,7 +363,7 @@ def parse_chart_spec(
         item = _expect_object(raw_series, source_object, f"series[{series_index}]")
         _reject_unknown_fields(
             item,
-            frozenset({"name", "values"}),
+            frozenset({"name", "values", "color"}),
             source_object,
             f"series[{series_index}]",
         )
@@ -326,29 +412,67 @@ def parse_chart_spec(
                     f"Chart value {series_index}.{value_index} at {source_object} must be a finite JSON number.",
                 )
             values.append(converted)
-        series.append(ChartSeriesSpec(normalized_name, tuple(values)))
+        if "color" not in item:
+            color = "auto"
+        else:
+            raw_color = item["color"]
+            if not isinstance(raw_color, str) or not _SERIES_COLOR_RE.fullmatch(raw_color):
+                raise ChartSpecError(
+                    "invalid_chart_series_color",
+                    f"Chart series {series_index} color at {source_object} must be a six-digit #RRGGBB value.",
+                )
+            color = raw_color.upper()
+        series.append(ChartSeriesSpec(normalized_name, tuple(values), color=color))
 
     data_labels = "none"
-    presentation_value = root.get("presentation")
-    if presentation_value is not None:
+    title: str | None = None
+    legend = "none"
+    category_axis_title: str | None = None
+    value_axis_title: str | None = None
+    value_axis_number_format = "general"
+    if "presentation" in root:
+        presentation_value = root["presentation"]
         presentation = _expect_object(presentation_value, source_object, "presentation")
+        if "holeSize" in presentation:
+            raise ChartSpecError(
+                "part_to_whole_hole_size_unsupported",
+                f"Authored holeSize at {source_object} is not part of the native-chart Contract.",
+            )
         if chart_type in _PART_TO_WHOLE_TYPE_SET:
             if "categoryAxis" in presentation or "valueAxis" in presentation:
                 raise ChartSpecError(
                     "part_to_whole_axis_unsupported",
                     f"Pie and doughnut charts at {source_object} cannot declare categoryAxis or valueAxis.",
                 )
-            if "holeSize" in presentation:
-                raise ChartSpecError(
-                    "part_to_whole_hole_size_unsupported",
-                    f"Authored holeSize at {source_object} is not part of the native-chart Contract.",
-                )
         _reject_unknown_fields(
             presentation,
-            frozenset({"labels"}),
+            frozenset(
+                {
+                    "title",
+                    "legend",
+                    "labels",
+                    "categoryAxis",
+                    "valueAxis",
+                }
+            ),
             source_object,
             "presentation",
         )
+        if "title" in presentation:
+            raw_title = presentation["title"]
+            if not isinstance(raw_title, str) or not raw_title.strip():
+                raise ChartSpecError(
+                    "invalid_chart_title",
+                    f"Chart title at {source_object} must be a non-empty string after trimming.",
+                )
+            title = raw_title.strip()
+        raw_legend = presentation.get("legend", "none")
+        if not isinstance(raw_legend, str) or raw_legend not in _CHART_LEGEND_POSITIONS:
+            raise ChartSpecError(
+                "invalid_chart_legend",
+                f"Chart legend at {source_object} must be one of none, top, bottom, left, or right.",
+            )
+        legend = raw_legend
         raw_labels = presentation.get("labels", "none")
         if not isinstance(raw_labels, str) or raw_labels not in _CHART_LABEL_MODES:
             raise ChartSpecError(
@@ -356,6 +480,54 @@ def parse_chart_spec(
                 f"Chart labels at {source_object} must be one of none, value, or percent.",
             )
         data_labels = raw_labels
+
+        if "categoryAxis" in presentation:
+            category_axis = _expect_object(
+                presentation["categoryAxis"], source_object, "categoryAxis"
+            )
+            _reject_unknown_fields(
+                category_axis,
+                frozenset({"title"}),
+                source_object,
+                "categoryAxis",
+            )
+            if "title" in category_axis:
+                raw_axis_title = category_axis["title"]
+                if not isinstance(raw_axis_title, str) or not raw_axis_title.strip():
+                    raise ChartSpecError(
+                        "invalid_chart_axis_title",
+                        f"Category-axis title at {source_object} must be a non-empty string after trimming.",
+                    )
+                category_axis_title = raw_axis_title.strip()
+
+        if "valueAxis" in presentation:
+            value_axis = _expect_object(
+                presentation["valueAxis"], source_object, "valueAxis"
+            )
+            _reject_unknown_fields(
+                value_axis,
+                frozenset({"title", "numberFormat"}),
+                source_object,
+                "valueAxis",
+            )
+            if "title" in value_axis:
+                raw_axis_title = value_axis["title"]
+                if not isinstance(raw_axis_title, str) or not raw_axis_title.strip():
+                    raise ChartSpecError(
+                        "invalid_chart_axis_title",
+                        f"Value-axis title at {source_object} must be a non-empty string after trimming.",
+                    )
+                value_axis_title = raw_axis_title.strip()
+            raw_number_format = value_axis.get("numberFormat", "general")
+            if (
+                not isinstance(raw_number_format, str)
+                or raw_number_format not in _CHART_NUMBER_FORMATS
+            ):
+                raise ChartSpecError(
+                    "invalid_chart_number_format",
+                    f"Value-axis numberFormat at {source_object} must use a closed semantic token.",
+                )
+            value_axis_number_format = raw_number_format
     if data_labels == "percent" and chart_type in CATEGORY_CHART_TYPES:
         raise ChartSpecError(
             "chart_percent_labels_type",
@@ -392,6 +564,11 @@ def parse_chart_spec(
         bounds=_normalize_bounds(bounds),
         data_labels=data_labels,
         doughnut_hole_size=doughnut_hole_size,
+        title=title,
+        legend=legend,
+        category_axis_title=category_axis_title,
+        value_axis_title=value_axis_title,
+        value_axis_number_format=value_axis_number_format,
     )
 
 
@@ -428,6 +605,13 @@ class OfficeCLIChartAdapter:
         "pie": "pie",
         "doughnut": "doughnut",
     }
+    _LEGEND_READBACK_MAP = {
+        "none": "none",
+        "top": "top",
+        "bottom": "bottom",
+        "left": "left",
+        "right": "right",
+    }
 
     @classmethod
     def creation_props(
@@ -454,7 +638,18 @@ class OfficeCLIChartAdapter:
             "width": f"{width:.4f}pt",
             "height": f"{height:.4f}pt",
         }
+        # These are the adapter's private OfficeCLI property names.  The
+        # Author Contract exposes only normalized tokens on ChartSpec.
+        props["legend"] = spec.legend
         props["dataLabels"] = spec.data_labels
+        if spec.chart_type in CATEGORY_CHART_TYPES:
+            props["axisnumfmt"] = _NUMBER_FORMAT_MAP[spec.value_axis_number_format]
+        if spec.title is not None:
+            props["title"] = spec.title
+        if spec.category_axis_title is not None:
+            props["catTitle"] = spec.category_axis_title
+        if spec.value_axis_title is not None:
+            props["axistitle"] = spec.value_axis_title
         if spec.doughnut_hole_size is not None:
             props["holeSize"] = str(spec.doughnut_hole_size)
         return props
@@ -476,14 +671,17 @@ class OfficeCLIChartAdapter:
             }
         ]
         for index, series in enumerate(spec.series, start=1):
+            series_props: dict[str, str] = {
+                "name": series.name,
+                "values": ",".join(_number_text(value) for value in series.values),
+            }
+            if series.color != "auto":
+                series_props["color"] = series.color[1:]
             commands.append(
                 {
                     "command": "set",
                     "path": f"{chart_path}/series[{index}]",
-                    "props": {
-                        "name": series.name,
-                        "values": ",".join(_number_text(value) for value in series.values),
-                    },
+                    "props": series_props,
                 }
             )
         return commands
@@ -513,6 +711,16 @@ class OfficeCLIChartAdapter:
             value_node = point.find("{*}v")
             points.append((index, value_node.text if value_node is not None and value_node.text is not None else ""))
         return tuple(value for _, value in sorted(points, key=lambda item: item[0]))
+
+    @staticmethod
+    def _raw_series_color(node: ElementTree.Element) -> str | None:
+        color_node = node.find(".//{*}spPr/{*}solidFill/{*}srgbClr")
+        if color_node is None:
+            return None
+        value = str(color_node.get("val", "") or "").strip()
+        if re.fullmatch(r"[0-9a-fA-F]{6}", value):
+            return f"#{value.upper()}"
+        return None
 
     @classmethod
     def _raw_chart_data(
@@ -555,16 +763,27 @@ class OfficeCLIChartAdapter:
                 values = tuple(float(value) for value in raw_values)
             except ValueError:
                 values = ()
-            series.append(ChartSeriesSpec(name, values))
+            office_color = cls._raw_series_color(series_node)
+            series.append(
+                ChartSeriesSpec(
+                    name,
+                    values,
+                    color=office_color or "auto",
+                    office_color=office_color,
+                )
+            )
         return categories, tuple(series)
 
     @staticmethod
     def _raw_presentation(
         raw_xml: str,
-    ) -> tuple[str | None, int | None]:
+    ) -> dict[str, Any]:
         root = ElementTree.fromstring(raw_xml)
+        chart_node = root.find("{*}chart")
         labels: str | None = None
-        labels_node = root.find(".//{*}dLbls")
+        labels_node = (
+            chart_node.find(".//{*}dLbls") if chart_node is not None else None
+        )
         if labels_node is not None:
             show_value = labels_node.find("{*}showVal")
             show_percent = labels_node.find("{*}showPercent")
@@ -583,13 +802,65 @@ class OfficeCLIChartAdapter:
                 hole_size = int(hole_node.get("val", ""))
             except (TypeError, ValueError):
                 hole_size = None
-        return labels, hole_size
+
+        def title_text(node: ElementTree.Element | None) -> str | None:
+            if node is None:
+                return None
+            text = "".join(
+                item.text or "" for item in node.findall(".//{*}t")
+            ).strip()
+            return text or None
+
+        title = title_text(chart_node.find("{*}title") if chart_node is not None else None)
+        plot_area = chart_node.find("{*}plotArea") if chart_node is not None else None
+        category_axis = plot_area.find("{*}catAx") if plot_area is not None else None
+        value_axis = plot_area.find("{*}valAx") if plot_area is not None else None
+        category_axis_title = title_text(
+            category_axis.find("{*}title") if category_axis is not None else None
+        )
+        value_axis_title = title_text(
+            value_axis.find("{*}title") if value_axis is not None else None
+        )
+        number_format_node = (
+            value_axis.find("{*}numFmt") if value_axis is not None else None
+        )
+        raw_number_format = (
+            str(number_format_node.get("formatCode", "") or "").strip().lower()
+            if number_format_node is not None
+            else ""
+        )
+        value_axis_number_format = _NUMBER_FORMAT_REVERSE_MAP.get(
+            raw_number_format, "general"
+        )
+        legend_node = chart_node.find("{*}legend") if chart_node is not None else None
+        legend_position = "none"
+        if legend_node is not None:
+            position_node = legend_node.find("{*}legendPos")
+            legend_position = {
+                "t": "top",
+                "b": "bottom",
+                "l": "left",
+                "r": "right",
+            }.get(
+                str(position_node.get("val", "") if position_node is not None else "").lower(),
+                "none",
+            )
+        return {
+            "labels": labels,
+            "hole_size": hole_size,
+            "title": title,
+            "legend": legend_position,
+            "category_axis_title": category_axis_title,
+            "value_axis_title": value_axis_title,
+            "value_axis_number_format": value_axis_number_format,
+        }
 
     @classmethod
     def readback(
         cls,
         node: Mapping[str, Any],
         raw_xml: str | None = None,
+        expected_series_colors: tuple[str, ...] | None = None,
     ) -> ChartReadback:
         format_data = node.get("format", {})
         raw_chart_type = str(format_data.get("chartType", "") or "").lower()
@@ -604,18 +875,50 @@ class OfficeCLIChartAdapter:
                 doughnut_hole_size = int(float(str(raw_hole_size).strip()))
             except (TypeError, ValueError):
                 doughnut_hole_size = None
+        presentation = (
+            cls._raw_presentation(raw_xml) if raw_xml is not None else {}
+        )
+        title = presentation.get("title") or str(format_data.get("title", "") or "").strip() or None
+        legend = presentation.get("legend") or str(format_data.get("legend", "none") or "none").lower()
+        legend = cls._LEGEND_READBACK_MAP.get(legend, "none")
+        category_axis_title = presentation.get("category_axis_title") or str(
+            format_data.get("catTitle", "") or ""
+        ).strip() or None
+        value_axis_title = presentation.get("value_axis_title") or str(
+            format_data.get("axisTitle", "") or ""
+        ).strip() or None
+        value_axis_number_format = presentation.get("value_axis_number_format")
+        if value_axis_number_format is None:
+            raw_number_format = str(format_data.get("axisNumFmt", "") or "").strip().lower()
+            value_axis_number_format = _NUMBER_FORMAT_REVERSE_MAP.get(
+                raw_number_format, "general"
+            )
+
         series_nodes = [
             child
             for child in node.get("children", []) or []
             if str(child.get("type", "")).lower() == "series"
         ]
         series: list[ChartSeriesSpec] = []
+        office_series_colors: list[str | None] = []
         for index, child in enumerate(series_nodes):
             child_format = child.get("format", {})
             name = str(child_format.get("name", child.get("text", "")) or "")
             raw_values = str(child_format.get("values", "") or "")
             values = tuple(float(value) for value in raw_values.split(",") if value != "")
-            series.append(ChartSeriesSpec(name, values))
+            raw_color = str(child_format.get("color", "") or "").strip().upper()
+            office_color = (
+                raw_color if re.fullmatch(r"#[0-9A-F]{6}", raw_color) else None
+            )
+            office_series_colors.append(office_color)
+            series.append(
+                ChartSeriesSpec(
+                    name,
+                    values,
+                    color=office_color or "auto",
+                    office_color=office_color,
+                )
+            )
 
         raw_categories = str(format_data.get("categories", "") or "")
         categories = tuple(raw_categories.split(",")) if raw_categories else ()
@@ -625,11 +928,42 @@ class OfficeCLIChartAdapter:
                 categories = raw_categories
             if raw_series:
                 series = list(raw_series)
-            raw_labels, raw_hole_size = cls._raw_presentation(raw_xml)
+            office_series_colors = [item.office_color for item in raw_series]
+            raw_presentation = cls._raw_presentation(raw_xml)
+            raw_labels = raw_presentation["labels"]
+            raw_hole_size = raw_presentation["hole_size"]
             if raw_labels is not None:
                 data_labels = raw_labels
             if raw_hole_size is not None:
                 doughnut_hole_size = raw_hole_size
+            title = raw_presentation["title"]
+            legend = raw_presentation["legend"]
+            category_axis_title = raw_presentation["category_axis_title"]
+            value_axis_title = raw_presentation["value_axis_title"]
+            value_axis_number_format = raw_presentation["value_axis_number_format"]
+
+        if expected_series_colors is not None:
+            normalized_series: list[ChartSeriesSpec] = []
+            for index, item in enumerate(series):
+                authored_color = (
+                    expected_series_colors[index]
+                    if index < len(expected_series_colors)
+                    else "auto"
+                )
+                office_color = (
+                    office_series_colors[index]
+                    if index < len(office_series_colors)
+                    else None
+                )
+                normalized_series.append(
+                    ChartSeriesSpec(
+                        item.name,
+                        item.values,
+                        color=authored_color,
+                        office_color=office_color,
+                    )
+                )
+            series = normalized_series
 
         def point_value(value: Any) -> float:
             text = str(value or "").strip().lower()
@@ -656,6 +990,12 @@ class OfficeCLIChartAdapter:
             series=tuple(series),
             data_labels=data_labels,
             doughnut_hole_size=doughnut_hole_size,
+            title=title,
+            legend=legend,
+            category_axis_title=category_axis_title,
+            value_axis_title=value_axis_title,
+            value_axis_number_format=value_axis_number_format,
+            office_series_colors=tuple(office_series_colors),
         )
 
 

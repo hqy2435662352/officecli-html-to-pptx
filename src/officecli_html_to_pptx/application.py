@@ -323,10 +323,13 @@ def _collect_issues(path: Path) -> dict[str, Any]:
     return {"status": "PASS", "output": text}
 
 
-def _collect_readback(path: Path) -> dict[str, Any]:
+def _collect_readback(
+    path: Path,
+    expected_manifest: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Read the published PPTX independently of the compiler manifest."""
 
-    manifest, _ = _officecli_manifest(path)
+    manifest, _ = _officecli_manifest(path, expected_manifest)
     return manifest
 
 
@@ -815,7 +818,7 @@ async def build_author_html(
         slide_count = int(compiled.slide_count)
         validation = _validate_build_output(staged_pptx)
         issues = _collect_issues(staged_pptx)
-        readback = _collect_readback(staged_pptx)
+        readback = _collect_readback(staged_pptx, compiled.manifest)
         native_evidence = _native_slice_evidence(
             compiled=compiled,
             readback=readback,

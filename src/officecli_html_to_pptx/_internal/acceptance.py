@@ -1017,6 +1017,19 @@ def compare_manifests(
                     expected=left.get("chart", {}),
                     actual=right.get("chart", {}),
                 )
+            expected_chart_seam = left.get("chart_seam", {}) or {}
+            actual_chart_seam = right.get("chart_seam", {}) or {}
+            if (
+                "series_colors" in expected_chart_seam
+                and expected_chart_seam.get("series_colors")
+                != actual_chart_seam.get("series_colors")
+            ):
+                mismatch(
+                    "authored chart series colors differ",
+                    object=name,
+                    expected=expected_chart_seam.get("series_colors"),
+                    actual=actual_chart_seam.get("series_colors"),
+                )
             continue
         if _normal_text(
             left.get("text"), normalize_nbsp=allow_officehtml_projection_defaults
@@ -1376,7 +1389,10 @@ def _officecli_chart_parts(pptx_path: Path) -> dict[tuple[int, str], str]:
     return chart_parts
 
 
-def _officecli_manifest(pptx_path: Path) -> tuple[dict[str, Any], dict[tuple[int, int], str]]:
+def _officecli_manifest(
+    pptx_path: Path,
+    expected_manifest: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[tuple[int, int], str]]:
     shallow = _run_officecli("get", pptx_path, "/", "--depth", "1", json_output=True)["data"]["results"][0]
     deep = _run_officecli("get", pptx_path, "/", "--depth", "5", json_output=True)["data"]["results"][0]
     slides = _children_by_slide(shallow)
@@ -1388,6 +1404,11 @@ def _officecli_manifest(pptx_path: Path) -> tuple[dict[str, Any], dict[tuple[int
         in {"shape", "textbox", "picture", "table", "chart"}
     }
     chart_parts = _officecli_chart_parts(pptx_path)
+    expected_by_name = {
+        str(item.get("name")): item
+        for item in (expected_manifest or {}).get("objects", []) or []
+        if isinstance(item, Mapping) and item.get("name")
+    }
     objects: list[dict[str, Any]] = []
     id_to_name: dict[tuple[int, int], str] = {}
     for slide_index, children in enumerate(slides, start=1):
@@ -1420,7 +1441,13 @@ def _officecli_manifest(pptx_path: Path) -> tuple[dict[str, Any], dict[tuple[int
                         f"OfficeCLI chart {name!r} on slide {slide_index} has no chart XML part"
                     )
                 chart_xml = _run_officecli("raw", pptx_path, chart_part)
-                object_data.update(_officecli_chart_manifest(detailed, chart_xml))
+                object_data.update(
+                    _officecli_chart_manifest(
+                        detailed,
+                        chart_xml,
+                        expected=expected_by_name.get(name),
+                    )
+                )
             else:
                 object_data["properties"] = _officecli_properties(detailed_format)
                 object_data["paragraphs"] = _officecli_paragraphs(detailed)
@@ -1445,9 +1472,19 @@ def _officecli_manifest(pptx_path: Path) -> tuple[dict[str, Any], dict[tuple[int
 def _officecli_chart_manifest(
     chart: Mapping[str, Any],
     chart_xml: str,
+    *,
+    expected: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read only the material typed chart semantics from a native chart node."""
-    readback = OfficeCLIChartAdapter.readback(chart, raw_xml=chart_xml)
+    expected_seam = expected.get("chart_seam", {}) if isinstance(expected, Mapping) else {}
+    expected_colors = expected_seam.get("series_colors")
+    if not isinstance(expected_colors, list):
+        expected_colors = None
+    readback = OfficeCLIChartAdapter.readback(
+        chart,
+        raw_xml=chart_xml,
+        expected_series_colors=(tuple(str(item) for item in expected_colors) if expected_colors is not None else None),
+    )
     return {
         "chart": readback.semantic_dict(),
         "chart_seam": readback.as_dict(),
