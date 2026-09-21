@@ -2846,6 +2846,17 @@ def _lower_slide(
                     source_slide,
                     source_object,
                 )
+            capture_failures = localized.get("captureFailureCodes")
+            if isinstance(capture_failures, (list, tuple)) and capture_failures:
+                failures = ", ".join(
+                    str(item) for item in capture_failures if str(item).strip()
+                )
+                raise _diagnostic(
+                    "unresolved_localized_fallback_capture",
+                    f"Localized fallback capture for {source_object} failed safety audit: {failures or 'unknown failure'}.",
+                    source_slide,
+                    source_object,
+                )
             source_identity = str(
                 localized.get("sourceIdentity") or source_object
             ).strip() or source_object

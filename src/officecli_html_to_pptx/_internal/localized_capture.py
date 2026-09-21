@@ -41,6 +41,7 @@ _UNSUPPORTED_TAGS = frozenset(
     }
 )
 _MEDIA_TAGS = frozenset({"audio", "source", "track", "video"})
+_NON_INLINE_RESOURCE_TAGS = frozenset({"link"})
 _ATOMIC_TAGS = frozenset({"table"})
 _EXTERNAL_SCHEMES = frozenset(
     {
@@ -371,6 +372,16 @@ def validate_localized_document(
                     source,
                 )
             )
+        if root_tag in _NON_INLINE_RESOURCE_TAGS or any(
+            tag in _NON_INLINE_RESOURCE_TAGS for tag in tags
+        ):
+            findings.append(
+                _finding(
+                    "localized_external_resource",
+                    "Linked stylesheets are not copied into an isolated localized capture; use inline CSS.",
+                    source,
+                )
+            )
         if root_tag == "table" or any(
             tag == "table" or item.get("data-pptx-chart") is not None
             for item, tag in zip(descendants, tags)
@@ -469,6 +480,17 @@ def validate_localized_document(
                     _finding(
                         "localized_animation",
                         "CSS keyframes are not permitted in a static localized region.",
+                        _source_object(style),
+                    )
+                )
+            if any(
+                _is_external_or_unsafe_url(match.group("value"), base_dir=source_dir)
+                for match in _URL_RE.finditer(css)
+            ):
+                findings.append(
+                    _finding(
+                        "localized_external_resource",
+                        "External or unavailable local CSS resources are not deterministic.",
                         _source_object(style),
                     )
                 )
@@ -602,9 +624,17 @@ def _capture_failure_codes(
     failures: list[str] = []
     if payload is None:
         failures.append("localized_missing_asset")
+        if overflow:
+            failures.append("localized_capture_overflow")
+        if not isolated:
+            failures.append("localized_isolation_failed")
         return tuple(failures)
     if image is None:
         failures.append("localized_invalid_png")
+        if overflow:
+            failures.append("localized_capture_overflow")
+        if not isolated:
+            failures.append("localized_isolation_failed")
         return tuple(failures)
     width_pt, height_pt = _box_size(bounds_pt)
     if width_pt <= 0 or height_pt <= 0:

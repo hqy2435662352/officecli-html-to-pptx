@@ -24,13 +24,15 @@ def _html(token: str = "localized") -> str:
   html, body {{ margin: 0; }}
   .slide {{ width: 960px; height: 540px; position: relative; background: #ffffff; }}
   .localized {{ position: absolute; left: 80px; top: 70px; width: 240px; height: 120px;
-                padding: 18px; color: #ffffff; font: 24px Arial, sans-serif;
+                padding: 34px; color: #ffffff; font: 24px Arial, sans-serif;
+                background: transparent; }}
+  .localized-visual {{ width: 100%; height: 100%;
                 background: linear-gradient(135deg, #e60012, #172033);
-                box-shadow: 0 12px 20px rgba(0,0,0,.35); }}
+                box-shadow: inset 0 0 20px rgba(0,0,0,.35); }}
   .localized span {{ display: block; border: 2px solid #ffffff; padding: 8px; }}
 </style></head><body><section class="slide active">
   <div id="hero" class="localized" data-pptx-rasterize="{token}">
-    <span>Local visual</span>
+    <div class="localized-visual"><span>Local visual</span></div>
   </div>
 </section></body></html>"""
 

@@ -24,6 +24,7 @@ from ._internal.charts import (
     parse_chart_spec,
 )
 from ._internal.localized_evidence import localized_fallback_surface
+from ._internal.localized_capture import validate_localized_document
 
 CONTRACT_VERSION = "1.2"
 OFFICECLI_COMPATIBILITY_BASELINE = "1.0.151"
@@ -2217,6 +2218,17 @@ def check_contract(input_html: str | Path, profile: str = "author") -> ContractR
     findings: list[ContractDiagnostic] = []
     classifications: list[dict[str, Any]] = []
     if profile == "author":
+        # Localized regions are atomic authored objects.  Run their static
+        # policy gate before the ordinary Author discovery walk so unsafe
+        # descendants cannot be hidden by the atomic-owner skip below.
+        for finding in validate_localized_document(document, base_dir=path.parent):
+            _emit(
+                findings,
+                "author",
+                finding.code,
+                finding.message,
+                finding.source_object,
+            )
         _check_author(document, findings, classifications)
     else:
         _check_officehtml(document, findings, classifications)

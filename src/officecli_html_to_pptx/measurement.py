@@ -10,10 +10,20 @@ from __future__ import annotations
 import base64
 from io import BytesIO
 import hashlib
+from html import escape as _html_escape
 import logging
+import math
 import os
+from pathlib import Path
 
 from PIL import Image
+
+from ._internal.localized_capture import (
+    LocalizedRegion,
+    audit_localized_capture,
+    validate_localized_geometry,
+    validate_localized_region_overlap,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -928,6 +938,8 @@ async def _rasterize_localized_fallbacks(
     browser,
     page,
     measurements: list[dict],
+    *,
+    source_base_url: str | None = None,
 ) -> None:
     """Capture each opted-in region in a page containing only that region."""
     for slide_index, slide_data in enumerate(measurements):
@@ -963,8 +975,62 @@ async def _rasterize_localized_fallbacks(
         css_pixels_per_point = slide_width / 960.0
         device_scale = 2.0 / css_pixels_per_point
 
+        # Geometry and overlap are checked from the same measured border boxes
+        # that drive the eventual PowerPoint picture bounds.  This is before
+        # any browser capture, so a whole-slide, cross-slide, or overlapping
+        # region cannot produce a misleading asset first.
+        slide_bounds_pt = (0.0, 0.0, 960.0, slide_height / css_pixels_per_point)
+        capture_facts: dict[str, dict[str, object]] = {}
+        regions: list[LocalizedRegion] = []
+        for element in localized:
+            localized_id = str(element.get("localizedId") or "")
+            fallback = element.setdefault("localizedFallback", {})
+            source_object = str(
+                fallback.get("sourceIdentity") or localized_id or "localized"
+            )
+            bounds_pt = (
+                float(element.get("x") or 0.0) / css_pixels_per_point,
+                float(element.get("y") or 0.0) / css_pixels_per_point,
+                float(element.get("width") or 0.0) / css_pixels_per_point,
+                float(element.get("height") or 0.0) / css_pixels_per_point,
+            )
+            geometry_findings = validate_localized_geometry(
+                source_object,
+                bounds_pt,
+                slide_bounds_pt,
+            )
+            capture_facts[localized_id] = {
+                "source_object": source_object,
+                "bounds_pt": bounds_pt,
+                "preflight_codes": [finding.code for finding in geometry_findings],
+            }
+            regions.append(
+                LocalizedRegion(
+                    source_object=source_object,
+                    slide=slide_index + 1,
+                    bounds_pt=bounds_pt,
+                )
+            )
+        for finding in validate_localized_region_overlap(regions):
+            for fact in capture_facts.values():
+                if fact.get("source_object") == finding.source_object:
+                    codes = fact.setdefault("preflight_codes", [])
+                    if finding.code not in codes:
+                        codes.append(finding.code)
+
+        base_tag = (
+            f'<base href="{_html_escape(source_base_url, quote=True)}">'
+            if source_base_url
+            else ""
+        )
+
         for element in localized:
             localized_id = str(element.get("localizedId"))
+            fallback = element.setdefault("localizedFallback", {})
+            facts = capture_facts.get(localized_id, {})
+            source_object = str(facts.get("source_object") or localized_id)
+            bounds_pt = tuple(facts.get("bounds_pt") or (0.0, 0.0, 0.0, 0.0))
+            preflight_codes = list(facts.get("preflight_codes") or [])
             capture_payload = await page.evaluate(
                 """(value) => {
                     const node = document.querySelector(
@@ -986,18 +1052,35 @@ async def _rasterize_localized_fallbacks(
                 localized_id,
             )
             if not capture_payload:
+                audit = audit_localized_capture(
+                    None,
+                    bounds_pt=bounds_pt,
+                    source_object=source_object,
+                    isolated=False,
+                    excluded_descendants=int(
+                        fallback.get("excludedDescendantCount") or 0
+                    ),
+                )
+                fallback.update(
+                    {
+                        "captureAudit": audit.as_dict(),
+                        "captureFailureCodes": [
+                            *preflight_codes,
+                            *audit.failure_codes,
+                        ],
+                    }
+                )
                 continue
 
             outer_html = str(capture_payload.get("outerHTML") or "")
             # A script would execute if copied into the capture page. Keep the
             # capture inert; the Contract/failure seam reports the missing asset.
-            if "<script" in outer_html.lower():
-                continue
+            capture_allowed = "<script" not in outer_html.lower()
             styles = "\n".join(str(value) for value in payload.get("styles", []))
             markup = f"""<!doctype html>
-<html><head><meta charset="utf-8"><style>{styles}</style></head>
-<body style="margin:0;overflow:hidden;background:transparent">
-<section class="slide active" style="display:block !important;position:relative;background:transparent !important;background-image:none !important;border:0 !important;"
+<html><head><meta charset="utf-8">{base_tag}<style>{styles}</style></head>
+<body style="margin:0;overflow:hidden;background:transparent !important">
+<section class="slide active" style="display:block !important;position:relative;width:{slide_width}px;height:{slide_height}px;background:transparent !important;background-image:none !important;border:0 !important;"
          data-pptx-localized-capture="true">
   {outer_html}
 </section>
@@ -1011,46 +1094,149 @@ async def _rasterize_localized_fallbacks(
                 device_scale_factor=device_scale,
             )
             png_bytes: bytes | None = None
+            frame_png: bytes | None = None
             try:
-                capture_page = await context.new_page()
-                await capture_page.set_content(markup, wait_until="load")
-                await capture_page.wait_for_function(
-                    """() => Array.from(document.images).every(image =>
-                        image.complete && image.naturalWidth > 0)""",
-                    timeout=PLAYWRIGHT_TIMEOUT_MS,
-                )
-                target = capture_page.locator(
-                    f'[data-pptx-localized-id="{localized_id}"]'
-                ).first
-                png_bytes = await target.screenshot(
-                    type="png",
-                    animations="disabled",
-                )
+                if capture_allowed and not preflight_codes:
+                    capture_page = await context.new_page()
+                    await capture_page.set_content(markup, wait_until="load")
+                    await capture_page.wait_for_function(
+                        """() => Array.from(document.images).every(image =>
+                            image.complete && image.naturalWidth > 0)""",
+                        timeout=PLAYWRIGHT_TIMEOUT_MS,
+                    )
+                    target = capture_page.locator(
+                        f'[data-pptx-localized-id="{localized_id}"]'
+                    ).first
+                    png_bytes = await target.screenshot(
+                        type="png",
+                        animations="disabled",
+                        omit_background=True,
+                    )
+                    # This is still a fresh page containing only the target,
+                    # not a crop of the source slide.  The frame is used solely
+                    # to prove that visual paint did not escape the authored
+                    # CSS border box.
+                    frame_png = await capture_page.screenshot(
+                        type="png",
+                        animations="disabled",
+                        omit_background=True,
+                    )
             except Exception:
                 logger.debug("Failed to rasterize localized fallback %s", localized_id)
             finally:
                 await context.close()
 
-            if not png_bytes:
-                continue
-            try:
-                with Image.open(BytesIO(png_bytes)) as image:
-                    image.load()
-                    pixel_width, pixel_height = image.size
-                    alpha = image.convert("RGBA").getchannel("A")
-                    nonblank = alpha.getbbox() is not None
-            except Exception:
-                logger.debug("Localized fallback %s produced invalid PNG", localized_id)
-                continue
-
             point_width = float(capture_payload.get("width") or 0) / css_pixels_per_point
             point_height = float(capture_payload.get("height") or 0) / css_pixels_per_point
-            minimum_width = max(1, round(point_width * 2.0))
-            minimum_height = max(1, round(point_height * 2.0))
-            density_ok = pixel_width >= minimum_width and pixel_height >= minimum_height
-            if not nonblank or not density_ok:
+            overflow = False
+            if frame_png:
+                try:
+                    with Image.open(BytesIO(frame_png)) as frame:
+                        frame.load()
+                        frame_width, frame_height = frame.size
+                        alpha = frame.convert("RGBA").getchannel("A")
+                        left = max(
+                            0,
+                            min(
+                                frame_width,
+                                math.floor(
+                                    float(capture_payload.get("x") or 0.0)
+                                    * device_scale
+                                )
+                            ),
+                        )
+                        top = max(
+                            0,
+                            min(
+                                frame_height,
+                                math.floor(
+                                    float(capture_payload.get("y") or 0.0)
+                                    * device_scale
+                                )
+                            ),
+                        )
+                        right = max(
+                            left,
+                            min(
+                                frame_width,
+                                math.ceil(
+                                    (
+                                        float(capture_payload.get("x") or 0.0)
+                                        + float(capture_payload.get("width") or 0.0)
+                                    )
+                                    * device_scale
+                                ),
+                            ),
+                        )
+                        bottom = max(
+                            top,
+                            min(
+                                frame_height,
+                                math.ceil(
+                                    (
+                                        float(capture_payload.get("y") or 0.0)
+                                        + float(capture_payload.get("height") or 0.0)
+                                    )
+                                    * device_scale
+                                ),
+                            ),
+                        )
+
+                        def painted_outside(box: tuple[int, int, int, int]) -> int:
+                            histogram = alpha.crop(box).histogram()
+                            return sum(histogram[1:])
+
+                        outside = 0
+                        if top:
+                            outside += painted_outside((0, 0, frame_width, top))
+                        if bottom < frame_height:
+                            outside += painted_outside(
+                                (0, bottom, frame_width, frame_height)
+                            )
+                        if left:
+                            outside += painted_outside((0, top, left, bottom))
+                        if right < frame_width:
+                            outside += painted_outside(
+                                (right, top, frame_width, bottom)
+                            )
+                        overflow = outside > 0
+                except Exception:
+                    logger.debug(
+                        "Failed to inspect localized overflow for %s", localized_id
+                    )
+
+            audit = audit_localized_capture(
+                png_bytes,
+                bounds_pt=bounds_pt,
+                source_object=source_object,
+                contamination_fraction=0.0,
+                overflow=overflow,
+                isolated=bool(
+                    capture_allowed
+                    and not preflight_codes
+                    and png_bytes is not None
+                    and frame_png is not None
+                ),
+                excluded_descendants=int(
+                    fallback.get("excludedDescendantCount") or 0
+                ),
+            )
+            failure_codes = [*preflight_codes, *audit.failure_codes]
+            fallback.update(
+                {
+                    "captureAudit": audit.as_dict(),
+                    "captureFailureCodes": list(dict.fromkeys(failure_codes)),
+                    "effectivelyTransparent": audit.effectively_transparent,
+                    "paintFraction": audit.paint_fraction,
+                    "overflow": audit.overflow,
+                    "contaminationFraction": audit.contamination_fraction,
+                }
+            )
+            if failure_codes:
                 continue
 
+            pixel_width = audit.pixel_width
+            pixel_height = audit.pixel_height
             encoded = base64.b64encode(png_bytes).decode("ascii")
             element["src"] = "data:image/png;base64," + encoded
             element["isImage"] = True
@@ -1064,8 +1250,8 @@ async def _rasterize_localized_fallbacks(
                     "pixelWidth": pixel_width,
                     "pixelHeight": pixel_height,
                     "density": 2.0,
-                    "nonblank": nonblank,
-                    "densityVerified": density_ok,
+                    "nonblank": audit.nonblank,
+                    "densityVerified": True,
                     "isolated": True,
                     "isolation": "fresh-page-single-region",
                     "optInReason": "explicit-author-opt-in",
@@ -1137,6 +1323,7 @@ async def extract_measurements(
             browser,
             page,
             measurements,
+            source_base_url=Path(abs_path).parent.as_uri() + "/",
         )
 
         await _rasterize_inline_svgs(
