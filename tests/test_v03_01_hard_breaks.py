@@ -5,10 +5,11 @@ fixture (``tests/fixtures/v03_01_rich_text_paragraphs.html``) or from an
 explicitly written expected paragraph/run model.  Nothing is derived from the
 compiler's own output.
 
-The slice under test is Recorded Decision V03-01-004 (a ``<br>`` is a native
-paragraph boundary, consecutive ``<br>`` keep an empty paragraph) and
-Recorded Decision V03-01-005 (every run is Paragraph-local, no run contains
-``\\n``, and no range covers a paragraph separator).
+The slice under test is Contract 1.1 native hard-break topology: a ``<br>`` is
+inside its authored native paragraph, consecutive ``<br>`` controls are kept,
+and authored empty ``<p>`` elements (covered by the V05 fixture) remain native
+paragraphs.  Every run is paragraph-local and no range covers a paragraph
+separator.
 """
 
 from __future__ import annotations
@@ -21,7 +22,10 @@ from typing import Any, Mapping
 
 import pytest
 
-from officecli_html_to_pptx._internal.officecli_compiler import compile_officecli
+from officecli_html_to_pptx._internal.officecli_compiler import (
+    OfficeCLICompilationError,
+    compile_officecli,
+)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("officecli") is None,
@@ -40,7 +44,8 @@ SEGO_UI_14PT = "Segoe UI"
 PARAGRAPHS_FONT_SIZE_PT = 14.0
 PARAGRAPHS_COLOR = "#24324A"
 # 1.35 x 28px CSS line-height on a 28px font, sampled at the 0.5pt scale.
-PARAGRAPHS_LINE_SPACING = "1.012x"
+PARAGRAPHS_LINE_SPACING = "1.350x"
+PARAGRAPHS_READBACK_LINE_SPACING = "1.35x"
 
 # The authored source of ``#paragraphs``, in reading order:
 #
@@ -48,28 +53,14 @@ PARAGRAPHS_LINE_SPACING = "1.012x"
 #     style B</span><br><br>Second paragraph after an empty paragraph.<br>第三段：
 #     显式换行后仍可编辑。
 #
-# so the styled inline element that crosses the first <br> becomes one
-# Paragraph-local Run on each side of the boundary with identical resolved
-# formatting, the two consecutive <br> elements keep one empty paragraph, and
-# the final <br> starts the fourth authored line.
+# so the styled inline element that crosses the first <br> stays two visible
+# ranges in one paragraph with identical resolved formatting; consecutive
+# <br> controls stay in that same native paragraph.
 EXPECTED_PARAGRAPH_TEXTS: tuple[str, ...] = (
-    "跨段样式 A",
-    "Cross-break style B",
-    "",
-    "Second paragraph after an empty paragraph.",
-    "第三段：显式换行后仍可编辑。",
+    "跨段样式 A\vCross-break style B\v\vSecond paragraph after an empty paragraph.\v第三段：显式换行后仍可编辑。",
 )
-EXPECTED_PARAGRAPH_COUNT = 5
-# Position of the authored empty paragraph: 0-based index 2, i.e. the third of
-# the five paragraphs.
-EXPECTED_EMPTY_PARAGRAPH_INDEX = 2
-EXPECTED_OBJECT_TEXT = (
-    "跨段样式 A\n"
-    "Cross-break style B\n"
-    "\n"
-    "Second paragraph after an empty paragraph.\n"
-    "第三段：显式换行后仍可编辑。"
-)
+EXPECTED_PARAGRAPH_COUNT = 1
+EXPECTED_OBJECT_TEXT = EXPECTED_PARAGRAPH_TEXTS[0]
 
 # The fixture's inline style on ``[data-run-across-br]`` is
 # ``font-weight: 700; color: #9a3412`` on the textbox's 28px "Segoe UI"
@@ -114,7 +105,8 @@ EXPECTED_PLAIN_RUNS: tuple[Mapping[str, Any], ...] = (
         "color": PARAGRAPHS_COLOR,
     },
 )
-# One run per authored line: five paragraphs (one of them empty) hold four runs.
+# Four visible runs remain in one authored paragraph; hard-break controls are
+# represented by paragraph-local offsets rather than synthetic runs.
 EXPECTED_PARAGRAPHS_RUN_COUNT = 4
 
 
@@ -207,14 +199,19 @@ def _readback_paragraphs(node: Mapping[str, Any]) -> list[dict[str, Any]]:
     fallback = node.get("format", {})
     paragraphs = []
     for paragraph in node.get("children", []) or []:
-        runs = [
-            _readback_run(run, paragraph.get("format", fallback))
-            for run in paragraph.get("children", []) or []
-            if run.get("type") == "run" and str(run.get("text", ""))
-        ]
+        runs = []
+        text_parts = []
+        for child in paragraph.get("children", []) or []:
+            if child.get("type") == "linebreak":
+                text_parts.append("\v")
+            elif child.get("type") == "run":
+                text = str(child.get("text", ""))
+                if text:
+                    text_parts.append(text)
+                    runs.append(_readback_run(child, paragraph.get("format", fallback)))
         paragraphs.append(
             {
-                "text": paragraph.get("text", ""),
+                "text": "".join(text_parts),
                 "line_spacing": (paragraph.get("format") or {}).get("lineSpacing"),
                 "runs": runs,
             }
@@ -248,7 +245,9 @@ def _manifest_run(run: Mapping[str, Any]) -> dict[str, Any]:
 
 def _utf16_length(text: str) -> int:
     """OfficeCLI ranges are UTF-16 code units and exclude paragraph marks."""
-    return len(text.replace("\r", "").replace("\n", "").encode("utf-16-le")) // 2
+    return len(
+        text.replace("\r", "").replace("\n", "").replace("\v", "").encode("utf-16-le")
+    ) // 2
 
 
 def _write_fixture(tmp_path: Path, name: str, body: str, css: str = "") -> Path:
@@ -295,7 +294,7 @@ def test_public_check_accepts_hard_break_and_empty_paragraph_input() -> None:
 async def test_hard_breaks_and_empty_paragraph_survive_manifest_and_readback(
     tmp_path: Path,
 ) -> None:
-    """The fixture's ``#paragraphs`` object is five paragraphs, six runs total.
+    """The fixture's ``#paragraphs`` object is one paragraph, four runs total.
 
     Independent literals: paragraph count, every paragraph text in source
     order, the empty-paragraph position, one run per paragraph, and the
@@ -316,43 +315,28 @@ async def test_hard_breaks_and_empty_paragraph_survive_manifest_and_readback(
         paragraph["text"] for paragraph in manifest_paragraphs
     ] == list(EXPECTED_PARAGRAPH_TEXTS)
     assert [
-        index
-        for index, paragraph in enumerate(manifest_paragraphs)
-        if paragraph["text"] == ""
-    ] == [EXPECTED_EMPTY_PARAGRAPH_INDEX]
-    assert [
         [run["text"] for run in paragraph["runs"]]
         for paragraph in manifest_paragraphs
     ] == [
-        ["跨段样式 A"],
-        ["Cross-break style B"],
-        [],
-        ["Second paragraph after an empty paragraph."],
-        ["第三段：显式换行后仍可编辑。"],
+        [
+            "跨段样式 A",
+            "Cross-break style B",
+            "Second paragraph after an empty paragraph.",
+            "第三段：显式换行后仍可编辑。",
+        ],
     ]
-    assert [len(paragraph["runs"]) for paragraph in manifest_paragraphs] == [
-        1,
-        1,
-        0,
-        1,
-        1,
+    assert [len(paragraph["runs"]) for paragraph in manifest_paragraphs] == [4]
+    assert [_manifest_run(run) for run in manifest_paragraphs[0]["runs"]] == [
+        _expected_run(EXPECTED_STYLED_RUNS[0]),
+        _expected_run(EXPECTED_STYLED_RUNS[1]),
+        _expected_run(EXPECTED_PLAIN_RUNS[0]),
+        _expected_run(EXPECTED_PLAIN_RUNS[1]),
     ]
-    assert [
-        _manifest_run(run) for run in manifest_paragraphs[0]["runs"]
-    ] == [_expected_run(EXPECTED_STYLED_RUNS[0])]
-    assert [
-        _manifest_run(run) for run in manifest_paragraphs[1]["runs"]
-    ] == [_expected_run(EXPECTED_STYLED_RUNS[1])]
-    assert [
-        _manifest_run(run) for run in manifest_paragraphs[3]["runs"]
-    ] == [_expected_run(EXPECTED_PLAIN_RUNS[0])]
-    assert [
-        _manifest_run(run) for run in manifest_paragraphs[4]["runs"]
-    ] == [_expected_run(EXPECTED_PLAIN_RUNS[1])]
-    # Every paragraph keeps the authored 1.35 line-height projection.
+    assert manifest_paragraphs[0]["hard_break_offsets"] == [6, 25, 25, 67]
+    # The paragraph keeps the authored 1.35 line-height ratio.
     assert [
         paragraph["line_spacing"] for paragraph in manifest_paragraphs
-    ] == [PARAGRAPHS_LINE_SPACING] * EXPECTED_PARAGRAPH_COUNT
+    ] == [PARAGRAPHS_LINE_SPACING]
 
     # The independent expected literal and the OfficeCLI readback are compared
     # paragraph by paragraph, so a merged or swallowed <br> cannot pass.
@@ -360,21 +344,22 @@ async def test_hard_breaks_and_empty_paragraph_survive_manifest_and_readback(
     assert readback["text"] == EXPECTED_OBJECT_TEXT
     readback_paragraphs = _readback_paragraphs(readback)
     assert len(readback_paragraphs) == EXPECTED_PARAGRAPH_COUNT
-    assert [
-        paragraph["text"] for paragraph in readback_paragraphs
-    ] == list(EXPECTED_PARAGRAPH_TEXTS)
+    assert [paragraph["text"] for paragraph in readback_paragraphs] == list(
+        EXPECTED_PARAGRAPH_TEXTS
+    )
     assert [
         paragraph["line_spacing"] for paragraph in readback_paragraphs
-    ] == [PARAGRAPHS_LINE_SPACING] * EXPECTED_PARAGRAPH_COUNT
+    ] == [PARAGRAPHS_READBACK_LINE_SPACING]
     assert [
         [_expected_run(run) for run in paragraph["runs"]]
         for paragraph in readback_paragraphs
     ] == [
-        [_expected_run(EXPECTED_STYLED_RUNS[0])],
-        [_expected_run(EXPECTED_STYLED_RUNS[1])],
-        [],
-        [_expected_run(EXPECTED_PLAIN_RUNS[0])],
-        [_expected_run(EXPECTED_PLAIN_RUNS[1])],
+        [
+            _expected_run(EXPECTED_STYLED_RUNS[0]),
+            _expected_run(EXPECTED_STYLED_RUNS[1]),
+            _expected_run(EXPECTED_PLAIN_RUNS[0]),
+            _expected_run(EXPECTED_PLAIN_RUNS[1]),
+        ],
     ]
 
 
@@ -393,10 +378,7 @@ async def test_styled_element_spanning_a_hard_break_keeps_identical_formatting(
     result = await compile_officecli(str(FIXTURE), "author", str(output))
 
     manifest_object = _shape_by_source(result.manifest, PARAGRAPHS_SOURCE)
-    first, second = (
-        manifest_object["paragraphs"][0]["runs"][0],
-        manifest_object["paragraphs"][1]["runs"][0],
-    )
+    first, second = manifest_object["paragraphs"][0]["runs"][:2]
     assert first["text"] == "跨段样式 A"
     assert second["text"] == "Cross-break style B"
     # Identical resolved formatting on both sides of the break ...
@@ -409,8 +391,8 @@ async def test_styled_element_spanning_a_hard_break_keeps_identical_formatting(
     }
     assert first["color"] == "#9A3412"
     assert first["bold"] is True
-    # ... and still two runs in two paragraphs, never one merged run.
-    assert manifest_object["paragraphs"][0]["runs"] != manifest_object["paragraphs"][1]["runs"]
+    # ... and still two visible runs in one paragraph, never one merged run.
+    assert len(manifest_object["paragraphs"]) == 1
     assert "跨段样式 ACross-break style B" not in {
         run["text"]
         for paragraph in manifest_object["paragraphs"]
@@ -419,12 +401,12 @@ async def test_styled_element_spanning_a_hard_break_keeps_identical_formatting(
 
     readback = _object_by_name(output, manifest_object["name"])
     readback_paragraphs = _readback_paragraphs(readback)
-    assert len(readback_paragraphs[0]["runs"]) == 1
-    assert len(readback_paragraphs[1]["runs"]) == 1
+    assert len(readback_paragraphs) == 1
+    assert len(readback_paragraphs[0]["runs"]) == 4
     assert _expected_run(readback_paragraphs[0]["runs"][0]) == _expected_run(
         EXPECTED_STYLED_RUNS[0]
     )
-    assert _expected_run(readback_paragraphs[1]["runs"][0]) == _expected_run(
+    assert _expected_run(readback_paragraphs[0]["runs"][1]) == _expected_run(
         EXPECTED_STYLED_RUNS[1]
     )
 
@@ -433,7 +415,7 @@ async def test_styled_element_spanning_a_hard_break_keeps_identical_formatting(
 async def test_consecutive_hard_breaks_keep_exactly_one_empty_paragraph(
     tmp_path: Path,
 ) -> None:
-    """Criterion 3: ``A<br><br>B`` is three paragraphs with one empty middle."""
+    """Criterion 3: ``A<br><br>B`` keeps two native hard-break controls."""
     html = _write_fixture(
         tmp_path,
         "consecutive-breaks.html",
@@ -445,20 +427,19 @@ async def test_consecutive_hard_breaks_keep_exactly_one_empty_paragraph(
 
     manifest_object = _shape_by_source(result.manifest, "slide[1]/div[1]")
     assert [paragraph["text"] for paragraph in manifest_object["paragraphs"]] == [
-        "First",
-        "",
-        "Second",
+        "First\v\vSecond",
     ]
-    assert manifest_object["text"] == "First\n\nSecond"
+    assert manifest_object["paragraphs"][0]["hard_break_offsets"] == [5, 5]
+    assert manifest_object["text"] == "First\v\vSecond"
 
     readback = _object_by_name(output, manifest_object["name"])
     paragraphs = _readback_paragraphs(readback)
-    assert [paragraph["text"] for paragraph in paragraphs] == ["First", "", "Second"]
-    assert [len(paragraph["runs"]) for paragraph in paragraphs] == [1, 0, 1]
+    assert [paragraph["text"] for paragraph in paragraphs] == ["First\v\vSecond"]
+    assert [len(paragraph["runs"]) for paragraph in paragraphs] == [2]
 
 
 @pytest.mark.asyncio
-async def test_nested_break_inside_an_inline_element_is_a_paragraph_boundary(
+async def test_nested_break_inside_an_inline_element_is_a_native_hard_break(
     tmp_path: Path,
 ) -> None:
     """A ``<br>`` nested in an inline element is a real break, not text."""
@@ -474,20 +455,18 @@ async def test_nested_break_inside_an_inline_element_is_a_paragraph_boundary(
     result = await compile_officecli(str(html), "author", str(output))
 
     manifest_object = _shape_by_source(result.manifest, "slide[1]/div[1]")
-    assert [
-        paragraph["text"] for paragraph in manifest_object["paragraphs"]
-    ] == list(EXPECTED_PARAGRAPH_TEXTS)
+    assert [paragraph["text"] for paragraph in manifest_object["paragraphs"]] == [
+        EXPECTED_OBJECT_TEXT
+    ]
     assert manifest_object["text"] == EXPECTED_OBJECT_TEXT
 
     readback = _object_by_name(output, manifest_object["name"])
     paragraphs = _readback_paragraphs(readback)
-    assert [paragraph["text"] for paragraph in paragraphs] == list(
-        EXPECTED_PARAGRAPH_TEXTS
-    )
+    assert [paragraph["text"] for paragraph in paragraphs] == [EXPECTED_OBJECT_TEXT]
     assert _expected_run(paragraphs[0]["runs"][0]) == _expected_run(
         EXPECTED_STYLED_RUNS[0]
     )
-    assert _expected_run(paragraphs[1]["runs"][0]) == _expected_run(
+    assert _expected_run(paragraphs[0]["runs"][1]) == _expected_run(
         EXPECTED_STYLED_RUNS[1]
     )
 
@@ -589,9 +568,7 @@ async def test_range_offsets_are_paragraph_local_across_an_empty_paragraph(
 
     manifest_object = _shape_by_source(result.manifest, "slide[1]/div[1]")
     assert [paragraph["text"] for paragraph in manifest_object["paragraphs"]] == [
-        "plain",
-        "",
-        "after 🚀Bold",
+        "plain\v\vafter 🚀Bold",
     ]
 
     offset = 0
@@ -608,7 +585,7 @@ async def test_range_offsets_are_paragraph_local_across_an_empty_paragraph(
         ("after 🚀", 5, 13),
         ("Bold", 13, 17),
     ]
-    assert manifest_object["paragraphs"][2]["runs"][1]["bold"] is True
+    assert manifest_object["paragraphs"][0]["runs"][2]["bold"] is True
     # "plain" is 5 units, so the addressable body (object text minus its two
     # paragraph separators) is 5 + 0 + 12 = 17 units.
     assert offset == _utf16_length("plainafter 🚀Bold") == 17
@@ -619,11 +596,18 @@ async def test_range_offsets_are_paragraph_local_across_an_empty_paragraph(
     readback = _object_by_name(output, manifest_object["name"])
     paragraphs = _readback_paragraphs(readback)
     assert [paragraph["text"] for paragraph in paragraphs] == [
-        "plain",
-        "",
-        "after 🚀Bold",
+        "plain\v\vafter 🚀Bold",
     ]
-    assert [_expected_run(run) for run in paragraphs[2]["runs"]] == [
+    assert [_expected_run(run) for run in paragraphs[0]["runs"]] == [
+        {
+            "text": "plain",
+            "font_family": "Segoe UI",
+            "font_size_pt": 14.0,
+            "bold": False,
+            "italic": False,
+            "underline": "none",
+            "color": "#24324A",
+        },
         {
             "text": "after 🚀",
             "font_family": "Segoe UI",
@@ -695,25 +679,28 @@ async def test_white_space_pre_keeps_significant_newlines_and_runs(
     result = await compile_officecli(str(html), "author", str(output))
 
     manifest_object = _shape_by_source(result.manifest, "slide[1]/div[1]")
-    assert [
-        paragraph["text"] for paragraph in manifest_object["paragraphs"]
-    ] == ["alpha", "beta gamma", "delta epsilon"]
+    assert [paragraph["text"] for paragraph in manifest_object["paragraphs"]] == [
+        "alpha\vbeta gamma\vdelta epsilon"
+    ]
     assert [
         [run["text"] for run in paragraph["runs"]]
         for paragraph in manifest_object["paragraphs"]
-    ] == [["alpha"], ["beta ", "gamma"], ["delta", " epsilon"]]
-    assert manifest_object["paragraphs"][1]["runs"][1]["bold"] is True
-    assert manifest_object["paragraphs"][2]["runs"][0]["bold"] is True
+    ] == [["alpha", "beta ", "gamma", "delta", " epsilon"]]
+    assert manifest_object["paragraphs"][0]["runs"][2]["bold"] is True
+    assert manifest_object["paragraphs"][0]["runs"][3]["bold"] is True
 
     readback = _object_by_name(output, manifest_object["name"])
     paragraphs = _readback_paragraphs(readback)
     assert [paragraph["text"] for paragraph in paragraphs] == [
-        "alpha",
-        "beta gamma",
-        "delta epsilon",
+        "alpha\vbeta gamma\vdelta epsilon",
     ]
-    assert [run["bold"] for run in paragraphs[1]["runs"]] == [False, True]
-    assert [run["bold"] for run in paragraphs[2]["runs"]] == [True, False]
+    assert [run["bold"] for run in paragraphs[0]["runs"]] == [
+        False,
+        False,
+        True,
+        True,
+        False,
+    ]
 
 
 @pytest.mark.asyncio
@@ -855,16 +842,10 @@ async def test_source_newline_between_inline_siblings_stays_one_paragraph(
 
 
 @pytest.mark.asyncio
-async def test_anchor_run_keeps_its_href_and_plain_runs_do_not(
+async def test_anchor_run_is_outside_the_frozen_native_matrix(
     tmp_path: Path,
 ) -> None:
-    """An ``<a href>`` hands its target down its whole inline subtree.
-
-    Three authored lines in one textbox: a plain anchor, an anchor whose text is
-    partly styled by a nested ``<strong>``, and an anchor that resolves to the
-    same formatting as its neighbours so that only the supported semantic
-    attribute keeps the two runs apart.
-    """
+    """Hyperlink targets are rejected before a lossy native run can be emitted."""
     html = _write_fixture(
         tmp_path,
         "anchor-href.html",
@@ -876,62 +857,12 @@ async def test_anchor_run_keeps_its_href_and_plain_runs_do_not(
     )
     output = tmp_path / "anchor-href.pptx"
 
-    result = await compile_officecli(str(html), "author", str(output))
-
-    manifest_object = _shape_by_source(result.manifest, "slide[1]/div[1]")
-    assert manifest_object["text"] == (
-        "See the report now\n"
-        "See the bold report here now\n"
-        "Canonical: North Africa"
-    )
-    assert [
-        paragraph["text"] for paragraph in manifest_object["paragraphs"]
-    ] == [
-        "See the report now",
-        "See the bold report here now",
-        "Canonical: North Africa",
-    ]
-    # Only the runs descended from an <a> carry the target.
-    assert [
-        [(run["text"], run["href"]) for run in paragraph["runs"]]
-        for paragraph in manifest_object["paragraphs"]
-    ] == [
-        list(EXPECTED_ANCHOR_RUNS),
-        list(EXPECTED_NESTED_ANCHOR_RUNS),
-        [
-            (EXPECTED_SEMANTIC_ANCHOR_RUNS[0], None),
-            (EXPECTED_SEMANTIC_ANCHOR_RUNS[1], ANCHOR_TARGET),
-            (EXPECTED_SEMANTIC_ANCHOR_RUNS[2], None),
-        ],
-    ]
-    # The nested <strong> keeps its own weight *and* the anchor's target.
-    nested_runs = manifest_object["paragraphs"][1]["runs"]
-    assert [run["bold"] for run in nested_runs] == [False, True, False, False]
-    # The anchor run and its neighbour are one resolved format apart from the
-    # href, so the semantic attribute is what keeps them two Canonical Runs.
-    semantic_runs = manifest_object["paragraphs"][2]["runs"]
-    assert [run["text"] for run in semantic_runs] == list(
-        EXPECTED_SEMANTIC_ANCHOR_RUNS
-    )
-    resolved_format = lambda run: {
-        key: value for key, value in run.items() if key not in {"text", "href"}
+    with pytest.raises(OfficeCLICompilationError) as error:
+        await compile_officecli(str(html), "author", str(output))
+    assert "unsupported_hyperlink" in {
+        item.code for item in error.value.diagnostics
     }
-    assert resolved_format(semantic_runs[1]) == resolved_format(semantic_runs[2])
-    assert semantic_runs[2]["href"] is None
-
-    # The hyperlink text stays editable as its own run: the readback keeps the
-    # authored run boundaries of all three lines.
-    readback = _object_by_name(output, manifest_object["name"])
-    readback_paragraphs = _readback_paragraphs(readback)
-    assert readback["text"] == manifest_object["text"]
-    assert [
-        [run["text"] for run in paragraph["runs"]]
-        for paragraph in readback_paragraphs
-    ] == [
-        [text for text, _ in EXPECTED_ANCHOR_RUNS],
-        [text for text, _ in EXPECTED_NESTED_ANCHOR_RUNS],
-        list(EXPECTED_SEMANTIC_ANCHOR_RUNS),
-    ]
+    assert not output.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -943,12 +874,7 @@ async def test_anchor_run_keeps_its_href_and_plain_runs_do_not(
 async def test_v02_top_level_hard_break_semantics_are_unchanged(
     tmp_path: Path,
 ) -> None:
-    """``one<br><br>three<br>`` stays four paragraphs with a trailing empty one.
-
-    This is the V0.2 case already covered in
-    ``test_officecli_compiler.py``; it is repeated here as the guard that the
-    nested-inline recursion does not change top-level ``<br>`` semantics.
-    """
+    """``one<br><br>three<br>`` stays one paragraph with three hard breaks."""
     html = _write_fixture(
         tmp_path,
         "v02-breaks.html",
@@ -960,13 +886,10 @@ async def test_v02_top_level_hard_break_semantics_are_unchanged(
 
     manifest_object = _shape_by_source(result.manifest, "slide[1]/div[1]")
     assert [paragraph["text"] for paragraph in manifest_object["paragraphs"]] == [
-        "one",
-        "",
-        "three",
-        "",
+        "one\v\vthree\v",
     ]
 
     readback = _object_by_name(output, manifest_object["name"])
     assert [
         paragraph["text"] for paragraph in _readback_paragraphs(readback)
-    ] == ["one", "", "three", ""]
+    ] == ["one\v\vthree\v"]

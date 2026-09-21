@@ -11,18 +11,38 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from lxml import html as _lxml_html
 
-CONTRACT_VERSION = "1.0"
-OFFICECLI_COMPATIBILITY_BASELINE = "1.0.147"
+CONTRACT_VERSION = "1.1"
+OFFICECLI_COMPATIBILITY_BASELINE = "1.0.151"
 SUPPORTED_PROFILES = ("author", "officehtml")
 SUPPORTED_OBJECT_KINDS = frozenset({"shape", "textbox", "picture", "table"})
 AUTHOR_CANVAS_SIZES = ((1920.0, "px", 1080.0, "px"), (960.0, "px", 540.0, "px"))
 AUTHOR_PICTURE_SOURCE = "data:image/..."
 AUTHOR_EXTERNAL_RESOURCES_ALLOWED = False
-AUTHOR_TABLE_CELL_SPANS = False
+AUTHOR_TABLE_CELL_SPANS = True
+SHAPE_GEOMETRY_ATTRIBUTE = "data-pptx-shape-geometry"
+# This is the Contract 1.1 authority for the public native-shape annotation.
+# Keep the order stable: it is part of the machine-readable capability output
+# and mirrors the public ticket's acceptance checklist.
+SHAPE_GEOMETRY_TOKENS = (
+    "rect",
+    "roundRect",
+    "ellipse",
+    "triangle",
+    "diamond",
+    "parallelogram",
+    "chevron",
+    "hexagon",
+    "leftArrow",
+    "rightArrow",
+    "upArrow",
+    "downArrow",
+    "star5",
+)
+SHAPE_GEOMETRY_TOKEN_SET = frozenset(SHAPE_GEOMETRY_TOKENS)
 CSS_CLASSIFICATIONS = (
     "measurement-only",
     "rendered",
@@ -45,6 +65,7 @@ _RENDERED_CSS_PROPERTIES = frozenset(
         "border-width",
         "border-collapse",
         "color",
+        "direction",
         "font",
         "font-family",
         "font-size",
@@ -106,7 +127,6 @@ _MEASUREMENT_ONLY_CSS_PROPERTIES = frozenset(
         "justify-items",
         "justify-self",
         "left",
-        "letter-spacing",
         "list-style-type",
         "max-height",
         "max-width",
@@ -150,6 +170,10 @@ _UNSUPPORTED_CSS_PROPERTIES = frozenset(
         # Measured but never lowered: see the note above.
         "text-transform",
         "text-shadow",
+        # Letter spacing is measurable by Chromium but is not part of the
+        # Contract 1.1 native run matrix.  It must fail closed rather than
+        # silently disappear in the PowerPoint text body.
+        "letter-spacing",
         "transition",
         "transition-delay",
         "transition-duration",
@@ -201,13 +225,10 @@ SUPPORTED_INLINE_ELEMENTS = (
 #
 #   (normalized lowering field, published mixed-run attribute, CSS property)
 #
-# The published attribute and the CSS property are ``None`` for a supported
-# *semantic* attribute that is not part of the declared CSS surface (an anchor
-# target, a gradient-text fill).  The published attributes are the ones the
-# capability manifest has always declared, so deriving them from this
-# declaration republishes the same surface; the lowering pass builds its merge
-# key from the same rows, so an identity dimension cannot be published without
-# being implemented, or implemented without being published.
+# Every row is part of the closed native run matrix.  The capability manifest
+# derives its published attributes from this declaration and the lowering pass
+# builds its merge key from the same rows, so an identity dimension cannot be
+# published without being implemented, or implemented without being published.
 CANONICAL_RUN_IDENTITY = (
     ("font_family", "font_family", "font-family"),
     ("font_size_pt", "font_size", "font-size"),
@@ -215,9 +236,6 @@ CANONICAL_RUN_IDENTITY = (
     ("italic", "italic", "font-style"),
     ("color", "color", "color"),
     ("underline", "underline", "text-decoration"),
-    ("href", None, None),
-    ("is_gradient_text", None, None),
-    ("background_image", None, None),
 )
 CANONICAL_RUN_IDENTITY_FIELDS = tuple(
     field for field, _attribute, _property in CANONICAL_RUN_IDENTITY
@@ -231,6 +249,8 @@ CANONICAL_RUN_POLICY = {
     "scope": "paragraph",
     "requires": [
         "identical resolved formatting",
+        # Retain the public capability token for schema compatibility; the
+        # concrete identity dimensions are the six closed-matrix rows above.
         "identical supported semantic attributes",
     ],
     "forbidden_across": ["paragraph", "list_item", "hard_break"],
@@ -250,26 +270,24 @@ TEXT_ALIGNMENT_MAPPING = {
 }
 LINE_HEIGHT_PROPERTY = "line-height"
 PARAGRAPH_SPACING_PROPERTIES = ("margin-top", "margin-bottom")
-# The lowering pass keeps the released V0.2 CSS-pixel projection (a px
-# line-height is scaled by 0.75) except for the one reviewed source-fidelity
-# label below, which opts into the raw browser ratio.
-LINE_HEIGHT_PX_PROJECTION_SCALE = 0.75
-SOURCE_FIDELITY_LINE_SPACING_TEXT = "ALGERIA PRODUCT LINE-UP"
-SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX = 45.0
-# Chromium's measured visual lines are the soft-wrap authority.  They become the
-# native paragraph boundaries of the one authored text object; no new
-# soft-line-break representation exists in the PPT Object IR.
+# Contract 1.1 deliberately has no CSS-pixel projection: a used line-height in
+# px is divided by the element font size directly.  The scale constant remains
+# public for older callers, but its only valid value is the identity scale.
+LINE_HEIGHT_PX_PROJECTION_SCALE = 1.0
+# These names existed in the pre-1.1 compiler and remain as inert compatibility
+# symbols while downstream callers migrate.  Contract 1.1 never consults them
+# to select a formatting or geometry exception.
+SOURCE_FIDELITY_LINE_SPACING_TEXT = ""
+SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX = 0.0
+# Chromium's measured visual lines are evidence only.  They never become native
+# paragraph boundaries or hard breaks in Contract 1.1.
 SOFT_WRAP_MODEL = {
-    "representation": "chromium-visual-lines-as-native-paragraph-boundaries",
+    "representation": "measurement-and-evidence-only",
     "measured_property": "visualLines",
-    "unit": "native-paragraph",
-    "requires": [
-        "one-source-paragraph",
-        "one-source-run",
-        "visual-lines-rejoin-to-the-authored-text",
-        "ordered-soft-wrap-sequence",
-    ],
-    "fallback": "authored-paragraph-when-the-visual-lines-are-not-a-repartition",
+    "unit": "measurement-line",
+    "requires": ["ordered-soft-wrap-sequence"],
+    "fallback": "authored-paragraph-structure",
+    "lowering": "never",
     "object_per_source": 1,
     "object_kind": "textbox",
     "new_soft_line_break_representation": False,
@@ -308,6 +326,211 @@ LIST_REJECTIONS = {
         "List Paragraph."
     ),
 }
+
+
+@dataclass(frozen=True)
+class TableRegion:
+    """One anchor-owned rectangular region in a logical table grid."""
+
+    anchor_row: int
+    anchor_column: int
+    row_span: int
+    column_span: int
+    source_row: int
+    source_column: int
+    source_object: str
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "anchorRow": self.anchor_row,
+            "anchorColumn": self.anchor_column,
+            "rowSpan": self.row_span,
+            "columnSpan": self.column_span,
+        }
+
+
+@dataclass(frozen=True)
+class LogicalTableGrid:
+    """Validated logical topology shared by Contract and native lowering."""
+
+    rows: int
+    columns: int
+    regions: tuple[TableRegion, ...]
+    occupancy: tuple[tuple[int, ...], ...]
+
+    @property
+    def normalized_topology(self) -> list[dict[str, int]]:
+        return [region.as_dict() for region in self.regions]
+
+
+class TableTopologyError(ValueError):
+    """A stable, source-bound failure while constructing a logical table grid."""
+
+    def __init__(self, code: str, message: str, source_object: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.source_object = source_object
+
+
+def _table_span_value(
+    raw_value: Any,
+    *,
+    attribute: str,
+    source_object: str,
+) -> int:
+    """Parse one HTML span without inheriting browser ``parseInt`` leniency."""
+
+    if raw_value is None:
+        return 1
+    text = str(raw_value).strip()
+    if not re.fullmatch(r"[+-]?\d+", text):
+        raise TableTopologyError(
+            "malformed_table_span",
+            f"{attribute} must be a positive integer on {source_object}; got {raw_value!r}.",
+            source_object,
+        )
+    value = int(text)
+    if value <= 0:
+        raise TableTopologyError(
+            "table_span_non_positive",
+            f"{attribute} must be greater than zero on {source_object}; got {raw_value!r}.",
+            source_object,
+        )
+    return value
+
+
+def build_logical_table_grid(
+    rows: Sequence[Sequence[Mapping[str, Any]]],
+    *,
+    source_object: str,
+) -> LogicalTableGrid:
+    """Build a rectangular logical grid and fail closed on ambiguous topology.
+
+    ``rows`` contains lightweight cell mappings with ``rowspan``, ``colspan``,
+    ``source_object``, and optional ``text`` keys.  The function deliberately
+    does not infer a missing cell: every logical slot must be owned by exactly
+    one anchor region after HTML row-span placement.
+    """
+
+    if not rows:
+        raise TableTopologyError(
+            "invalid_table_matrix",
+            f"Table {source_object} has no rows.",
+            source_object,
+        )
+
+    occupancy: list[dict[int, int]] = [dict() for _ in rows]
+    regions: list[TableRegion] = []
+    seen_sources: set[str] = set()
+    max_column = 0
+
+    for row_index, row in enumerate(rows):
+        if not row:
+            raise TableTopologyError(
+                "table_hole",
+                f"Table {source_object} row {row_index + 1} has no cells.",
+                f"{source_object}/tr[{row_index + 1}]",
+            )
+        cursor = 0
+        for source_column, cell in enumerate(row):
+            cell_source = str(
+                cell.get("source_object")
+                or f"{source_object}/tr[{row_index + 1}]/tc[{source_column + 1}]"
+            )
+            if cell_source in seen_sources:
+                raise TableTopologyError(
+                    "competing_table_anchor",
+                    f"Table {source_object} has competing anchors with source identity {cell_source!r}.",
+                    cell_source,
+                )
+            seen_sources.add(cell_source)
+
+            row_span = _table_span_value(
+                cell.get("rowspan"),
+                attribute="rowspan",
+                source_object=cell_source,
+            )
+            column_span = _table_span_value(
+                cell.get("colspan"),
+                attribute="colspan",
+                source_object=cell_source,
+            )
+            if row_index + row_span > len(rows):
+                raise TableTopologyError(
+                    "table_span_out_of_bounds",
+                    f"Table span at {cell_source} reaches past the {len(rows)}-row logical grid.",
+                    cell_source,
+                )
+
+            # A source cell starts at the first unoccupied slot in its row, as
+            # HTML table layout specifies.  A span that would then cross a
+            # row-spanned region is ambiguous rather than something to guess.
+            while cursor in occupancy[row_index]:
+                cursor += 1
+            end_column = cursor + column_span
+            collisions = [
+                (target_row, target_column)
+                for target_row in range(row_index, row_index + row_span)
+                for target_column in range(cursor, end_column)
+                if target_column in occupancy[target_row]
+            ]
+            if collisions:
+                has_content = bool(str(cell.get("text", "") or "").strip())
+                code = (
+                    "covered_cell_content_ambiguity"
+                    if has_content
+                    else "table_span_overlap"
+                )
+                detail = "covered-cell content is ambiguous" if has_content else "table spans overlap"
+                raise TableTopologyError(
+                    code,
+                    f"{detail} at {cell_source} in table {source_object}.",
+                    cell_source,
+                )
+
+            region_index = len(regions)
+            region = TableRegion(
+                anchor_row=row_index + 1,
+                anchor_column=cursor + 1,
+                row_span=row_span,
+                column_span=column_span,
+                source_row=row_index,
+                source_column=source_column,
+                source_object=cell_source,
+            )
+            regions.append(region)
+            for target_row in range(row_index, row_index + row_span):
+                for target_column in range(cursor, end_column):
+                    occupancy[target_row][target_column] = region_index
+            cursor = end_column
+            max_column = max(max_column, end_column)
+
+    if max_column <= 0:
+        raise TableTopologyError(
+            "invalid_table_matrix",
+            f"Table {source_object} has no logical columns.",
+            source_object,
+        )
+    for row_index in range(len(rows)):
+        missing = [column for column in range(max_column) if column not in occupancy[row_index]]
+        if missing:
+            raise TableTopologyError(
+                "table_hole",
+                f"Table {source_object} row {row_index + 1} has uncovered logical columns {missing!r}.",
+                f"{source_object}/tr[{row_index + 1}]",
+            )
+
+    normalized_occupancy = tuple(
+        tuple(occupancy[row_index][column] for column in range(max_column))
+        for row_index in range(len(rows))
+    )
+    return LogicalTableGrid(
+        rows=len(rows),
+        columns=max_column,
+        regions=tuple(regions),
+        occupancy=normalized_occupancy,
+    )
 
 
 def list_surface() -> dict[str, Any]:
@@ -357,6 +580,8 @@ def paragraph_layout_surface() -> dict[str, Any]:
         "alignment": {
             "property": "text-align",
             "values": sorted(TEXT_ALIGNMENT_VALUES),
+            "accepted_relative": ["start", "end"],
+            "rejected": ["unknown-values"],
             "default": TEXT_ALIGNMENT_DEFAULT,
             "mapping": {
                 name: dict(directions)
@@ -367,24 +592,30 @@ def paragraph_layout_surface() -> dict[str, Any]:
         "line_height": {
             "property": LINE_HEIGHT_PROPERTY,
             "native": "lineSpacing",
+            "accepted": ["positive-unitless", "positive-px"],
             "unitless": "line-height / font-size",
-            "length_with_px_projection": (
-                f"(line-height x {LINE_HEIGHT_PX_PROJECTION_SCALE}) / font-size"
-            ),
-            "length_with_source_fidelity_projection": "line-height / font-size",
+            "length_with_px_projection": "line-height / font-size",
+            "rejected": [
+                "normal",
+                "percentage",
+                "relative-unit",
+                "non-px-absolute-unit",
+                "unresolved-css-variable",
+                "non-positive",
+            ],
             "omitted_when_ratio_within": 0.01,
             "precision": "0.001x",
+            "readback_tolerance": 0.01,
             "default": "absent",
-            "source_fidelity_text": SOURCE_FIDELITY_LINE_SPACING_TEXT,
-            "source_fidelity_min_font_size_px": (
-                SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX
-            ),
         },
         "paragraph_spacing": {
             "properties": list(PARAGRAPH_SPACING_PROPERTIES),
             "native": ["spaceBefore", "spaceAfter"],
             "unit": "pt",
-            "projection": "css-margin-px-to-native-paragraph-points",
+            "accepted": ["unitless-zero", "non-negative-px"],
+            "rejected": ["negative", "relative-unit", "non-px-absolute-unit", "auto"],
+            "projection": "css-margin-px-to-native-paragraph-points-at-measured-slide-scale",
+            "readback_tolerance_pt": 0.25,
             "default": "absent",
             "emitted_at": ["table-cell-paragraph"],
             "standalone_text_block": "margins-are-already-in-the-measured-bounds",
@@ -393,6 +624,36 @@ def paragraph_layout_surface() -> dict[str, Any]:
             key: (list(value) if isinstance(value, list) else value)
             for key, value in SOFT_WRAP_MODEL.items()
         },
+    }
+
+
+def shape_geometry_surface() -> dict[str, Any]:
+    """Declare the closed public native-shape geometry surface.
+
+    The public annotation is deliberately a small, case-sensitive vocabulary.
+    The projection reader may retain its private legacy spelling internally, but
+    that spelling is not part of this manifest or the Author Contract surface.
+    """
+    return {
+        "attribute": SHAPE_GEOMETRY_ATTRIBUTE,
+        "tokens": list(SHAPE_GEOMETRY_TOKENS),
+        "case_sensitive": True,
+        "native": "PowerPoint preset geometry",
+        "inference": {
+            "rect": "unannotated block box",
+            "roundRect": "unannotated positive border-radius",
+            "ellipse": {
+                "source": "border-radius:50%",
+                "tolerance": "abs(width-height) <= max(1 CSS px, 0.1% * max(width,height))",
+            },
+        },
+        "rejected": [
+            "unknown-token",
+            "case-variant",
+            "arbitrary-preset",
+            "custom-path",
+            "adjust-handle",
+        ],
     }
 
 
@@ -432,6 +693,7 @@ def author_capability_manifest() -> dict[str, Any]:
             },
         },
         "paragraph_layout_surface": paragraph_layout_surface(),
+        "shape_geometry_surface": shape_geometry_surface(),
         "list_surface": list_surface(),
         "accepted_resources": {
             "picture_source": AUTHOR_PICTURE_SOURCE,
@@ -1054,6 +1316,77 @@ def _check_css_value(
 ) -> None:
     normalized = value.strip().lower()
     classification = classification or _css_classification(property_name, value)
+    if property_name == LINE_HEIGHT_PROPERTY:
+        parsed = _parse_length(value)
+        raw = value.strip().lower()
+        if parsed is None or parsed[0] <= 0 or parsed[1] not in {"px"}:
+            # A unitless positive number is the one non-length line-height
+            # form accepted by Contract 1.1.  ``_parse_length`` normalizes a
+            # missing unit to px for the general geometry grammar, so inspect
+            # the source spelling separately here.
+            if not re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)", raw) or float(raw) <= 0:
+                _emit(
+                    findings,
+                    profile,
+                    "unsupported_line_height",
+                    "line-height must be a positive unitless number or positive px value.",
+                    source_object,
+                )
+        return
+    if property_name.startswith("margin"):
+        values = value.split()
+        if not values:
+            values = [value]
+        invalid = False
+        for item in values:
+            if re.fullmatch(r"0(?:\.0+)?", item) or re.fullmatch(
+                r"(?:\d+(?:\.\d*)?|\.\d+)px", item, re.IGNORECASE
+            ):
+                continue
+            invalid = True
+            break
+        if invalid:
+            _emit(
+                findings,
+                profile,
+                "unsupported_paragraph_margin",
+                "paragraph margins must be unitless zero or non-negative px values.",
+                source_object,
+            )
+        return
+    if property_name == "text-decoration":
+        if normalized not in {"none", "underline"}:
+            _emit(
+                findings,
+                profile,
+                "unsupported_text_decoration",
+                "text-decoration must be exactly none or underline.",
+                source_object,
+            )
+        return
+    if property_name == "direction" and normalized not in {"ltr", "rtl", "initial"}:
+        _emit(
+            findings,
+            profile,
+            "unsupported_text_direction",
+            "direction must be ltr, rtl, or initial.",
+            source_object,
+        )
+        return
+    if property_name == "text-align" and normalized not in {
+        *TEXT_ALIGNMENT_VALUES,
+        "start",
+        "end",
+        "initial",
+    }:
+        _emit(
+            findings,
+            profile,
+            "unsupported_text_alignment",
+            "text-align must be left, center, right, justify, start, end, or initial.",
+            source_object,
+        )
+        return
     if classification == "unsupported" and normalized not in {"none", "initial"}:
         _emit(
             findings,
@@ -1068,9 +1401,107 @@ def _check_css_value(
             findings,
             profile,
             "unsupported_visible_css",
-            "vertical writing modes are outside OfficeCLI Contract v1.",
+            "vertical writing modes are outside OfficeCLI Contract 1.1.",
             source_object,
         )
+
+
+def _check_author_shape_geometry(
+    element: Any,
+    findings: list[ContractDiagnostic],
+) -> None:
+    """Validate the public shape annotation before measurement.
+
+    ``data-shape-geometry`` is accepted only on the private projection path,
+    identified by the projector's complete object-identity marker set.  Ordinary
+    Author HTML must use the namespaced public spelling so a typo cannot be
+    silently lowered as a rectangle.
+    """
+    source = _node_path(element)
+    public_value = element.get(SHAPE_GEOMETRY_ATTRIBUTE)
+    private_value = element.get("data-shape-geometry")
+    projection_identity = all(
+        element.get(attribute)
+        for attribute in (
+            "data-source-object",
+            "data-source-kind",
+            "data-projection-disposition",
+            "data-projection-id",
+        )
+    )
+
+    if private_value is not None and not projection_identity:
+        _emit(
+            findings,
+            "author",
+            "unsupported_shape_geometry_annotation",
+            "data-shape-geometry is a private projection alias; use data-pptx-shape-geometry.",
+            source,
+        )
+
+    for attribute, value in (
+        (SHAPE_GEOMETRY_ATTRIBUTE, public_value),
+        ("data-shape-geometry", private_value),
+    ):
+        if value is None:
+            continue
+        # Do not strip the value: Contract tokens are deliberately exact and
+        # case-sensitive, including their spelling and whitespace.
+        if value not in SHAPE_GEOMETRY_TOKEN_SET:
+            _emit(
+                findings,
+                "author",
+                "unsupported_shape_geometry",
+                f"{attribute} must be one of the exact native tokens: {', '.join(SHAPE_GEOMETRY_TOKENS)}.",
+                source,
+            )
+
+    if public_value is not None and private_value is not None and public_value != private_value:
+        _emit(
+            findings,
+            "author",
+            "conflicting_shape_geometry",
+            "Public and private shape geometry annotations disagree.",
+            source,
+        )
+
+    declared = public_value if public_value is not None else private_value
+    radius = _inline_styles(element).get("border-radius", "").strip().lower()
+    radius_parts = [part for part in re.split(r"[\s/]+", radius) if part]
+    radius_numbers = re.findall(r"-?(?:\d+(?:\.\d*)?|\.\d+)", radius)
+    has_radius = any(float(value) > 0 for value in radius_numbers)
+    ellipse_radius = bool(radius_parts) and all(part == "50%" for part in radius_parts)
+    if (
+        declared in SHAPE_GEOMETRY_TOKEN_SET
+        and has_radius
+        and declared != "roundRect"
+        and not (declared == "ellipse" and ellipse_radius)
+    ):
+        _emit(
+            findings,
+            "author",
+            "unsupported_shape_adjustment",
+            "CSS border-radius cannot adjust this native preset geometry.",
+            source,
+        )
+
+    for attribute in element.attrib:
+        normalized = str(attribute).lower()
+        if normalized in {
+            "data-pptx-kind",
+            "data-pptx-shape-path",
+            "data-pptx-shape-adjust",
+            "data-pptx-shape-adjustment",
+            "data-shape-adjust",
+            "data-shape-adjustment",
+        }:
+            _emit(
+                findings,
+                "author",
+                "unsupported_shape_geometry_annotation",
+                f"{attribute} is outside the closed native shape geometry surface.",
+                source,
+            )
 
 
 def _check_author(
@@ -1111,6 +1542,7 @@ def _check_author(
         if not _is_visible_author_element(element, document):
             continue
         tag = str(element.tag).lower() if isinstance(element.tag, str) else ""
+        _check_author_shape_geometry(element, findings)
         if tag in _UNSUPPORTED_VISIBLE_TAGS:
             _emit(
                 findings,
@@ -1129,14 +1561,44 @@ def _check_author(
                     "Author pictures must use data:image/... sources.",
                     _node_path(element),
                 )
-        if tag in {"td", "th"}:
-            if str(element.get("rowspan", "1")) != "1" or str(element.get("colspan", "1")) != "1":
+        if tag == "a" and element.get("href"):
+            _emit(
+                findings,
+                "author",
+                "unsupported_hyperlink",
+                "Hyperlink targets are outside the Contract 1.1 native run matrix.",
+                _node_path(element),
+            )
+        if tag == "table":
+            table_rows: list[list[dict[str, Any]]] = []
+            for row in element.xpath(".//tr"):
+                nearest_table = row.xpath("ancestor::table[1]")
+                if nearest_table and nearest_table[0] is not element:
+                    continue
+                cells = row.xpath("./td|./th")
+                table_rows.append(
+                    [
+                        {
+                            "rowspan": cell.get("rowspan"),
+                            "colspan": cell.get("colspan"),
+                            "source_object": _node_path(cell),
+                            "text": "".join(cell.itertext()),
+                        }
+                        for cell in cells
+                    ]
+                )
+            try:
+                build_logical_table_grid(
+                    table_rows,
+                    source_object=_node_path(element),
+                )
+            except TableTopologyError as exc:
                 _emit(
                     findings,
                     "author",
-                    "unsupported_table_span",
-                    "Merged table cells are not supported in OfficeCLI Contract v1.",
-                    _node_path(element),
+                    exc.code,
+                    exc.message,
+                    exc.source_object or _node_path(element),
                 )
 
     _check_lists(document, findings)
@@ -1312,7 +1774,7 @@ def _check_officehtml(
             design_height = declarations.get("--slide-design-h", design_height)
     for index, slide in enumerate(slides, start=1):
         styles = _inline_styles(slide)
-        # The OfficeCLI 1.0.147 parser uses the widescreen point canvas when a
+        # The OfficeCLI 1.0.151 parser uses the widescreen point canvas when a
         # minimal projection omits explicit slide bounds.  Keep the Contract
         # aligned with that public parser default while still rejecting a
         # partially declared or non-positive canvas.
@@ -1369,14 +1831,36 @@ def _check_officehtml(
                         "Every OfficeHTML table cell must expose data-cell-path.",
                         source,
                     )
-                if str(cell.get("rowspan", "1")) != "1" or str(cell.get("colspan", "1")) != "1":
-                    _emit(
-                        findings,
-                        "officehtml",
-                        "unsupported_table_span",
-                        "Merged table cells are not supported in OfficeCLI Contract v1.",
-                        str(cell.get("data-cell-path") or source),
-                    )
+            table_nodes = element.xpath(".//table[1]")
+            table_root = table_nodes[0] if table_nodes else element
+            table_rows: list[list[dict[str, Any]]] = []
+            for row in table_root.xpath(".//tr"):
+                nearest_table = row.xpath("ancestor::table[1]")
+                if nearest_table and nearest_table[0] is not table_root:
+                    continue
+                table_rows.append(
+                    [
+                        {
+                            "rowspan": cell.get("rowspan"),
+                            "colspan": cell.get("colspan"),
+                            "source_object": str(
+                                cell.get("data-cell-path") or _node_path(cell)
+                            ),
+                            "text": "".join(cell.itertext()),
+                        }
+                        for cell in row.xpath("./td|./th")
+                    ]
+                )
+            try:
+                build_logical_table_grid(table_rows, source_object=source)
+            except TableTopologyError as exc:
+                _emit(
+                    findings,
+                    "officehtml",
+                    exc.code,
+                    exc.message,
+                    exc.source_object or source,
+                )
         for descendant in element.iter():
             if not isinstance(descendant.tag, str) or _is_hidden(descendant):
                 continue
@@ -1440,6 +1924,13 @@ __all__ = [
     "AUTHOR_PICTURE_SOURCE",
     "AUTHOR_EXTERNAL_RESOURCES_ALLOWED",
     "AUTHOR_TABLE_CELL_SPANS",
+    "SHAPE_GEOMETRY_ATTRIBUTE",
+    "SHAPE_GEOMETRY_TOKENS",
+    "SHAPE_GEOMETRY_TOKEN_SET",
+    "TableRegion",
+    "LogicalTableGrid",
+    "TableTopologyError",
+    "build_logical_table_grid",
     "SUPPORTED_PROFILES",
     "SUPPORTED_OBJECT_KINDS",
     "SUPPORTED_INLINE_ELEMENTS",
@@ -1470,6 +1961,7 @@ __all__ = [
     "ContractReport",
     "author_capability_manifest",
     "paragraph_layout_surface",
+    "shape_geometry_surface",
     "list_surface",
     "check_contract",
 ]

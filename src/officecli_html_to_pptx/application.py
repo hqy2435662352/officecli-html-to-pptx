@@ -1,4 +1,4 @@
-"""Task-oriented V0.2 application operations.
+"""Task-oriented V0.5.1 application operations.
 
 The module is deliberately an orchestration layer, not a second renderer.  It
 owns the public command semantics, the Artifact Pair transaction, and the
@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable, Mapping, Sequence
+from copy import deepcopy
 import errno
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 import time
@@ -29,7 +31,12 @@ from .contract import (
     author_capability_manifest,
     check_contract,
 )
-from ._internal.acceptance import _run_officecli, _screenshot_pptx
+from ._internal.acceptance import (
+    _officecli_manifest,
+    _run_officecli,
+    _screenshot_pptx,
+    compare_manifests,
+)
 from ._internal.compare import create_comparison, screenshot_html_slides
 from ._internal.officecli_compiler import (
     CompilationDiagnostic,
@@ -57,16 +64,20 @@ from .runtime import (
     VALIDATED_PLATFORM_SCOPE,
     current_platform,
     diagnose_environment as _diagnose_runtime,
+    officecli_runtime_snapshot,
 )
 
 
 PUBLIC_COMMANDS = ("capabilities", "doctor", "check", "build", "finalize")
 VISUAL_REVIEW_SCHEMA_VERSION = 1
+NATIVE_EVIDENCE_SCHEMA_VERSION = 1
 EVIDENCE_FILES = (
     "contract.json",
     "capabilities.json",
     "runtime.json",
     "manifest.json",
+    "readback.json",
+    "native-evidence.json",
     "validate.json",
     "issues.json",
     "result.json",
@@ -193,6 +204,9 @@ def get_capabilities() -> CommandResult:
     contract_capabilities = author_capability_manifest()
     data = {
         "contract": contract_capabilities,
+        "runtime_attestation": {
+            "officecli": officecli_runtime_snapshot(),
+        },
         # ``platform`` is where this command is running; ``supported_platforms``
         # is what this build supports.  A supported key is coarse -- the single
         # key "Linux" matches every distribution -- so the validated scope is
@@ -307,6 +321,272 @@ def _validate_build_output(path: Path) -> dict[str, Any]:
 def _collect_issues(path: Path) -> dict[str, Any]:
     text = str(_run_officecli("view", path, "issues"))
     return {"status": "PASS", "output": text}
+
+
+def _collect_readback(path: Path) -> dict[str, Any]:
+    """Read the published PPTX independently of the compiler manifest."""
+
+    manifest, _ = _officecli_manifest(path)
+    return manifest
+
+
+def _manifest_object_counts(manifest: Mapping[str, Any]) -> dict[str, int]:
+    raw = manifest.get("object_kind_counts")
+    if isinstance(raw, Mapping):
+        return {str(key): int(value) for key, value in raw.items()}
+    counts: dict[str, int] = {}
+    for item in manifest.get("objects", []) or []:
+        if isinstance(item, Mapping):
+            kind = str(item.get("kind", ""))
+            if kind:
+                counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+_ALPHA_COLOR_RE = re.compile(r"#[0-9a-fA-F]{8}(?=$|[\s:])")
+_ANY_COLOR_RE = re.compile(r"#([0-9a-fA-F]{6,8})(?=$|[\s:])")
+
+
+def _opacity_number(value: Any) -> float | None:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_alpha_color(
+    actual_value: Any,
+    expected_value: Any,
+    expected_opacity: Any,
+) -> Any:
+    """Strip only a matching OfficeCLI alpha spelling from a readback color.
+
+    OfficeCLI 1.0.151 can serialize the same native opacity both as the public
+    ``opacity``/``lineOpacity`` property and as an alpha suffix on ``fill`` or
+    ``line``.  The RGB value and the independent opacity remain strict: an
+    alpha suffix is removed only when its RGB and alpha agree with the authored
+    representation.  A changed color or opacity therefore still becomes a
+    material finding.
+    """
+
+    actual_text = str(actual_value or "")
+    expected_match = _ANY_COLOR_RE.search(str(expected_value or ""))
+    actual_match = _ANY_COLOR_RE.search(actual_text)
+    if not actual_match or not expected_match:
+        return actual_value
+    if len(actual_match.group(1)) != 8:
+        return actual_value
+    if actual_match.group(1)[:6].lower() != expected_match.group(1)[:6].lower():
+        return actual_value
+    expected_alpha = _opacity_number(expected_opacity)
+    if expected_alpha is None:
+        expected_alpha = (
+            int(expected_match.group(1)[6:], 16) / 255.0
+            if len(expected_match.group(1)) == 8
+            else 1.0
+        )
+    actual_alpha = int(actual_match.group(1)[6:], 16) / 255.0
+    if abs(actual_alpha - expected_alpha) > 0.01:
+        return actual_value
+    return _ALPHA_COLOR_RE.sub(
+        f"#{actual_match.group(1)[:6].upper()}", actual_text, count=1
+    )
+
+
+def _normalize_readback_paragraph(paragraph: Any) -> None:
+    if not isinstance(paragraph, dict) or str(paragraph.get("text", "")):
+        return
+    runs = paragraph.get("runs")
+    if isinstance(runs, list):
+        # The readback adapter materializes one empty run for authored empty
+        # paragraphs.  Paragraph count, spacing, direction, and hard breaks
+        # remain strict; only this non-semantic child is removed.
+        paragraph["runs"] = [
+            run for run in runs if isinstance(run, Mapping) and str(run.get("text", ""))
+        ]
+
+
+def _normalize_readback_item(
+    expected: Mapping[str, Any] | None,
+    actual: dict[str, Any],
+) -> None:
+    expected_properties = (
+        expected.get("properties", {}) if isinstance(expected, Mapping) else {}
+    )
+    properties = actual.get("properties")
+    if isinstance(properties, dict) and isinstance(expected_properties, Mapping):
+        if "fill" in properties:
+            properties["fill"] = _normalize_alpha_color(
+                properties.get("fill"),
+                expected_properties.get("fill"),
+                expected_properties.get("opacity"),
+            )
+        if "line" in properties:
+            properties["line"] = _normalize_alpha_color(
+                properties.get("line"),
+                expected_properties.get("line"),
+                expected_properties.get("lineOpacity"),
+            )
+    for paragraph in actual.get("paragraphs", []) or []:
+        _normalize_readback_paragraph(paragraph)
+
+    expected_cells = expected.get("cells", []) if isinstance(expected, Mapping) else []
+    for index, cell in enumerate(actual.get("cells", []) or []):
+        if not isinstance(cell, dict):
+            continue
+        expected_cell = (
+            expected_cells[index]
+            if index < len(expected_cells) and isinstance(expected_cells[index], Mapping)
+            else None
+        )
+        expected_cell_props = (
+            expected_cell.get("props", {}) if isinstance(expected_cell, Mapping) else {}
+        )
+        cell_props = cell.get("props")
+        if isinstance(cell_props, dict) and isinstance(expected_cell_props, Mapping):
+            if "fill" in cell_props:
+                cell_props["fill"] = _normalize_alpha_color(
+                    cell_props.get("fill"),
+                    expected_cell_props.get("fill"),
+                    expected_cell_props.get("opacity"),
+                )
+            if "line" in cell_props:
+                cell_props["line"] = _normalize_alpha_color(
+                    cell_props.get("line"),
+                    expected_cell_props.get("line"),
+                    expected_cell_props.get("lineOpacity"),
+                )
+        for paragraph in cell.get("paragraphs", []) or []:
+            _normalize_readback_paragraph(paragraph)
+
+
+def _normalize_native_readback_noise(
+    expected: Mapping[str, Any], readback: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return a strict readback manifest with only two serializer noises removed."""
+
+    normalized = deepcopy(dict(readback))
+    expected_objects = {
+        str(item.get("name")): item
+        for item in expected.get("objects", []) or []
+        if isinstance(item, Mapping) and item.get("name")
+    }
+    for item in normalized.get("objects", []) or []:
+        if isinstance(item, dict):
+            _normalize_readback_item(expected_objects.get(str(item.get("name"))), item)
+    return normalized
+
+
+def _native_material_delta_count(
+    compiled: Mapping[str, Any], readback: Mapping[str, Any]
+) -> int:
+    """Count all supported native-field findings after narrow readback cleanup."""
+
+    _, findings = compare_manifests(
+        compiled,
+        _normalize_native_readback_noise(compiled, readback),
+    )
+    return len(findings)
+
+
+def _native_slice_evidence(
+    *,
+    compiled: OfficeCLICompilationResult,
+    readback: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Summarize only the native-slice evidence required by Contract 1.1."""
+
+    capability = author_capability_manifest()
+    compiled_objects = [
+        item for item in compiled.manifest.get("objects", []) or []
+        if isinstance(item, Mapping)
+    ]
+    readback_objects = [
+        item for item in readback.get("objects", []) or []
+        if isinstance(item, Mapping)
+    ]
+    text_kinds = {"shape", "textbox"}
+    text_structure = {
+        "compiled": [
+            {
+                "name": item.get("name"),
+                "source_slide": item.get("source_slide"),
+                "paragraphs": item.get("paragraphs", []),
+            }
+            for item in compiled_objects
+            if item.get("kind") in text_kinds and item.get("paragraphs")
+        ],
+        "readback": [
+            {
+                "name": item.get("name"),
+                "source_slide": item.get("source_slide"),
+                "paragraphs": item.get("paragraphs", []),
+            }
+            for item in readback_objects
+            if item.get("kind") in text_kinds and item.get("paragraphs")
+        ],
+    }
+    merge_topology = [
+        {
+            "name": item.get("name"),
+            "source_slide": item.get("source_slide"),
+            "rows": item.get("rows", 0),
+            "columns": item.get("columns", 0),
+            "normalized_merge_topology": item.get("normalized_merge_topology", []),
+        }
+        for item in readback_objects
+        if item.get("kind") == "table"
+    ]
+    native_geometry = [
+        {
+            "name": item.get("name"),
+            "source_slide": item.get("source_slide"),
+            "geometry": (item.get("properties") or {}).get("geometry"),
+        }
+        for item in readback_objects
+        if item.get("kind") == "shape"
+        and (item.get("properties") or {}).get("geometry")
+    ]
+    compiler_diagnostics = [
+        item.as_dict() for item in compiled.diagnostics
+    ]
+    return {
+        "schema_version": NATIVE_EVIDENCE_SCHEMA_VERSION,
+        "product_version": PRODUCT_VERSION,
+        "contract_version": CONTRACT_VERSION,
+        "officecli_compatibility_baseline": OFFICECLI_COMPATIBILITY_BASELINE,
+        "runtime": {"officecli": dict(runtime.get("officecli", {}))},
+        "frozen_text_matrix": {
+            "run": capability["mixed_run_surface"],
+            "paragraph": capability["paragraph_layout_surface"],
+        },
+        "text_structure": text_structure,
+        "normalized_merge_topology": merge_topology,
+        "native_geometry": native_geometry,
+        "counts": {
+            "authored_object_count": int(compiled.object_count),
+            "compiled_object_count": len(compiled_objects),
+            "readback_object_count": len(readback_objects),
+            "compiled_object_kind_counts": _manifest_object_counts(compiled.manifest),
+            "readback_object_kind_counts": _manifest_object_counts(readback),
+        },
+        "diagnostics": {
+            "unsupported": sum(
+                item["code"].startswith("unsupported_")
+                for item in compiler_diagnostics
+            ),
+            "unresolved": sum(
+                item["code"].startswith("unresolved_")
+                for item in compiler_diagnostics
+            ),
+            "material_delta": _native_material_delta_count(
+                compiled.manifest, readback
+            ),
+            "compiler": compiler_diagnostics,
+        },
+        "gate3": {"status": "PENDING", "slide_count": int(compiled.slide_count)},
+    }
 
 
 def _publish_file(source: Path, target: Path) -> None:
@@ -509,6 +789,12 @@ async def build_author_html(
         slide_count = int(compiled.slide_count)
         validation = _validate_build_output(staged_pptx)
         issues = _collect_issues(staged_pptx)
+        readback = _collect_readback(staged_pptx)
+        native_evidence = _native_slice_evidence(
+            compiled=compiled,
+            readback=readback,
+            runtime=diagnosis.data.get("runtime", {}),
+        )
         staged_evidence.mkdir(parents=True, exist_ok=False)
         comparison_dir = staged_evidence / "comparisons"
         comparisons = await _make_comparisons(
@@ -541,6 +827,13 @@ async def build_author_html(
             "evidence_path": str(evidence_path),
             "slide_count": slide_count,
             "comparisons": final_comparisons,
+            "readback_path": str(evidence_path / "readback.json"),
+            "native_evidence_path": str(evidence_path / "native-evidence.json"),
+            "native_evidence": {
+                "diagnostics": native_evidence["diagnostics"],
+                "counts": native_evidence["counts"],
+                "gate3": native_evidence["gate3"],
+            },
             "status": "VISUAL_REVIEW_REQUIRED",
         }
         review_payload = _review_seed(
@@ -553,9 +846,20 @@ async def build_author_html(
             comparisons=final_comparisons,
         )
         _json_dump(staged_evidence / "contract.json", contract.as_dict())
-        _json_dump(staged_evidence / "capabilities.json", get_capabilities().data)
+        capability_evidence = dict(get_capabilities().data)
+        capability_evidence["runtime_attestation"] = {
+            "officecli": dict(
+                _field_mapping(
+                    diagnosis.data.get("runtime", {}).get("officecli", {}),
+                    "doctor OfficeCLI runtime",
+                )
+            )
+        }
+        _json_dump(staged_evidence / "capabilities.json", capability_evidence)
         _json_dump(staged_evidence / "runtime.json", diagnosis.data.get("runtime", {}))
         _json_dump(staged_evidence / "manifest.json", compiled.manifest)
+        _json_dump(staged_evidence / "readback.json", readback)
+        _json_dump(staged_evidence / "native-evidence.json", native_evidence)
         _json_dump(staged_evidence / "validate.json", validation)
         _json_dump(staged_evidence / "issues.json", issues)
         _json_dump(staged_evidence / "result.json", result_payload)
@@ -573,7 +877,7 @@ async def build_author_html(
         if missing:
             raise RuntimeError("Build evidence is incomplete: " + ", ".join(missing))
 
-        # OfficeCLI 1.0.148 may keep validation/view results in a resident
+        # OfficeCLI 1.0.151 may keep validation/view results in a resident
         # process.  Close our staged document before a native Windows rename.
         _run_officecli("close", staged_pptx)
 
@@ -816,6 +1120,14 @@ def _finalization_payload(
         "product": {"name": PRODUCT_NAME, "version": PRODUCT_VERSION},
         "outcome": outcome,
         "slide_count": int(result_payload["slide_count"]),
+        "gate3": {
+            "status": "REVISION_REQUIRED" if any(
+                finding.get("severity") == "major"
+                for slide in slides
+                for finding in slide.get("findings", [])
+            ) else "PASS",
+            "reviewed_slides": len(slides),
+        },
         "review_schema_version": review_payload.get("schema_version"),
         "findings": findings,
     }
@@ -841,14 +1153,52 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
             raise ValueError("Evidence Bundle is incomplete: " + ", ".join(missing_evidence))
         result_payload = _read_json(evidence_path / "result.json", "result.json")
         review_payload = _read_json(evidence_path / "visual-review.json", "visual-review.json")
-        for name in ("contract.json", "capabilities.json", "runtime.json", "manifest.json", "validate.json", "issues.json"):
+        for name in (
+            "contract.json",
+            "capabilities.json",
+            "runtime.json",
+            "manifest.json",
+            "readback.json",
+            "native-evidence.json",
+            "validate.json",
+            "issues.json",
+        ):
             _read_json(evidence_path / name, name)
+        native_evidence = _read_json(
+            evidence_path / "native-evidence.json", "native-evidence.json"
+        )
+        readback = _read_json(evidence_path / "readback.json", "readback.json")
+        if native_evidence.get("product_version") != PRODUCT_VERSION:
+            raise ValueError("native-evidence.json product version does not match this product")
+        if native_evidence.get("contract_version") != CONTRACT_VERSION:
+            raise ValueError("native-evidence.json contract version does not match this product")
+        officecli_runtime = _field_mapping(
+            _field_mapping(native_evidence.get("runtime"), "native evidence runtime").get(
+                "officecli"
+            ),
+            "native evidence OfficeCLI runtime",
+        )
+        if not str(officecli_runtime.get("discovered_version", "")).strip():
+            raise ValueError("native-evidence.json must record the actual OfficeCLI runtime")
+        if officecli_runtime.get("compatible") is not True:
+            raise ValueError("native-evidence.json OfficeCLI runtime is below the Contract 1.1 floor")
+        diagnostic_counts = _field_mapping(
+            native_evidence.get("diagnostics"), "native evidence diagnostics"
+        )
+        for key in ("unsupported", "unresolved", "material_delta"):
+            if diagnostic_counts.get(key) != 0:
+                raise ValueError(
+                    f"native-evidence.json {key} must be zero before finalization"
+                )
+        counts = _field_mapping(native_evidence.get("counts"), "native evidence counts")
+        if counts.get("readback_object_count") != len(readback.get("objects", []) or []):
+            raise ValueError("native-evidence.json readback object count does not match readback.json")
         if result_payload.get("schema_version") != 1:
             raise ValueError("result.json has an unsupported schema_version")
         if result_payload.get("product") != {"name": PRODUCT_NAME, "version": PRODUCT_VERSION}:
             raise ValueError("result.json product identity does not match this product")
         if result_payload.get("status") != "VISUAL_REVIEW_REQUIRED":
-            raise ValueError("result.json is not a pending V0.2 build")
+            raise ValueError("result.json is not a pending V0.5.1 build")
         build_id = result_payload.get("build_id")
         if not isinstance(build_id, str) or not build_id:
             raise ValueError("result.json must contain a build_id")
@@ -911,6 +1261,13 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
             slides=slides,
             outcome=outcome,
         )
+        native_gate3 = _field_mapping(
+            native_evidence.get("gate3"), "native evidence Gate 3"
+        )
+        native_gate3["status"] = finalization["gate3"]["status"]
+        native_gate3["reviewed_slides"] = len(slides)
+        native_evidence["gate3"] = native_gate3
+        _json_dump(evidence_path / "native-evidence.json", native_evidence)
         finalization_path = evidence_path / "finalization.json"
         temporary = evidence_path / ".finalization.json.tmp"
         _json_dump(temporary, finalization)

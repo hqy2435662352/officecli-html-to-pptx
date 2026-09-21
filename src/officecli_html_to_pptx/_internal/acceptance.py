@@ -48,7 +48,7 @@ DEFAULT_AUTHOR_HTML = Path(
 # These are intentionally keyed by the generated stable object name and issue
 # subtype.  A total count is not enough to tell a known baseline from a new
 # regression when object order changes.  They are the measured OfficeCLI
-# 1.0.147 baseline for the current native compiler output; the B gate still
+# 1.0.151 baseline for the current native compiler output; the B gate still
 # requires every round-trip issue to be present in A.
 KNOWN_BASELINE_ISSUES = frozenset(
     {
@@ -396,7 +396,7 @@ def _line_spacing_equivalent(expected: Any, actual: Any) -> bool:
         actual_value = float(actual)
     except (TypeError, ValueError):
         return False
-    # OfficeCLI 1.0.147's HTML projection has one retained fixed-coordinate
+    # OfficeCLI 1.0.151's HTML projection has one retained fixed-coordinate
     # line-spacing projection in the current Algeria golden case.  Keep it
     # explicit rather than accepting arbitrary spacing drift in A -> B.
     known_projections = ((1.6, 1.2),)
@@ -651,24 +651,37 @@ def _officecli_paragraphs(node: Mapping[str, Any]) -> list[dict[str, Any]]:
         child for child in node.get("children", []) or [] if child.get("type") == "paragraph"
     ]
     for paragraph in paragraph_nodes:
-        runs = [
-            _officecli_run_manifest(run, paragraph.get("format", {}))
-            for run in paragraph.get("children", []) or []
-            if run.get("type") == "run"
-        ]
-        text = str(paragraph.get("text", "") or "")
+        runs: list[dict[str, Any]] = []
+        text_parts: list[str] = []
+        hard_break_offsets: list[int] = []
+        visible_offset = 0
+        has_hard_break = False
+        for child in paragraph.get("children", []) or []:
+            if child.get("type") == "run":
+                run = _officecli_run_manifest(child, paragraph.get("format", {}))
+                runs.append(run)
+                run_text = str(run.get("text", "") or "")
+                text_parts.append(run_text)
+                visible_offset += len(run_text.encode("utf-16-le")) // 2
+            elif child.get("type") in {"linebreak", "line-break", "br"}:
+                text_parts.append("\v")
+                hard_break_offsets.append(visible_offset)
+                has_hard_break = True
+        text = "".join(text_parts) if has_hard_break else str(
+            paragraph.get("text", "") or ""
+        )
         if not text:
             text = "".join(str(run.get("text", "")) for run in runs)
         paragraph_format = paragraph.get("format", {})
         try:
             space_before = _points(
-                paragraph_format.get("spaceBefore", fallback.get("spaceBefore", "0pt"))
+                paragraph_format.get("spaceBefore", "0pt")
             )
         except ValueError:
             space_before = 0.0
         try:
             space_after = _points(
-                paragraph_format.get("spaceAfter", fallback.get("spaceAfter", "0pt"))
+                paragraph_format.get("spaceAfter", "0pt")
             )
         except ValueError:
             space_after = 0.0
@@ -676,11 +689,16 @@ def _officecli_paragraphs(node: Mapping[str, Any]) -> list[dict[str, Any]]:
             {
                 "text": text,
                 "align": str(paragraph_format.get("align", fallback.get("align", "left"))),
-                "line_spacing": paragraph_format.get("lineSpacing", fallback.get("lineSpacing")),
+                # A paragraph format is authoritative for paragraph-local
+                # leading. Falling back to the text body's lineSpacing would
+                # report the body's default as if it were explicit on a
+                # paragraph whose source ratio is intentionally omitted.
+                "line_spacing": paragraph_format.get("lineSpacing"),
                 "space_before_pt": space_before,
                 "space_after_pt": space_after,
                 "direction": str(paragraph_format.get("direction", "ltr")),
                 "runs": runs,
+                "hard_break_offsets": hard_break_offsets,
             }
         )
     return result
@@ -737,10 +755,31 @@ def _officecli_cell_paragraphs(cell: Mapping[str, Any]) -> list[dict[str, Any]]:
                         line_spacing = f"{float(points.attrib.get('val', '0')) / 100:.3f}pt"
                     except ValueError:
                         line_spacing = None
+        if line_spacing is None:
+            line_spacing = fallback.get(
+                "linespacing", fallback.get("lineSpacing")
+            )
+        try:
+            space_before = _points(fallback.get("spaceBefore", "0pt"))
+        except ValueError:
+            space_before = 0.0
+        try:
+            space_after = _points(fallback.get("spaceAfter", "0pt"))
+        except ValueError:
+            space_after = 0.0
         runs: list[dict[str, Any]] = []
+        text_parts: list[str] = []
+        hard_break_offsets: list[int] = []
+        visible_offset = 0
         for run in [
-            node for node in paragraph if _xml_local_name(node.tag) in {"r", "fld"}
+            node
+            for node in paragraph
+            if _xml_local_name(node.tag) in {"r", "fld", "br"}
         ]:
+            if _xml_local_name(run.tag) == "br":
+                text_parts.append("\v")
+                hard_break_offsets.append(visible_offset)
+                continue
             run_props = next(
                 (node for node in run if _xml_local_name(node.tag) == "rPr"), None
             )
@@ -790,15 +829,18 @@ def _officecli_cell_paragraphs(cell: Mapping[str, Any]) -> list[dict[str, Any]]:
                     "color": color or _normalize_color(fallback.get("color")),
                 }
             )
+            text_parts.append(text)
+            visible_offset += len(text.encode("utf-16-le")) // 2
         paragraphs.append(
             {
-                "text": "".join(run["text"] for run in runs),
+                "text": "".join(text_parts),
                 "align": alignment,
                 "line_spacing": line_spacing,
-                "space_before_pt": 0.0,
-                "space_after_pt": 0.0,
-                "direction": "ltr",
+                "space_before_pt": space_before,
+                "space_after_pt": space_after,
+                "direction": str(fallback.get("direction", "ltr")),
                 "runs": runs,
+                "hard_break_offsets": hard_break_offsets,
             }
         )
     return paragraphs
@@ -1052,6 +1094,15 @@ def compare_manifests(
             for field_name in ("rows", "columns"):
                 if left.get(field_name) != right.get(field_name):
                     mismatch(f"table {field_name} differ", object=name)
+            if left.get("normalized_merge_topology", []) != right.get(
+                "normalized_merge_topology", []
+            ):
+                mismatch(
+                    "table normalized merge topology differs",
+                    object=name,
+                    expected=left.get("normalized_merge_topology", []),
+                    actual=right.get("normalized_merge_topology", []),
+                )
             if not _approx_equal(left.get("column_widths_pt", ()), right.get("column_widths_pt", ()), 0.5):
                 mismatch("table column widths differ by more than 0.5pt", object=name)
             if not _approx_equal(left.get("row_heights_pt", ()), right.get("row_heights_pt", ()), 0.5):
@@ -1300,14 +1351,49 @@ def _officecli_table_manifest(table: Mapping[str, Any]) -> dict[str, Any]:
     table_x = _points(format_data.get("x"))
     table_y = _points(format_data.get("y"))
     cells: list[dict[str, Any]] = []
+    normalized_topology: list[dict[str, int]] = []
     for row_index, row in enumerate(row_nodes):
         cell_x = table_x
         for column_index, cell in enumerate(row.get("children", []) or []):
             if cell.get("type") != "tc":
                 continue
             cell_format = cell.get("format", {})
-            cell_width = column_widths[column_index] if column_index < len(column_widths) else 0.0
+            row_span = int(cell_format.get("rowspan") or 1)
+            column_span = int(cell_format.get("colspan") or 1)
+            is_horizontal_continuation = bool(
+                cell_format.get("hmerge") or cell_format.get("hMerge")
+            )
+            is_vertical_continuation = bool(
+                cell_format.get("vmerge") or cell_format.get("vMerge")
+            )
+            anchor = not is_horizontal_continuation and not is_vertical_continuation
+            if anchor:
+                normalized_topology.append(
+                    {
+                        "anchorRow": row_index + 1,
+                        "anchorColumn": column_index + 1,
+                        "rowSpan": row_span,
+                        "columnSpan": column_span,
+                    }
+                )
+            base_width = (
+                column_widths[column_index] if column_index < len(column_widths) else 0.0
+            )
+            cell_width = (
+                sum(column_widths[column_index : column_index + column_span])
+                if anchor and column_span > 1
+                else base_width
+            )
             cell_height = row_heights[row_index] if row_index < len(row_heights) else 0.0
+            cell_properties = {
+                key: value
+                for key, value in _officecli_properties(cell_format).items()
+                if str(key).lower() not in {"hmerge", "vmerge"}
+            }
+            if "spaceBefore" in cell_properties:
+                cell_properties["spacebefore"] = cell_properties.pop("spaceBefore")
+            if "spaceAfter" in cell_properties:
+                cell_properties["spaceafter"] = cell_properties.pop("spaceAfter")
             cells.append(
                 {
                     "kind": "cell",
@@ -1316,25 +1402,40 @@ def _officecli_table_manifest(table: Mapping[str, Any]) -> dict[str, Any]:
                         f"r{row_index + 1:03d}-c{column_index + 1:03d}"
                     ),
                     "source_object": cell.get("path", ""),
-                    "bounds_pt": [cell_x, table_y + sum(row_heights[:row_index]), cell_width, cell_height],
+                    "bounds_pt": [
+                        cell_x,
+                        table_y + sum(row_heights[:row_index]),
+                        cell_width,
+                        (
+                            sum(row_heights[row_index : row_index + row_span])
+                            if anchor and row_span > 1
+                            else cell_height
+                        ),
+                    ],
                     "text": cell.get("text", "") or "",
                     "props": {
-                        **_officecli_properties(cell_format),
+                        **cell_properties,
                         "linespacing": cell_format.get(
                             "linespacing", cell_format.get("lineSpacing")
                         ),
                         "text": cell.get("text", "") or "",
                     },
                     "paragraphs": _officecli_cell_paragraphs(cell),
+                    "row": row_index + 1,
+                    "column": column_index + 1,
+                    "row_span": row_span if anchor else 1,
+                    "column_span": column_span if anchor else 1,
+                    "anchor": anchor,
                 }
             )
-            cell_x += cell_width
+            cell_x += base_width
     return {
         "properties": _officecli_properties(format_data),
         "rows": rows,
         "columns": columns,
         "column_widths_pt": column_widths,
         "row_heights_pt": row_heights,
+        "normalized_merge_topology": normalized_topology,
         "cells": cells,
     }
 

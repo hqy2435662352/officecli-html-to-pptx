@@ -1,6 +1,6 @@
 {
   "name": "officecli-html-to-pptx",
-  "version": "0.2.0",
+  "version": "0.5.1",
   "description": "Build new editable PowerPoint decks from Contract-checked HTML.",
   "author": {
     "name": "Design Arena"

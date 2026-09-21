@@ -1,27 +1,29 @@
 # officecli-html-to-pptx
 
-`officecli-html-to-pptx` 0.2.0 builds a new editable PowerPoint deck from
+`officecli-html-to-pptx` 0.5.1 builds a new editable PowerPoint deck from
 Contract-checked Author HTML. Chromium supplies final layout measurements and
 OfficeCLI creates the native PowerPoint objects. The supported public path is
 task-oriented and produces a matching PPTX/Evidence Pair:
 
 ```text
-Candidate HTML -> check -> build -> visual review -> finalize
+capabilities -> doctor -> check -> fresh build -> independent readback
+  -> validate/issues -> Gate 3 visual review -> finalize
 ```
 
 The product does not edit an existing presentation and does not replace a
 slide with a screenshot. Supported visible objects are native text-bearing
-shapes, rectangles, pictures, and tables, within the capability data reported
-by the installed command.
+shapes, rectangles, pictures, merged tables, and the Contract 1.1 text and
+geometry surface reported by the installed command. Charts and general
+localized fallback remain out of scope.
 
 ## Install
 
-For the packaged V0.2 experimental ZIP, install the bundled wheel from the ZIP
+For a packaged V0.5.1 release, install the bundled wheel from the ZIP
 root and then install its Playwright-managed Chromium:
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.2.0-py3-none-any.whl
+.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.5.1-py3-none-any.whl
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
@@ -38,7 +40,7 @@ python -m playwright install chromium
 
 OfficeCLI and Node.js are external prerequisites. The product never installs,
 downloads, upgrades, or rewrites runtime configuration. Formal builds use
-Windows or Linux, OfficeCLI `1.0.147` or newer, Playwright `1.62.0`, and its
+Windows or Linux, OfficeCLI `1.0.151` or newer, Playwright `1.62.0`, and its
 accepted Chromium revision. `capabilities --json` reports both the platform the
 command is running on and the platforms the build supports. Check the local
 state without mutation:
@@ -123,8 +125,10 @@ this build supports, with `validated_platform_scope` recording the environment
 each key was accepted in and whether that was verified (it is not — the gate
 matches an operating-system family only). `doctor --json` decides for the
 machine in front of you. External resources and unsupported visible content are
-rejected explicitly. Pictures must be deterministic `data:image/...` sources;
-table merges remain outside the V0.2 Contract.
+rejected explicitly. Pictures must be deterministic `data:image/...` sources.
+Contract 1.1 accepts legal rectangular `rowspan`/`colspan` regions with
+normalized merge-topology readback and exposes the closed
+`data-pptx-shape-geometry` allowlist.
 
 ## Evidence Bundle
 
@@ -139,6 +143,8 @@ deck.evidence/
   capabilities.json
   runtime.json
   manifest.json
+  readback.json
+  native-evidence.json
   validate.json
   issues.json
   result.json
@@ -149,12 +155,17 @@ deck.evidence/
 ```
 
 Only combined per-slide Comparison Images are retained; source and output
-screenshots are temporary build inputs. `visual-review.json` is seeded with a
-complete image inventory and immutable hashes. An independent reviewer marks
-every slide and records only `major` or `minor` findings. A major finding
-requires an actionable revision instruction. `finalize` verifies the exact
-build identity, HTML/PPTX hashes, comparison paths and hashes, and slide
-coverage before deriving its outcome. It does not rebuild or rerender.
+screenshots are temporary build inputs. `readback.json` is an independent
+OfficeCLI object read, while `native-evidence.json` records the frozen text
+matrix and authored structure, normalized merge topology, native geometry,
+compiled/readback counts, actual OfficeCLI runtime, diagnostics/material delta,
+and Gate 3 state. No V0.6 `native/rasterized/degraded` taxonomy is introduced.
+`visual-review.json` is seeded with a complete image inventory and immutable
+hashes. An independent reviewer marks every slide and records only `major` or
+`minor` findings. A major finding requires an actionable revision instruction.
+`finalize` verifies the exact build identity, HTML/PPTX hashes, comparison paths
+and hashes, native evidence, and slide coverage before deriving its outcome. It
+does not rebuild or rerender.
 
 If either requested target already exists, build stops without overwriting it.
 Choose a new output path or an agent-managed revision suffix.
@@ -169,5 +180,8 @@ git diff --check
 ```
 
 The maintained product surface is Author HTML plus the five commands above.
-OfficeCLI projection experiments and the Algeria deck remain internal release
-regression assets. The MIT license and upstream history are preserved.
+The tracked four-slide Author corpus at
+`tests/fixtures/v05_01_public_corpus.html` is the V0.5.1 public acceptance
+corpus. V0.4 projection experiments remain a separate internal regression
+corpus and do not contribute to public gates or capability counts. The MIT
+license and upstream history are preserved.

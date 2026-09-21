@@ -43,9 +43,6 @@ IDENTITY_SAMPLES: dict[str, Any] = {
     "italic": True,
     "underline": "single",
     "color": "#0F6B78",
-    "href": "https://example.test/north",
-    "is_gradient_text": True,
-    "background_image": "linear-gradient(#0F6B78, #4338CA)",
 }
 IDENTITY_VARIANTS: dict[str, Any] = {
     "font_family": "Segoe UI",
@@ -54,9 +51,6 @@ IDENTITY_VARIANTS: dict[str, Any] = {
     "italic": False,
     "underline": "none",
     "color": "#9A3412",
-    "href": "https://example.test/south",
-    "is_gradient_text": False,
-    "background_image": None,
 }
 # Run attributes that are not part of the declared identity.  ``text`` is the
 # one the lowering emits besides the declared dimensions; the rest are the
@@ -211,14 +205,9 @@ def test_the_drift_guard_reports_a_declared_dimension_the_key_ignores() -> None:
 
     assert drift
     assert drift[0].startswith("italic: declared as an identity dimension")
-    assert {
-        "italic",
-        "color",
-        "underline",
-        "href",
-        "is_gradient_text",
-        "background_image",
-    } == {item.split(":")[0] for item in drift}
+    assert {"italic", "color", "underline"} == {
+        item.split(":")[0] for item in drift
+    }
 
 
 def test_the_drift_guard_reports_an_implemented_dimension_the_declaration_omits() -> None:
@@ -227,14 +216,14 @@ def test_the_drift_guard_reports_an_implemented_dimension_the_declaration_omits(
         tuple(
             field
             for field in CANONICAL_RUN_IDENTITY_FIELDS
-            if field != "href"
+            if field != "color"
         ),
         _canonical_run_key,
         emitted_run_fields=_emitted_run_fields(),
     )
 
     assert drift == (
-        "the key reads attributes the declaration does not name: href",
+        "the key reads attributes the declaration does not name: color",
     )
 
 
@@ -285,9 +274,9 @@ def test_the_published_mixed_run_attributes_are_the_declared_identity_rows() -> 
     published: dict[str, str] = {}
     for field, attribute, css_property in CANONICAL_RUN_IDENTITY:
         assert field
-        # A row is either published as a CSS attribute, or an unpublished
-        # semantic dimension: exactly one of the two extra columns is set.
-        assert (attribute is None) == (css_property is None), field
+        # Contract 1.1 keeps the run matrix closed: every identity dimension
+        # has a published measurement attribute and a lowered CSS property.
+        assert attribute is not None and css_property is not None, field
         if attribute is not None:
             assert attribute not in published, attribute
             published[attribute] = css_property
@@ -295,8 +284,7 @@ def test_the_published_mixed_run_attributes_are_the_declared_identity_rows() -> 
     assert MIXED_RUN_ATTRIBUTES == published
     # Every published attribute names a CSS property the contract classifies.
     assert set(published.values()) <= set(SUPPORTED_CSS_PROPERTIES)
-    # A supported semantic boundary that is not a CSS attribute stays declared.
-    assert "href" in CANONICAL_RUN_IDENTITY_FIELDS
+    assert "href" not in CANONICAL_RUN_IDENTITY_FIELDS
 
 
 # ---------------------------------------------------------------------------
@@ -319,15 +307,8 @@ _SOFT_WRAP_VISUAL_LINES: tuple[str, ...] = (
 )
 
 
-def test_the_soft_wrap_decision_reads_the_canonical_run_identity() -> None:
-    """A uniform paragraph keeps the visual lines Chromium measured.
-
-    The declared soft-wrap model requires one source run, and removing the
-    measurement-side fold must not silently disable it for the ordinary
-    ``text <span>text</span> text`` shape: the question is asked of the one
-    Canonical Run identity, so it is the resolved formatting that decides, not
-    the number of source nodes.
-    """
+def test_soft_wrap_measurement_never_changes_authored_paragraph_structure() -> None:
+    """Browser visual rows remain evidence; authored text stays one paragraph."""
     element = _element(
         [{**_MEASURED_RUN, "text": text} for text in _SOFT_WRAP_RUNS],
         visualLines=list(_SOFT_WRAP_VISUAL_LINES),
@@ -335,14 +316,14 @@ def test_the_soft_wrap_decision_reads_the_canonical_run_identity() -> None:
 
     paragraphs = _text_paragraphs(element, _SCALE_X, _SCALE_Y, _BACKDROP)
 
-    assert [paragraph["text"] for paragraph in paragraphs] == list(
-        _SOFT_WRAP_VISUAL_LINES
-    )
-    assert [len(paragraph["runs"]) for paragraph in paragraphs] == [1, 1, 1]
+    assert [paragraph["text"] for paragraph in paragraphs] == [
+        "".join(_SOFT_WRAP_RUNS)
+    ]
+    assert [len(paragraph["runs"]) for paragraph in paragraphs] == [1]
 
 
-def test_the_soft_wrap_decision_rejects_a_second_canonical_run() -> None:
-    """A differently formatted neighbour keeps the authored paragraph."""
+def test_soft_wrap_with_mixed_formatting_keeps_the_authored_paragraph() -> None:
+    """A differently formatted neighbour still cannot create soft paragraphs."""
     runs = [{**_MEASURED_RUN, "text": text} for text in _SOFT_WRAP_RUNS]
     runs[-1] = {**runs[-1], "fontFamily": "Tahoma", "color": "#9a3412"}
     element = _element(runs, visualLines=list(_SOFT_WRAP_VISUAL_LINES))
@@ -387,7 +368,7 @@ def test_a_difference_in_any_declared_dimension_keeps_a_native_run_boundary() ->
 
 
 def test_canonical_merging_never_crosses_a_hard_break_boundary() -> None:
-    """Two identically formatted runs around a ``<br>`` stay two paragraphs."""
+    """Two identically formatted runs around a ``<br>`` stay native ranges."""
     element = _element([])
     element.pop("paragraphs")
     element["inlineRuns"] = [
@@ -398,8 +379,9 @@ def test_canonical_merging_never_crosses_a_hard_break_boundary() -> None:
 
     paragraphs = _text_paragraphs(element, _SCALE_X, _SCALE_Y, _BACKDROP)
 
-    assert [paragraph["text"] for paragraph in paragraphs] == ["North", " Africa"]
-    assert [len(paragraph["runs"]) for paragraph in paragraphs] == [1, 1]
+    assert [paragraph["text"] for paragraph in paragraphs] == ["North\v Africa"]
+    assert [paragraph["hard_break_offsets"] for paragraph in paragraphs] == [[5]]
+    assert [len(paragraph["runs"]) for paragraph in paragraphs] == [2]
     assert [
         run["text"]
         for paragraph in paragraphs

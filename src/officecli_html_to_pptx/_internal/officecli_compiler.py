@@ -31,20 +31,26 @@ from lxml import html as _lxml_html
 
 from ..contract import (
     CANONICAL_RUN_IDENTITY_FIELDS,
-    LINE_HEIGHT_PX_PROJECTION_SCALE,
     LIST_MARKER_PRESETS,
-    SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX,
-    SOURCE_FIDELITY_LINE_SPACING_TEXT,
+    SHAPE_GEOMETRY_TOKEN_SET,
     SUPPORTED_INLINE_ELEMENTS,
     ContractReport,
     _inline_styles,
     _officehtml_parser,
     _officehtml_picture_source,
     _resolve_text_alignment,
+    TableTopologyError,
+    build_logical_table_grid,
     check_contract,
 )
 from ..measurement import extract_measurements
+from ..runtime import _version_tuple, officecli_runtime_snapshot
 from ..styles import resolve_pptx_font as _resolve_pptx_font
+
+# Alias the runtime authority locally so focused compiler tests can replace the
+# narrow probe without replacing the full doctor (which also checks Chromium,
+# Node, and output locations).
+_officecli_runtime_snapshot = officecli_runtime_snapshot
 
 SLIDE_WIDTH_PT = 960.0
 SLIDE_HEIGHT_PT = 540.0
@@ -70,10 +76,6 @@ _OFFICECLI_BATCH_MAX_BYTES = 32 * 1024 * 1024
 # ``capabilities`` publishes, so the lowered inline surface and the declared
 # one cannot drift apart.
 _INLINE_TAGS = frozenset(SUPPORTED_INLINE_ELEMENTS)
-_SOURCE_FIDELITY_TEXT_SCALE = 1.35
-_SOURCE_FIDELITY_LABELS = frozenset({"ELITE", "XPRO", "TPRO", "T-PLUS"})
-_SOURCE_FIDELITY_REVIEW_NUMBERS = frozenset({"01", "02", "03", "04"})
-_SOURCE_FIDELITY_BODY_MARKER = "Z2U20101082277"
 _CSS_LENGTH_RE = re.compile(
     r"^\s*(-?(?:\d+(?:\.\d*)?|\.\d+))\s*(pt|px|cm|mm|in|emu)?\s*$",
     re.IGNORECASE,
@@ -131,6 +133,7 @@ class OfficeCLICompilationResult:
     object_count: int
     diagnostics: tuple[CompilationDiagnostic, ...]
     manifest: dict[str, Any]
+    runtime: dict[str, Any] | None = None
 
     def __str__(self) -> str:
         return self.output_path
@@ -148,6 +151,11 @@ class _TableCellIR:
     text: str
     props: dict[str, str]
     paragraphs: tuple[dict[str, Any], ...] = ()
+    row: int = 0
+    column: int = 0
+    row_span: int = 1
+    column_span: int = 1
+    anchor: bool = True
 
     def as_manifest(self) -> dict[str, Any]:
         return {
@@ -159,6 +167,11 @@ class _TableCellIR:
             "text": self.text,
             "props": dict(self.props),
             "paragraphs": list(self.paragraphs),
+            "row": self.row,
+            "column": self.column,
+            "row_span": self.row_span,
+            "column_span": self.column_span,
+            "anchor": self.anchor,
         }
 
 
@@ -193,7 +206,7 @@ class _ObjectIR:
             },
             "paragraphs": list(self.paragraphs),
         }
-        if self.metadata:
+        if self.metadata and self.kind != "table":
             manifest["metadata"] = dict(self.metadata)
         if self.kind == "table":
             manifest.update(
@@ -202,6 +215,9 @@ class _ObjectIR:
                     "columns": len(self.column_widths),
                     "column_widths_pt": list(self.column_widths),
                     "row_heights_pt": list(self.row_heights),
+                    "normalized_merge_topology": list(
+                        (self.metadata or {}).get("normalized_merge_topology", [])
+                    ),
                     "cells": [cell.as_manifest() for cell in self.table_cells],
                 }
             )
@@ -239,9 +255,45 @@ def _officecli_executable() -> str:
     if executable is None:
         raise OfficeCLICompilationError(
             "OfficeCLI executable was not found on PATH.",
-            [CompilationDiagnostic("error", "officecli_unavailable", "Install OfficeCLI 1.0.147 and add it to PATH.")],
+            [CompilationDiagnostic("error", "officecli_unavailable", "Install OfficeCLI 1.0.151 and add it to PATH.")],
         )
     return executable
+
+
+def _require_officecli_runtime() -> dict[str, Any]:
+    """Fail closed before measurement or output creation below the Contract floor."""
+
+    snapshot = _officecli_runtime_snapshot()
+    discovered = snapshot.get("discovered_version")
+    if snapshot.get("compatible"):
+        return snapshot
+    if not snapshot.get("executable"):
+        raise OfficeCLICompilationError(
+            "OfficeCLI executable was not found on PATH.",
+            [
+                CompilationDiagnostic(
+                    "error",
+                    "officecli_unavailable",
+                    "OfficeCLI 1.0.151 or newer is required before measurement or output creation.",
+                )
+            ],
+        )
+    if not discovered or _version_tuple(str(discovered)) is None:
+        code = "malformed_officecli_version"
+        message = (
+            "OfficeCLI returned no parseable version; 1.0.151 or newer is "
+            "required before measurement or output creation."
+        )
+    else:
+        code = "officecli_version_mismatch"
+        message = (
+            f"OfficeCLI {discovered} is below the minimum supported version "
+            "1.0.151; measurement and output creation were skipped."
+        )
+    raise OfficeCLICompilationError(
+        message,
+        [CompilationDiagnostic("error", code, message, operation="version")],
+    )
 
 
 def _run_officecli(
@@ -406,11 +458,10 @@ def _source_path(slide_number: int, parent: str, tag: str, position: int) -> str
 
 
 def _text_of(element: dict[str, Any]) -> str:
-    visual_lines = element.get("visualLines")
-    if visual_lines and isinstance(visual_lines, list):
-        lines = [str(line) for line in visual_lines if str(line)]
-        if len(lines) > 1:
-            return "\n".join(lines)
+    # ``visualLines`` is a browser measurement/evidence field.  It is never a
+    # source-structure authority: soft wrapping must remain inside one native
+    # paragraph, while an authored ``<br>`` is represented as ``\v`` by the
+    # paragraph normalizer below.
     paragraphs = element.get("paragraphs")
     if paragraphs:
         return "\n".join(
@@ -470,11 +521,12 @@ def _paragraph_line_spacing(
     element_size = _number(element.get("fontSize"))
     pixels = re.search(r"(?:px|pt)\s*$", str(raw_line_height).strip(), re.IGNORECASE)
     font_size = element_size if pixels else (run_size or element_size)
+    # The keyword arguments remain accepted for callers from the previous
+    # compiler surface, but Contract 1.1 has one line-height rule for every
+    # native paragraph: positive px is divided by the element font size with
+    # no content- or profile-specific projection.
     return _line_spacing(
-        {"fontSize": font_size, "lineHeight": str(raw_line_height)},
-        legacy_css_pixel_projection=(
-            legacy_css_pixel_projection or preserve_table_projection
-        ),
+        {"fontSize": font_size, "lineHeight": str(raw_line_height)}
     )
 
 
@@ -482,15 +534,14 @@ def _canonical_run_key(run: dict[str, Any]) -> tuple[Any, ...]:
     """Return the Paragraph-local identity of one resolved run.
 
     A run boundary is a formatting boundary, not a DOM node boundary.  Two
-    adjacent runs with the same resolved formatting and the same supported
-    semantic attributes are one Canonical Run; anything else stays a boundary.
+    adjacent runs with the same resolved properties from the closed Contract
+    1.1 matrix are one Canonical Run; anything else stays a boundary.
     The identity dimensions are exactly the ones
     ``contract.CANONICAL_RUN_IDENTITY`` declares, which is also the declaration
     ``capabilities`` publishes, so the published mixed-run surface and this key
     cannot drift apart.  Every value is read from the normalization above, which
     already produced the canonical type of each field (a bool for
-    ``bold``/``italic``/``is_gradient_text``, ``None`` or a non-empty string for
-    ``href``/``background_image``), so no coercion can distinguish two runs.
+    ``bold``/``italic``), so no coercion can distinguish two runs.
     """
     return tuple(run.get(field) for field in CANONICAL_RUN_IDENTITY_FIELDS)
 
@@ -520,17 +571,29 @@ def _canonical_source_runs(
     backdrop: tuple[int, int, int],
     element_opacity: float,
 ) -> list[dict[str, Any]]:
-    """Normalize one measured paragraph's runs and merge them canonically.
+    """Normalize one measured paragraph's visible runs.
 
-    This is the one place a measured run becomes a lowering run, so the object
-    text, the Canonical Runs, the native run ranges and the soft-wrap decision
-    all read the same normalized sequence.
+    ``<br>`` is an authored hard break inside the paragraph.  The visible
+    runs on either side remain separate native ranges, while the paragraph
+    text carries OfficeCLI's ``\v`` control character.  Soft browser wrapping
+    is intentionally absent from this function.
     """
-    normalized_runs: list[dict[str, Any]] = []
-    for raw_run in raw_paragraph.get("runs") or []:
-        text = str(raw_run.get("text", ""))
-        if not text:
-            continue
+    runs, _text, _break_offsets = _canonical_source_runs_with_breaks(
+        raw_paragraph, element, scale_x, backdrop, element_opacity
+    )
+    return runs
+
+
+def _canonical_source_runs_with_breaks(
+    raw_paragraph: dict[str, Any],
+    element: dict[str, Any],
+    scale_x: float,
+    backdrop: tuple[int, int, int],
+    element_opacity: float,
+) -> tuple[list[dict[str, Any]], str, list[int]]:
+    """Return canonical visible runs, native text, and hard-break offsets."""
+
+    def normalize(raw_run: dict[str, Any], text: str) -> dict[str, Any]:
         color = _parse_css_color(raw_run.get("color"))
         if color is None:
             color_value = None
@@ -545,53 +608,55 @@ def _canonical_source_runs(
         font_size = _number(
             raw_run.get("fontSize"), _number(element.get("fontSize"))
         )
-        normalized_runs.append(
-            {
-                "text": text,
-                "font_family": _resolve_pptx_font(
-                    str(raw_run.get("fontFamily") or element.get("fontFamily") or "")
-                ),
-                "font_size_pt": _pt(font_size, scale_x) if font_size > 0 else 0.0,
-                "bold": _is_bold(raw_run.get("fontWeight", element.get("fontWeight"))),
-                "italic": str(
-                    raw_run.get("fontStyle", element.get("fontStyle", ""))
-                ).lower() in {"italic", "oblique"},
-                "underline": _underline_value(
-                    raw_run.get("textDecoration", raw_run.get("text-decoration"))
-                ),
-                "color": color_value,
-                # Supported semantic attributes participate in run identity:
-                # a hyperlink target or a gradient-text fill is a real
-                # boundary and is never merged away.
-                "href": raw_run.get("href"),
-                "is_gradient_text": bool(raw_run.get("isGradientText")),
-                "background_image": raw_run.get("backgroundImage"),
-            }
-        )
-    return _canonical_runs(normalized_runs)
+        return {
+            "text": text,
+            "font_family": _resolve_pptx_font(
+                str(raw_run.get("fontFamily") or element.get("fontFamily") or "")
+            ),
+            "font_size_pt": _pt(font_size, scale_x) if font_size > 0 else 0.0,
+            "bold": _is_bold(raw_run.get("fontWeight", element.get("fontWeight"))),
+            "italic": str(
+                raw_run.get("fontStyle", element.get("fontStyle", ""))
+            ).lower() in {"italic", "oblique"},
+            "underline": _underline_value(
+                raw_run.get("textDecoration", raw_run.get("text-decoration"))
+            ),
+            "color": color_value,
+        }
 
+    segments: list[list[dict[str, Any]]] = [[]]
+    for raw_run in raw_paragraph.get("runs") or []:
+        source = dict(raw_run)
+        # HTML text may retain Windows CRLF/CR characters when it comes from
+        # an OfficeHTML projection.  They are newline spellings, not visible
+        # run content; normalize before splitting so a native hard break is
+        # represented by exactly one OfficeCLI ``\v`` control character.
+        text = str(source.get("text", "")).replace("\r\n", "\n").replace("\r", "\n")
+        is_break = bool(source.get("br"))
+        if is_break:
+            segments.append([])
+            continue
+        pieces = text.split("\n") if text else []
+        for piece_index, piece in enumerate(pieces):
+            if piece:
+                segments[-1].append(normalize(source, piece))
+            if piece_index < len(pieces) - 1:
+                segments.append([])
 
-def _is_one_canonical_run(
-    raw_paragraph: dict[str, Any],
-    element: dict[str, Any],
-    scale_x: float,
-    backdrop: tuple[int, int, int],
-    element_opacity: float,
-) -> bool:
-    """Return whether a measured paragraph resolves to one Canonical Run.
-
-    The declared soft-wrap model requires one source run, because the visual
-    lines of the browser can only become native paragraph boundaries when every
-    line carries the same run formatting.  That question is asked of the one
-    Canonical Run identity: a paragraph whose source nodes resolve to identical
-    formatting is one run, whatever the node count, and can therefore keep the
-    visual-line boundaries Chromium measured.
-    """
-    return len(
-        _canonical_source_runs(
-            raw_paragraph, element, scale_x, backdrop, element_opacity
-        )
-    ) == 1
+    canonical_segments = [_canonical_runs(segment) for segment in segments]
+    visible_texts = ["".join(run["text"] for run in segment) for segment in canonical_segments]
+    paragraph_text = "\v".join(visible_texts)
+    hard_break_offsets: list[int] = []
+    offset = 0
+    for index, visible_text in enumerate(visible_texts[:-1]):
+        offset += _officecli_range_length(visible_text)
+        hard_break_offsets.append(offset)
+        # The native range scope does not count the hard-break control itself.
+    return (
+        [run for segment in canonical_segments for run in segment],
+        paragraph_text,
+        hard_break_offsets,
+    )
 
 
 def _text_paragraphs(
@@ -602,60 +667,17 @@ def _text_paragraphs(
     *,
     preserve_table_projection: bool = False,
     preserve_paragraph_spacing: bool = False,
-    visual_lines_as_paragraphs: bool = True,
 ) -> tuple[dict[str, Any], ...]:
     raw_paragraphs = element.get("paragraphs") or []
-    visual_lines = element.get("visualLines")
     element_opacity = max(0.0, min(1.0, _number(element.get("opacity"), 1.0)))
-    if (
-        visual_lines_as_paragraphs
-        and isinstance(visual_lines, list)
-        and len(visual_lines) > 1
-        and len(raw_paragraphs) == 1
-        and _is_one_canonical_run(
-            raw_paragraphs[0], element, scale_x, backdrop, element_opacity
-        )
-    ):
-        visual_texts = [str(line) for line in visual_lines if str(line)]
-        raw_text = str(raw_paragraphs[0].get("text", ""))
-        # A browser visual line can only become a native paragraph break where
-        # the source flow already had whitespace, and a CJK line breaks between
-        # two characters.  Accept the split only when re-joining the lines
-        # reproduces the authored text exactly, with or without the space that a
-        # Latin break consumes.  A spurious Chromium "row" (a color-emoji glyph,
-        # or a run whose trailing space narrows the line) reproduces neither, so
-        # it falls through to the authored paragraph and its runs.
-        rejoined = (" ".join(visual_texts), "".join(visual_texts))
-        if visual_texts and raw_text in rejoined:
-            raw_paragraph = raw_paragraphs[0]
-            raw_run = raw_paragraph["runs"][0]
-            raw_paragraphs = [
-                {
-                    **raw_paragraph,
-                    "text": line,
-                    "runs": [{**raw_run, "text": line}],
-                }
-                for line in visual_texts
-            ]
     if not raw_paragraphs:
         runs = element.get("inlineRuns") or []
         if runs:
-            raw_paragraphs = []
-            current: list[dict[str, Any]] = []
-            break_at_end = False
-            for run in runs:
-                pieces = str(run.get("text", "")).split("\n")
-                for index, piece in enumerate(pieces):
-                    if piece:
-                        current.append({**run, "text": piece})
-                    if index < len(pieces) - 1:
-                        raw_paragraphs.append({"runs": current})
-                        current = []
-                        break_at_end = True
-                    elif piece:
-                        break_at_end = False
-            if current or not raw_paragraphs or break_at_end:
-                raw_paragraphs.append({"runs": current})
+            # ``paragraphs`` is the authored block boundary.  This fallback is
+            # only for older measurement payloads that supplied inline runs but
+            # no paragraph list; keep all runs in one paragraph and let ``br``
+            # normalization preserve hard-break topology.
+            raw_paragraphs = [{"runs": [dict(run) for run in runs]}]
         elif _text_of(element):
             raw_paragraphs = [{
                 "runs": [{
@@ -671,10 +693,9 @@ def _text_paragraphs(
 
     result: list[dict[str, Any]] = []
     for raw_paragraph in raw_paragraphs:
-        normalized_runs = _canonical_source_runs(
+        normalized_runs, paragraph_text, hard_break_offsets = _canonical_source_runs_with_breaks(
             raw_paragraph, element, scale_x, backdrop, element_opacity
         )
-        paragraph_text = "".join(run["text"] for run in normalized_runs)
         direction = str(
             raw_paragraph.get("direction", element.get("direction", "ltr")) or "ltr"
         ).lower()
@@ -684,14 +705,7 @@ def _text_paragraphs(
             ),
             "direction": direction,
         }
-        line_spacing = _paragraph_line_spacing(
-            raw_paragraph,
-            element,
-            legacy_css_pixel_projection=(
-                preserve_table_projection
-                or not _source_fidelity_line_spacing(element)
-            ),
-        )
+        line_spacing = _paragraph_line_spacing(raw_paragraph, element)
         result.append(
             {
                 "text": paragraph_text,
@@ -715,6 +729,7 @@ def _text_paragraphs(
                 ),
                 "direction": direction,
                 "runs": normalized_runs,
+                "hard_break_offsets": hard_break_offsets,
             }
         )
     return tuple(result)
@@ -804,7 +819,6 @@ def _list_paragraphs(
             scale_y,
             backdrop,
             preserve_paragraph_spacing=True,
-            visual_lines_as_paragraphs=False,
         )
         if not item_paragraphs:
             item_paragraphs = (_empty_item_paragraph(item, scale_y),)
@@ -858,8 +872,19 @@ def _number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _measured_table_span(value: Any) -> str | None:
+    """Convert a measured span to strict integer text for topology validation."""
+
+    if value is None:
+        return None
+    number = _number(value, float("nan"))
+    if number == number and number.is_integer():
+        return str(int(number))
+    return str(value)
+
+
 def _officehtml_style(element: Any) -> dict[str, str]:
-    """Read the inline CSS emitted by OfficeCLI 1.0.147.
+    """Read the inline CSS emitted by OfficeCLI 1.0.151.
 
     OfficeHTML is a decompiler projection, not an authoring stylesheet.  Its
     slide-owned object geometry and formatting are serialized inline, which
@@ -1261,7 +1286,7 @@ def _officehtml_picture(
 async def _rasterize_officehtml_svg_fallbacks(
     measurements: Sequence[dict[str, Any]],
 ) -> None:
-    """Capture SVG picture projections as PNGs for OfficeCLI 1.0.147."""
+    """Capture SVG picture projections as PNGs for OfficeCLI 1.0.151."""
     svg_elements = [
         element
         for slide in measurements
@@ -1413,18 +1438,41 @@ def _officehtml_table(
         for row in rows
     ]
     cell_rows: list[dict[str, Any]] = []
-    column_count = 0
     for row_index, row in enumerate(rows, start=1):
         cells = row.xpath("./td|./th")
-        column_count = max(column_count, len(cells))
         cell_rows.append({"tag": "tr", "height": row_heights[row_index - 1], "children": cells})
-    if column_count <= 0:
+    if not any(row["children"] for row in cell_rows):
         raise _diagnostic(
             "invalid_table_matrix",
             f"OfficeHTML table {source} has no cells.",
             source_slide,
             source,
         )
+    topology_rows = [
+        [
+            {
+                "rowspan": cell.get("rowspan"),
+                "colspan": cell.get("colspan"),
+                "source_object": str(
+                    cell.get("data-cell-path")
+                    or f"{source}/tr[{row_index}]/tc[{column_index}]"
+                ),
+                "text": "".join(cell.itertext()),
+            }
+            for column_index, cell in enumerate(row_data["children"], start=1)
+        ]
+        for row_index, row_data in enumerate(cell_rows, start=1)
+    ]
+    try:
+        grid = build_logical_table_grid(topology_rows, source_object=source)
+    except TableTopologyError as exc:
+        raise _diagnostic(
+            exc.code,
+            exc.message,
+            source_slide,
+            exc.source_object or source,
+        ) from exc
+    column_count = grid.columns
     if not columns:
         columns = [bounds[2] / column_count for _ in range(column_count)]
     if len(columns) != column_count:
@@ -1438,25 +1486,24 @@ def _officehtml_table(
     normalized_rows: list[dict[str, Any]] = []
     current_y = bounds[1]
     for row_index, row_data in enumerate(cell_rows, start=1):
-        current_x = bounds[0]
         normalized_cells: list[dict[str, Any]] = []
         cells = row_data["children"]
-        if len(cells) != column_count:
-            raise _diagnostic(
-                "invalid_table_matrix",
-                f"OfficeHTML table {source} row {row_index} has {len(cells)} cells; expected {column_count}.",
-                source_slide,
-                source,
+        for source_column, cell in enumerate(cells):
+            region = next(
+                region
+                for region in grid.regions
+                if region.source_row == row_index - 1
+                and region.source_column == source_column
             )
-        for column_index, cell in enumerate(cells, start=1):
-            width = columns[column_index - 1]
+            logical_column = region.anchor_column - 1
+            width = sum(columns[logical_column : logical_column + region.column_span])
             normalized_cells.append(
                 _officehtml_cell(
                     cell,
                     undo_officecli_projection=undo_officecli_projection,
                     row_index=row_index,
-                    column_index=column_index,
-                    x=current_x,
+                    column_index=region.anchor_column,
+                    x=bounds[0] + sum(columns[:logical_column]),
                     y=current_y,
                     width=width,
                     height=row_data["height"],
@@ -1464,7 +1511,6 @@ def _officehtml_table(
                     source_slide=source_slide,
                 )
             )
-            current_x += width
         normalized_rows.append(
             {
                 "tag": "tr",
@@ -1634,16 +1680,38 @@ def _border_radius(element: dict[str, Any]) -> float:
     return max(0.0, float(match.group(0))) if match else 0.0
 
 
-# The preset geometries the Canonical Author shape surface carries as PowerPoint
-# presets rather than inferring from CSS.  A block box is a rect and a
-# border-radius is a roundRect; an ellipse and a right arrow cannot be inferred
-# that way, so an emitted object declares the preset it must be rebuilt as and
-# the declaration wins over the CSS inference.
-DECLARED_SHAPE_GEOMETRIES = frozenset({"ellipse", "rightArrow"})
+# The preset geometries the Contract 1.1 Author shape surface carries as
+# PowerPoint presets rather than inferring from CSS.  The authority lives in the
+# Contract module so the compiler and public capability manifest cannot drift.
+DECLARED_SHAPE_GEOMETRIES = SHAPE_GEOMETRY_TOKEN_SET
+
+
+def _is_fifty_percent_radius(element: dict[str, Any]) -> bool:
+    """Return whether CSS resolved a uniform 50% radius on the element."""
+    value = str(element.get("borderRadius", "") or "").strip().lower()
+    if not value:
+        return False
+    # Chromium normally returns ``50%`` for this declaration, while some
+    # computed-style paths serialize the x/y radii as ``50% / 50%``.
+    parts = [part for part in re.split(r"[\s/]+", value) if part]
+    return bool(parts) and all(part == "50%" for part in parts)
+
+
+def _ellipse_inference_allowed(element: dict[str, Any]) -> bool:
+    """Apply the Contract 1.1 tolerance for CSS 50% ellipse inference."""
+    if not _is_fifty_percent_radius(element):
+        return False
+    width = _number(element.get("width"))
+    height = _number(element.get("height"))
+    if width <= 0 or height <= 0:
+        return False
+    maximum = max(width, height)
+    tolerance = max(1.0, maximum * 0.001)
+    return abs(width - height) <= tolerance
 
 
 def _declared_shape_geometry(element: dict[str, Any]) -> str | None:
-    value = str(element.get("shapeGeometry", "") or "").strip()
+    value = str(element.get("shapeGeometry", "") or "")
     return value if value in DECLARED_SHAPE_GEOMETRIES else None
 
 
@@ -1651,6 +1719,8 @@ def _shape_geometry(element: dict[str, Any]) -> str:
     declared = _declared_shape_geometry(element)
     if declared is not None:
         return declared
+    if _ellipse_inference_allowed(element):
+        return "ellipse"
     return "roundRect" if _border_radius(element) > 0 else "rect"
 
 
@@ -1663,23 +1733,19 @@ def _line_spacing(
     line_height = str(element.get("lineHeight", "") or "")
     if font_size <= 0:
         return None
-    unitless = re.fullmatch(r"\s*([\d.]+)\s*", line_height)
+    unitless = re.fullmatch(r"\s*((?:\d+(?:\.\d*)?|\.\d+))\s*", line_height)
     if unitless:
         ratio = float(unitless.group(1))
     else:
-        match = re.fullmatch(r"\s*([\d.]+)(?:px|pt)\s*", line_height)
+        match = re.fullmatch(
+            r"\s*((?:\d+(?:\.\d*)?|\.\d+))px\s*", line_height, re.IGNORECASE
+        )
         if not match:
             return None
         line_height_value = float(match.group(1))
-        # Both ``fontSize`` and a computed CSS ``lineHeight`` in px are
-        # measured in browser pixels.  Existing non-target text and the
-        # table-cell path retain the established OfficeCLI 1.0.147 projection;
-        # the targeted Author title opts into the browser ratio so it does not
-        # become 25% tighter.  Both branches are declared by the Contract
-        # ``paragraph_layout_surface`` line-height entry.
-        if legacy_css_pixel_projection and line_height.lower().strip().endswith("px"):
-            line_height_value *= LINE_HEIGHT_PX_PROJECTION_SCALE
         ratio = line_height_value / font_size
+    if ratio <= 0:
+        return None
     if abs(ratio - 1.0) < 0.01:
         return None
     return f"{ratio:.3f}x"
@@ -1725,7 +1791,7 @@ def _margin(element: dict[str, Any], scale_x: float, scale_y: float) -> str | No
 
 
 def _is_measured_single_line_text(element: dict[str, Any], text: str) -> bool:
-    if not text or "\n" in text:
+    if not text or "\n" in text or "\v" in text:
         return False
     font_size = _number(element.get("fontSize"))
     element_height = _number(element.get("height"))
@@ -1750,78 +1816,6 @@ def _tight_single_line_font_scale(
     if width_per_character_ratio > 0.75:
         return None
     return "75" if _is_bold(element.get("fontWeight")) else "60"
-
-
-def _source_fidelity_line_spacing(element: dict[str, Any]) -> bool:
-    """Whether this element's leading is a reading to preserve, not CSS to project.
-
-    Two kinds of element say what their leading is in browser pixels, and only one
-    of them wants the V0.2 CSS-pixel projection applied:
-
-    * a **hand-authored** element states a CSS declaration.  The released V0.2
-      projection is the product's documented translation of that, and it is
-      unchanged here.
-    * a **projected** element states what the source deck declared, measured in
-      browser pixels.  Projection exists to reproduce the source, so applying the
-      projection to it charges the author a quarter of their leading: a source
-      ``lineSpacing=1.5x`` reached the rebuilt deck as ``1.125x``, which is exactly
-      the regression that made 22 objects fail the acceptance gate.
-
-    A projected element is identified structurally, by the marker the projection
-    emits, rather than by matching its text.  Identifying it by text was the
-    earlier mechanism and it does not generalise: it named one reviewed title.
-    """
-    if str(element.get("projectedFrom", "") or "").strip():
-        return True
-    return (
-        _text_of(element).strip() == SOURCE_FIDELITY_LINE_SPACING_TEXT
-        and _number(element.get("fontSize"))
-        >= SOURCE_FIDELITY_LINE_SPACING_MIN_FONT_SIZE_PX
-    )
-
-
-def _source_fidelity_text_anchor(element: dict[str, Any]) -> str | None:
-    """Identify the few measured labels that need their authored CSS scale.
-
-    OfficeCLI's substituted font metrics made these source-sized, single-line
-    labels visibly smaller after the old shrink-to-fit heuristic ran.  Keep
-    this exception tied to the Author HTML measurements and exact golden-card
-    text so ordinary author content retains the general heuristic.
-    """
-    text = _text_of(element).strip()
-    font_size = _number(element.get("fontSize"))
-    if text in _SOURCE_FIDELITY_LABELS and 29 <= font_size <= 32:
-        return "left"
-    if text in _SOURCE_FIDELITY_REVIEW_NUMBERS and 40 <= font_size <= 44:
-        return "left"
-    return None
-
-
-def _source_fidelity_text_bounds(
-    element: dict[str, Any],
-    bounds: tuple[float, float, float, float],
-) -> tuple[float, float, float, float]:
-    """Adjust only known golden text boxes for OfficeCLI's metric mismatch."""
-    text = _text_of(element).strip()
-    font_size = _number(element.get("fontSize"))
-    x, y, width, height = bounds
-    if (
-        _SOURCE_FIDELITY_BODY_MARKER in text
-        and font_size >= 18
-        and _number(element.get("width")) > 600
-    ):
-        # The source browser wraps card 04 after ``parameter``.  This narrow
-        # box correction makes OfficeCLI choose the same break while retaining
-        # the measured height and all paragraph/run metadata.
-        return x, y, width * 0.90, height
-
-    anchor = _source_fidelity_text_anchor(element)
-    if anchor is None:
-        return bounds
-    scaled_width = width * _SOURCE_FIDELITY_TEXT_SCALE
-    if anchor == "right":
-        x -= scaled_width - width
-    return x, y, scaled_width, height
 
 
 def _text_props(
@@ -1872,22 +1866,77 @@ def _text_props(
     # shrink-to-fit heuristic changes the authored font size even when the
     # browser text already fits its measured box (S1 card copy is a concrete
     # example), so standalone Author text must keep its measured size.
-    if isinstance(element.get("visualLines"), list) and len(element["visualLines"]) > 1:
-        # OfficeCLI 1.0.147's text metrics are wider than Chromium's for some
-        # bold Latin runs.  A small, explicit scale is only needed on a block
-        # that Chromium actually wrapped; it keeps the measured break while
-        # avoiding the old global shrink-to-fit heuristic.
-        props["fontScale"] = "95"
-    line_spacing = _line_spacing(
-        element,
-        legacy_css_pixel_projection=not _source_fidelity_line_spacing(element),
-    )
+    line_spacing = _line_spacing(element)
+    if element.get("paragraphsFromChildren"):
+        # A mixed authored paragraph flow cannot inherit one object-level
+        # lineSpacing without flattening a paragraph that explicitly uses a
+        # different leading. Leave the body default unset in that case; the
+        # paragraph commands below carry each non-default authored ratio.
+        paragraph_spacing = {
+            _paragraph_line_spacing(paragraph, element)
+            for paragraph in element.get("paragraphs", []) or []
+        }
+        if len(paragraph_spacing) > 1:
+            line_spacing = None
     if line_spacing is not None:
         props["lineSpacing"] = line_spacing
     rotation = _number(element.get("rotation"))
     if abs(rotation) > 0.01:
         props["rotation"] = f"{rotation:.3f}"
     return props
+
+
+def _uniform_shape_outline(element: dict[str, Any]) -> bool:
+    """Return whether a shape's four CSS borders are one solid outline."""
+    base_width = _number(element.get("borderWidth"))
+    base_style = str(element.get("borderStyle", "solid") or "solid").lower()
+    base_color = _parse_css_color(element.get("borderColor"))
+    sides = (
+        (
+            element.get("cellBorderTopColor"),
+            element.get("cellBorderTopWidth"),
+            element.get("cellBorderTopStyle"),
+        ),
+        (
+            element.get("cellBorderRightColor"),
+            element.get("cellBorderRightWidth"),
+            element.get("cellBorderRightStyle"),
+        ),
+        (
+            element.get("cellBorderBottomColor"),
+            element.get("cellBorderBottomWidth"),
+            element.get("cellBorderBottomStyle"),
+        ),
+        (
+            element.get("cellBorderLeftColor"),
+            element.get("cellBorderLeftWidth"),
+            element.get("cellBorderLeftStyle"),
+        ),
+    )
+    if base_width <= 0 and base_color is None:
+        return all(_number(width) <= 0 for _color, width, _style in sides)
+    for color, width, style in sides:
+        if abs(_number(width) - base_width) > 0.001:
+            return False
+        if str(style or "").lower() != base_style:
+            return False
+        if _parse_css_color(color) != base_color:
+            return False
+    return base_style in {"solid", "none"}
+
+
+def _shape_has_unsupported_adjustment(element: dict[str, Any]) -> bool:
+    """Return whether CSS radius would be an unrepresentable preset handle."""
+    radius = _border_radius(element)
+    if radius <= 0:
+        return False
+    declared = _declared_shape_geometry(element)
+    if declared in {None, "roundRect"}:
+        return False
+    # A 50% radius is the documented CSS source for an ellipse.  An explicit
+    # ellipse annotation owns that semantic even when its rectangle is not
+    # square; the square tolerance is only for unannotated inference.
+    return not (declared == "ellipse" and _is_fifty_percent_radius(element))
 
 
 def _shape_props(
@@ -1917,8 +1966,9 @@ def _shape_props(
         rgb, alpha = border
         line_width = _pt(border_width, scale_x)
         props["line"] = f"{_hex(rgb)}:{line_width:.4f}pt"
-        if alpha < 0.999:
-            props["lineOpacity"] = f"{alpha:.4f}"
+        line_alpha = alpha * max(0.0, min(1.0, _number(element.get("opacity"), 1.0)))
+        if line_alpha < 0.999:
+            props["lineOpacity"] = f"{line_alpha:.4f}"
     else:
         props["line"] = "none"
 
@@ -2244,7 +2294,7 @@ def _table_cell_paragraph_props(
 ) -> dict[str, str]:
     """Project uniform paragraph properties onto OfficeCLI's cell surface.
 
-    OfficeCLI 1.0.147 exposes paragraph alignment, spacing, and direction for
+    OfficeCLI 1.0.151 exposes paragraph alignment, spacing, and direction for
     a table cell through the cell path; setting those properties fans them out
     to every paragraph in that cell.  Preserve the paragraph-level source
     values when they are uniform and reject a heterogeneous cell explicitly so
@@ -2257,7 +2307,7 @@ def _table_cell_paragraph_props(
     if any(props != first for props in projected[1:]):
         raise _diagnostic(
             "unsupported_table_paragraph_format",
-            f"Table cell paragraph properties differ on source slide {source_slide}, {source_object}; OfficeCLI Contract v1 exposes these properties at cell scope.",
+            f"Table cell paragraph properties differ on source slide {source_slide}, {source_object}; OfficeCLI Contract 1.1 exposes these properties at cell scope.",
             source_slide,
             source_object,
         )
@@ -2273,7 +2323,13 @@ def _table_cell_props(
     source_object: str,
     paragraphs: Sequence[dict[str, Any]] = (),
 ) -> dict[str, str]:
-    props: dict[str, str] = {"text": _text_of(element)}
+    # The lowered paragraph tuple is the single structural authority.  In
+    # particular, an authored ``<br>`` is ``\v`` inside one paragraph; reading
+    # the raw measurement text here would turn it back into ``\n`` and make the
+    # table cell disagree with the run ranges and readback model.
+    props: dict[str, str] = {
+        "text": _paragraphs_text(paragraphs) if paragraphs else _text_of(element)
+    }
     fill = _parse_css_color(element.get("backgroundColor"))
     cell_backdrop = backdrop
     if fill is None:
@@ -2311,7 +2367,7 @@ def _table_cell_props(
     direction = str(element.get("direction", "ltr") or "ltr").lower()
     if direction == "rtl":
         props["direction"] = "rtl"
-    line_spacing = _line_spacing(element, legacy_css_pixel_projection=True)
+    line_spacing = _line_spacing(element)
     if line_spacing is not None:
         props["linespacing"] = line_spacing
 
@@ -2387,21 +2443,14 @@ def _lower_table(
             source_object,
         )
 
+    topology_rows: list[list[dict[str, Any]]] = []
     for row_index, cells in enumerate(row_cells, start=1):
+        topology_row: list[dict[str, Any]] = []
         for column_index, cell in enumerate(cells, start=1):
             cell_source = str(
                 cell.get("dataCellPath")
                 or f"{source_object}/tr[{row_index}]/tc[{column_index}]"
             )
-            row_span = _number(cell.get("rowSpan"), 1)
-            col_span = _number(cell.get("colSpan"), 1)
-            if row_span != 1 or col_span != 1:
-                raise _diagnostic(
-                    "unsupported_table_span",
-                    f"Unsupported merged table cell on source slide {source_slide}, {cell_source}: rowspan and colspan must both be 1.",
-                    source_slide,
-                    cell_source,
-                )
             if cell.get("backgroundImage"):
                 raise _diagnostic(
                     "unsupported_table_effect",
@@ -2409,19 +2458,51 @@ def _lower_table(
                     source_slide,
                     cell_source,
                 )
-
-    column_count = len(row_cells[0])
-    if any(len(cells) != column_count for cells in row_cells):
-        raise _diagnostic(
-            "invalid_table_matrix",
-            f"Invalid table on source slide {source_slide}, {source_object}: every row must have {column_count} cells.",
-            source_slide,
-            source_object,
+            topology_row.append(
+                {
+                    "rowspan": _measured_table_span(cell.get("rowSpan")),
+                    "colspan": _measured_table_span(cell.get("colSpan")),
+                    "source_object": cell_source,
+                    "text": _text_of(cell),
+                }
+            )
+        topology_rows.append(topology_row)
+    try:
+        grid = build_logical_table_grid(
+            topology_rows,
+            source_object=source_object,
         )
+    except TableTopologyError as exc:
+        raise _diagnostic(
+            exc.code,
+            f"Invalid merged table on source slide {source_slide}, {exc.source_object or source_object}: {exc.message}",
+            source_slide,
+            exc.source_object or source_object,
+        ) from exc
 
     row_heights = tuple(_pt(_number(row.get("height")), scale_y) for row in rows)
+    logical_height = sum(row_heights)
+    logical_widths_px: list[float | None] = [None] * grid.columns
+    for region in grid.regions:
+        cell = row_cells[region.source_row][region.source_column]
+        if region.column_span == 1:
+            measured_width = _number(cell.get("width"))
+            if measured_width > 0 and logical_widths_px[region.anchor_column - 1] is None:
+                logical_widths_px[region.anchor_column - 1] = measured_width
+    remaining_columns = [
+        index for index, width in enumerate(logical_widths_px) if width is None
+    ]
+    if remaining_columns:
+        known_width = sum(width or 0.0 for width in logical_widths_px)
+        fallback_width = max(
+            0.0,
+            (_number(bounds[2]) / scale_x - known_width)
+            / len(remaining_columns),
+        )
+        for index in remaining_columns:
+            logical_widths_px[index] = fallback_width
     column_widths = tuple(
-        _pt(_number(cell.get("width")), scale_x) for cell in row_cells[0]
+        _pt(float(width or 0.0), scale_x) for width in logical_widths_px
     )
     if any(height <= 0 for height in row_heights) or any(
         width <= 0 for width in column_widths
@@ -2438,9 +2519,9 @@ def _lower_table(
         "x": _length(bounds[0]),
         "y": _length(bounds[1]),
         "width": _length(bounds[2]),
-        "height": _length(bounds[3]),
-        "rows": str(len(rows)),
-        "cols": str(column_count),
+        "height": _length(logical_height),
+        "rows": str(grid.rows),
+        "cols": str(grid.columns),
         "colWidths": ",".join(_length(width) for width in column_widths),
         "style": "none",
         "firstRow": "false",
@@ -2451,38 +2532,74 @@ def _lower_table(
         "bandedCols": "false",
     }
     table_cells: list[_TableCellIR] = []
-    for row_index, cells in enumerate(row_cells, start=1):
-        for column_index, cell in enumerate(cells, start=1):
+    for row_index in range(grid.rows):
+        for column_index in range(grid.columns):
+            region = grid.regions[grid.occupancy[row_index][column_index]]
+            anchor = (
+                row_index + 1 == region.anchor_row
+                and column_index + 1 == region.anchor_column
+            )
             cell_source = str(
-                cell.get("dataCellPath")
-                or f"{source_object}/tr[{row_index}]/tc[{column_index}]"
+                row_cells[region.source_row][region.source_column].get("dataCellPath")
+                or f"{source_object}/tr[{region.source_row + 1}]/tc[{region.source_column + 1}]"
             )
-            cell_name = f"{name}-cell-r{row_index:03d}-c{column_index:03d}"
-            cell_bounds = _bounds(cell, scale_x, scale_y)
-            cell_paragraphs = _text_paragraphs(
-                cell,
-                scale_x,
-                scale_y,
-                backdrop,
-                preserve_table_projection=True,
-            )
+            cell_name = f"{name}-cell-r{row_index + 1:03d}-c{column_index + 1:03d}"
+            cell_x = bounds[0] + sum(column_widths[:column_index])
+            cell_y = bounds[1] + sum(row_heights[:row_index])
+            cell_width = column_widths[column_index]
+            cell_height = row_heights[row_index]
+            cell_paragraphs: tuple[dict[str, Any], ...] = ()
+            if anchor:
+                cell = row_cells[region.source_row][region.source_column]
+                cell_paragraphs = _text_paragraphs(
+                    cell,
+                    scale_x,
+                    scale_y,
+                    backdrop,
+                    preserve_table_projection=True,
+                )
+                cell_width = sum(
+                    column_widths[
+                        region.anchor_column - 1 : region.anchor_column - 1 + region.column_span
+                    ]
+                )
+                cell_height = sum(
+                    row_heights[
+                        region.anchor_row - 1 : region.anchor_row - 1 + region.row_span
+                    ]
+                )
+                cell_props = _table_cell_props(
+                    cell,
+                    scale_x,
+                    scale_y,
+                    backdrop,
+                    source_slide,
+                    cell_source,
+                    cell_paragraphs,
+                )
+                if region.column_span > 1:
+                    cell_props["colspan"] = str(region.column_span)
+                if region.row_span > 1:
+                    cell_props["rowspan"] = str(region.row_span)
+            else:
+                # Covered physical cells are intentionally blank and carry no
+                # border/fill/text properties.  The anchor is the sole owner of
+                # content, formatting, and the four canonical outer borders.
+                cell_props = {"text": ""}
             table_cells.append(
                 _TableCellIR(
                     cell_name,
                     source_slide,
                     cell_source,
-                    cell_bounds,
-                    _text_of(cell),
-                    _table_cell_props(
-                        cell,
-                        scale_x,
-                        scale_y,
-                        backdrop,
-                        source_slide,
-                        cell_source,
-                        cell_paragraphs,
-                    ),
+                    (cell_x, cell_y, cell_width, cell_height),
+                    _paragraphs_text(cell_paragraphs),
+                    cell_props,
                     cell_paragraphs,
+                    row_index + 1,
+                    column_index + 1,
+                    region.row_span if anchor else 1,
+                    region.column_span if anchor else 1,
+                    anchor,
                 )
             )
     return _ObjectIR(
@@ -2490,8 +2607,9 @@ def _lower_table(
         name=name,
         source_slide=source_slide,
         source_object=source_object,
-        bounds=bounds,
+        bounds=(bounds[0], bounds[1], bounds[2], logical_height),
         props=table_props,
+        metadata={"normalized_merge_topology": grid.normalized_topology},
         table_cells=tuple(table_cells),
         row_heights=row_heights,
         column_widths=column_widths,
@@ -2616,7 +2734,10 @@ def _lower_slide(
             # OfficeCLI range offset below are computed from this same
             # structure, so a range can never address the wrong characters.
             paragraphs = _text_paragraphs(
-                element, scale_x, scale_y, inherited_backdrop
+                element,
+                scale_x,
+                scale_y,
+                inherited_backdrop,
             )
         text = _paragraphs_text(paragraphs)
         if element.get("isImage") or element.get("isSvg") or tag in {"img", "svg"}:
@@ -2703,8 +2824,6 @@ def _lower_slide(
         scale_x_local = scale_x
         scale_y_local = scale_y
         bounds = _bounds(element, scale_x_local, scale_y_local)
-        if text:
-            bounds = _source_fidelity_text_bounds(element, bounds)
         fill = _parse_css_color(element.get("backgroundColor"))
         border = _parse_css_color(element.get("borderColor"))
         border_value = str(element.get("borderColor", "") or "")
@@ -2750,6 +2869,20 @@ def _lower_slide(
             child_backdrop = _blend(fill_rgb, effective_alpha, inherited_backdrop)
 
         if has_shape:
+            if profile == "author" and _shape_has_unsupported_adjustment(element):
+                raise _diagnostic(
+                    "unsupported_shape_adjustment",
+                    f"Unsupported visible object on source slide {source_slide}, {source_object}: preset adjustment handles are outside the native shape geometry surface.",
+                    source_slide,
+                    source_object,
+                )
+            if profile == "author" and not _uniform_shape_outline(element):
+                raise _diagnostic(
+                    "unsupported_outline",
+                    f"Unsupported visible object on source slide {source_slide}, {source_object}: only uniform solid outlines are supported for native shapes.",
+                    source_slide,
+                    source_object,
+                )
             props = _shape_props(element, bounds, scale_x_local, scale_y_local, inherited_backdrop)
             add_object(
                 element,
@@ -2798,6 +2931,11 @@ def _lower_slide(
         child_elements = [] if is_list else (element.get("children", []) or [])
         for position, child in enumerate(child_elements, start=1):
             child_tag = str(child.get("tag", "element") or "element").lower()
+            if element.get("paragraphsFromChildren") and child_tag == "p":
+                # Direct authored <p> children were folded into the parent's
+                # one native textbox above, including zero-height empties that
+                # cannot survive as standalone measured objects.
+                continue
             if element.get("inlineRuns") and child_tag in _INLINE_TAGS:
                 continue
             child_path = _source_path(source_slide, source_object, child_tag, position)
@@ -2931,7 +3069,7 @@ def _batch_for_slides(
                     if cell.paragraphs:
                         cell_path = f"{table_path}/tr[{row_index}]/tc[{column_index}]"
                         # OfficeCLI's table-cell setter is the public paragraph
-                        # formatting surface for Contract v1: align,
+                        # formatting surface for Contract 1.1: align,
                         # linespacing, spacebefore, spaceafter, and direction
                         # fan out to every paragraph in the cell.  Those
                         # properties were projected into ``cell.props`` above;
@@ -3064,7 +3202,7 @@ async def compile_officecli(
 
     ``slide_indices`` is zero-based and exists so the first tracer-bullet can
     compile Algeria slide 8 as a one-slide deck.  Omitting it compiles every
-    measured slide.  The ``officehtml`` profile consumes OfficeCLI 1.0.147's
+    measured slide.  The ``officehtml`` profile consumes OfficeCLI 1.0.151's
     fixed-coordinate projection; its ``data-path`` values remain source
     identity metadata and are not write-back instructions.
     """
@@ -3081,6 +3219,12 @@ async def compile_officecli(
     contract = check_contract(input_html, profile)
     if contract.blocked:
         raise _contract_failure(contract)
+
+    # This is intentionally before Chromium measurement and before the first
+    # temporary PPTX is created.  Contract 1.1 depends on OfficeCLI 1.0.151's
+    # native line-break and merge behavior and must not leave a misleading
+    # partial artifact when an older runtime is selected.
+    runtime_snapshot = _require_officecli_runtime()
 
     if profile == "author":
         measurements = await extract_measurements(
@@ -3198,6 +3342,7 @@ async def compile_officecli(
         sum(len(slide.objects) for slide in slides),
         (),
         manifest,
+        runtime_snapshot,
     )
 
 

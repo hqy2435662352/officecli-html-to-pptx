@@ -17,8 +17,8 @@ def _write(tmp_path: Path, text: str) -> Path:
 
 
 def test_contract_publishes_version_and_officecli_baseline() -> None:
-    assert CONTRACT_VERSION == "1.0"
-    assert OFFICECLI_COMPATIBILITY_BASELINE == "1.0.147"
+    assert CONTRACT_VERSION == "1.1"
+    assert OFFICECLI_COMPATIBILITY_BASELINE == "1.0.151"
 
 
 def test_author_profile_blocks_visible_unsupported_content_but_ignores_preview_runtime(

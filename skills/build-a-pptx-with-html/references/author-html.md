@@ -35,6 +35,18 @@ meaningful visible details that the brief or reference establishes.
    visible external resources out of the normal workbench unless the Contract
    explicitly accepts that form.
 
+### Native shape geometry
+
+For a visible shape that needs a non-rectangular native PowerPoint preset, use
+the exact, case-sensitive `data-pptx-shape-geometry` attribute. The supported
+tokens are `rect`, `roundRect`, `ellipse`, `triangle`, `diamond`,
+`parallelogram`, `chevron`, `hexagon`, `leftArrow`, `rightArrow`, `upArrow`,
+`downArrow`, and `star5`. Unknown tokens and custom geometry are rejected by
+the Contract; do not rely on arbitrary backend preset names. An unannotated
+block remains a `rect`, a positive `border-radius` remains a `roundRect`, and
+an approximately square `border-radius: 50%` block may be inferred as an
+`ellipse` within the published Contract tolerance.
+
 After authoring, inspect the workbench at enough scale to catch missing slides,
 obvious overflow, unreadable text, missing images, unintended overlap, and
 Contract-visible unsupported content. Then run `check --json`; fix the exact

@@ -28,7 +28,7 @@ keep compiler and validation logic out of this Skill.
 
 ## Boundaries
 
-This is the Product Version `0.2.0` new-deck workflow. Begin with HTML,
+This is the Product Version `0.5.1` new-deck workflow. Begin with HTML,
 references, or a brief and create a new PPTX. A task that starts by editing an
 existing PPTX belongs to the separate presentation-editing workflow.
 
@@ -54,6 +54,15 @@ kinds, runtime compatibility, diagnostics, artifact schemas, and outcomes. Do
 not install or upgrade a runtime without explicit user permission. A failed
 Contract check is a remediation signal, not authorization to change the
 Contract or product source.
+
+For Product 0.5.1, the Contract version is 1.1 and the public native slices
+are authored paragraph/hard-break/empty-paragraph structure, the frozen run and
+paragraph matrix, legal rectangular merged tables with normalized topology, and
+the closed `data-pptx-shape-geometry` preset allowlist. Browser `visualLines`
+remain measurement/evidence only. The public four-slide corpus is
+`tests/fixtures/v05_01_public_corpus.html`; the V0.4 projection corpus is a
+separate regression asset and never counts toward this gate. Charts are
+reserved for V0.5.2 and general localized fallback for V0.6.
 
 ## Contract-first sequence
 
@@ -115,7 +124,9 @@ decision needs an otherwise unknown flag or artifact rule.
 
 **Completion criterion:** a new matching PPTX and Evidence Bundle exist, and
 the Core Product reports that the structural build stages passed for that
-Artifact Pair.
+Artifact Pair. The bundle includes an independent OfficeCLI readback and the
+native-slice evidence required by Contract 1.1; the actual OfficeCLI runtime
+must be at least `1.0.151`.
 
 ### 4. Review and finalize
 

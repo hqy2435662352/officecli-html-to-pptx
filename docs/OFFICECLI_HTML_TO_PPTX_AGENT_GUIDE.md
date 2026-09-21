@@ -51,10 +51,18 @@ page dimensions.
 - Validate the delivered PPTX with OfficeCLI, inspect text and structure, and
   review a screenshot of every slide.
 - Report known baseline findings separately from regressions.
+- Product 0.5.1 keeps the five public commands unchanged and requires Contract
+  1.1 with OfficeCLI `>=1.0.151`; a lower runtime must fail before measurement
+  or output creation.
+- For a public release gate, retain the four-slide corpus, independent
+  OfficeCLI readback, `validate`/`issues`, and one reviewed Comparison Image per
+  slide. Record the actual runtime, text structure/matrix, normalized merge
+  topology, native geometry, object/readback counts, diagnostics/material delta,
+  and Gate 3 result. Do not add a V0.6 fallback taxonomy.
 
 ## Environment setup
 
-The current Contract is pinned to OfficeCLI `1.0.147`. Windows and Linux are
+The current Contract 1.1 release is pinned to OfficeCLI `1.0.151`. Windows and Linux are
 supported build platforms; `doctor --json` decides for the machine in front of
 you, and `capabilities --json` reports the running platform alongside the
 supported set.
@@ -78,7 +86,7 @@ HTML declares — see `DEPLOYMENT.zh-CN.md`, "在 Linux 上部署".
 Expected OfficeCLI output:
 
 ```text
-1.0.147
+1.0.151
 ```
 
 If the editable environment is not installed:
@@ -417,7 +425,7 @@ recorded finding. The final deck is not deliverable while any blocker remains.
 ## Branch B — OfficeHTML to PPTX
 
 OfficeHTML is the fixed-coordinate object projection produced by OfficeCLI
-`1.0.147`. It is a decompiler projection and verification oracle, not a
+`1.0.151`. It is a decompiler projection and verification oracle, not a
 responsive authoring format and not an in-place patch protocol.
 
 ### Step 1: export OfficeHTML to a file
@@ -655,17 +663,19 @@ record the original and temporary paths.
 
 ## Supported surface and non-goals
 
-Contract v1 supports:
+Contract 1.1 supports:
 
 - slides and slide backgrounds;
 - rectangles and rounded rectangles;
 - text boxes and text-bearing shapes;
 - paragraphs and direct text runs;
 - data-URI pictures, including SVG with deterministic picture-level fallback;
-- native tables, rows, columns, and cells;
+- native tables, rows, columns, cells, and legal rectangular `rowspan`/`colspan`
+  merges with normalized topology;
+- public `data-pptx-shape-geometry` tokens from the closed capability allowlist;
 - the formatting fields enumerated by the Contract.
 
-Contract v1 does not promise merged table cells, editable charts, master/theme
+Contract 1.1 does not promise editable charts, master/theme
 reconstruction, connectors, groups, SmartArt, equations, media, animations,
 notes, comments, complete hyperlink round trips, complex gradients, filters,
 clipping paths, complex shadows, arbitrary SVG-to-path conversion, automatic
@@ -680,7 +690,7 @@ use another renderer. Never hide the loss.
 ## Final agent checklist
 
 - [ ] Correct repository root and task input confirmed.
-- [ ] Installed OfficeCLI version matches Contract v1.
+- [ ] Installed OfficeCLI version is at least `1.0.151` and matches Contract 1.1.
 - [ ] Explicit `author` or `officehtml` profile selected.
 - [ ] Author HTML remains a browser-reviewable workbench when applicable.
 - [ ] Matching Contract report is `PASS`.
@@ -694,7 +704,8 @@ use another renderer. Never hide the loss.
 - [ ] Every `officecli view issues` entry is resolved or classified.
 - [ ] Every slide has a reviewed screenshot.
 - [ ] OfficeHTML round trip completed when reversibility is in scope.
-- [ ] Final report links the PPTX, Contract JSON, issue output, screenshots, and
+- [ ] Final report links the PPTX, Contract JSON, independent readback/native
+      evidence, issue output, screenshots, and
       round-trip artifacts.
 - [ ] Known baseline differences are named; regressions are not relabeled.
 

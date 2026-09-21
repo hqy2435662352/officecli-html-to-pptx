@@ -286,39 +286,19 @@ EXTRACTION_JS = """
             ...(officecliMode ? {textDecoration: style.textDecorationLine} : {}),
         }] : []);
         const paragraphs = [];
-        let current = [];
-        let breakAtEnd = false;
-        const pushParagraph = (force = false) => {
-            if (current.length || paragraphs.length === 0 || force) {
-                paragraphs.push({
-                    text: current.map(run => run.text).join(''),
-                    align: style.textAlign,
-                    lineHeight: style.lineHeight,
-                    spaceBefore: parseFloat(style.marginTop) || 0,
-                    spaceAfter: parseFloat(style.marginBottom) || 0,
-                    direction: style.direction,
-                    runs: current,
-                });
-            }
-            current = [];
-        };
-        for (const run of sourceRuns) {
-            const pieces = String(run.text || '').split('\\n');
-            for (let index = 0; index < pieces.length; index++) {
-                if (pieces[index]) current.push({ ...run, text: pieces[index] });
-                if (index < pieces.length - 1) {
-                    pushParagraph(true);
-                    breakAtEnd = true;
-                } else if (pieces[index]) {
-                    breakAtEnd = false;
-                }
-            }
-        }
-        if (officecliMode) {
-            if (current.length || paragraphs.length === 0 || breakAtEnd) pushParagraph(breakAtEnd);
-        } else if (current.length || paragraphs.length === 0) {
-            pushParagraph();
-        }
+        // Block-level/authored paragraph boundaries are represented by the
+        // element that owns this call.  An explicit <br> stays in this same
+        // paragraph as a marked hard-break run; the compiler lowers it to
+        // OfficeCLI's native vertical-tab control character.
+        paragraphs.push({
+            text: sourceRuns.map(run => String(run.text || '')).join(''),
+            align: style.textAlign,
+            lineHeight: style.lineHeight,
+            spaceBefore: parseFloat(style.marginTop) || 0,
+            spaceAfter: parseFloat(style.marginBottom) || 0,
+            direction: style.direction,
+            runs: sourceRuns.map(run => ({ ...run })),
+        });
         return paragraphs;
     }
 
@@ -338,11 +318,9 @@ EXTRACTION_JS = """
         return false;
     }
 
-    // A browser can soft-wrap a text node at a position that OfficeCLI's
-    // substituted font metrics would choose differently.  Preserve those
-    // visual line boundaries for the OfficeCLI profile as explicit paragraph
-    // breaks; this keeps the text editable while removing renderer-dependent
-    // reflow from the final PPTX.
+    // Capture browser soft-wrap rows for measurement/evidence only.  The
+    // OfficeCLI lowering keeps authored paragraph boundaries and native hard
+    // breaks; these rows never become native paragraph separators.
     function visualLineTexts(el) {
         if (!officecliMode) return [];
         const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
@@ -513,12 +491,13 @@ EXTRACTION_JS = """
             naturalWidth: isImg ? (el.naturalWidth || 0) : 0,
             naturalHeight: isImg ? (el.naturalHeight || 0) : 0,
             borderRadius: style.borderRadius,
-            // A preset geometry the Canonical Author shape surface keeps as a
-            // PowerPoint preset rather than inferring from CSS.  A block box is
-            // a rect and a border-radius is a roundRect, but an ellipse or a
-            // right arrow has no CSS declaration that means it, so the emitted
-            // object names the preset and the lowering reads it here.
-            shapeGeometry: el.getAttribute('data-shape-geometry'),
+            // A preset geometry the Contract 1.1 Author shape surface keeps as
+            // a PowerPoint preset rather than inferring from CSS.  Public
+            // Author HTML uses the namespaced annotation.  The private legacy
+            // spelling remains a fallback solely for the hidden projection
+            // seam, whose emitted nodes carry data-projection-id.
+            shapeGeometry: el.getAttribute('data-pptx-shape-geometry') ||
+                           el.getAttribute('data-shape-geometry'),
             // Present exactly when this element came from the V0.4.x
             // PPTX-to-Author-HTML projection.  A projected object's text
             // formatting is a reading of a source deck the product was asked to
@@ -607,6 +586,52 @@ EXTRACTION_JS = """
             }
         }
 
+        // A text container whose direct children are authored <p> elements is
+        // one native textbox with one native paragraph per source <p>.  Build
+        // this list from the DOM rather than only from measured child boxes so
+        // zero-height empty paragraphs retain their exact source cardinality.
+        if (officecliMode) {
+            const childElements = Array.from(el.children);
+            const paragraphChildren = childElements.filter(child => {
+                const childStyle = getComputedStyle(child);
+                return child.tagName.toLowerCase() === 'p'
+                    && childStyle.display !== 'none'
+                    && childStyle.visibility !== 'hidden';
+            });
+            // Only a pure paragraph flow is folded.  A decorated container
+            // that also owns headings, cards, or other block children must
+            // keep those children as independent native objects; folding its
+            // <p> descendants into the container would duplicate text and can
+            // make the containing shape overflow.
+            const onlyParagraphChildren = childElements.every(child => {
+                const childStyle = getComputedStyle(child);
+                return child.tagName.toLowerCase() === 'p'
+                    && childStyle.display !== 'none'
+                    && childStyle.visibility !== 'hidden';
+            });
+            if (paragraphChildren.length && onlyParagraphChildren) {
+                const authoredParagraphs = [];
+                for (const paragraphElement of paragraphChildren) {
+                    const paragraphStyle = getComputedStyle(paragraphElement);
+                    const paragraphRuns = collectInlineRuns(
+                        paragraphElement, paragraphStyle, true,
+                    );
+                    authoredParagraphs.push(
+                        ...textParagraphs(
+                            paragraphElement,
+                            paragraphRuns,
+                            getDirectText(paragraphElement),
+                        ),
+                    );
+                }
+                data.paragraphs = authoredParagraphs;
+                data.text = authoredParagraphs
+                    .map(paragraph => paragraph.text)
+                    .join('\\n');
+                data.paragraphsFromChildren = true;
+            }
+        }
+
         // Measure ::before and ::after pseudo-elements as synthetic children
         for (const pseudo of ['::before', '::after']) {
             try {
@@ -686,7 +711,7 @@ EXTRACTION_JS = """
             if (lines.length > 1) data.visualLines = lines;
         }
 
-        const isContainer = !data.text && !isImg && !isSvg && !hasVisibleBg && !hasBorder &&
+        const isContainer = !data.text && !data.paragraphs && !isImg && !isSvg && !hasVisibleBg && !hasBorder &&
                            !isTableElement && !data.list && !data.listItem &&
                            data.backgroundImage === null && !data.inlineRuns;
         if (isContainer && data.children.length === 1 && depth > 0) {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import io
 import json
 import sys
@@ -45,7 +46,7 @@ def test_capabilities_are_author_only_and_use_product_envelope(
     assert payload["status"] == "PASS"
     assert payload["product"] == {
         "name": "officecli-html-to-pptx",
-        "version": "0.2.0",
+        "version": "0.5.1",
     }
     assert payload["data"]["commands"] == [
         "capabilities",
@@ -74,7 +75,7 @@ def test_capabilities_are_author_only_and_use_product_envelope(
     assert scope["enforced"] is False
     assert "other Linux distributions" in scope["not_implied"]
     assert "macOS" in scope["not_implied"]
-    assert payload["data"]["rendering_compatibility"]["officecli"] == ">=1.0.147"
+    assert payload["data"]["rendering_compatibility"]["officecli"] == ">=1.0.151"
     assert payload["data"]["scope"]["officehtml_import"] is False
     assert "profile" not in payload["data"]["contract"]["css_properties"]
 
@@ -196,19 +197,67 @@ def _patch_successful_build(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda **_: result(
             "doctor",
             "PASS",
-            data={"runtime": {"formal_pair": {"officecli": ">=1.0.147"}}},
+            data={
+                "runtime": {
+                    "formal_pair": {"officecli": ">=1.0.151"},
+                    "officecli": {
+                        "required_version": ">=1.0.151",
+                        "discovered_version": "1.0.151",
+                        "compatible": True,
+                    },
+                }
+            },
         ),
     )
 
     async def fake_compile(input_html: str, profile: str, output: str) -> OfficeCLICompilationResult:
         assert profile == "author"
         Path(output).write_bytes(b"fake-pptx")
-        return OfficeCLICompilationResult(output, "author", 1, 1, (), {"slide_count": 1})
+        return OfficeCLICompilationResult(
+            output,
+            "author",
+            1,
+            1,
+            (),
+            {
+                "slide_count": 1,
+                "object_kind_counts": {"shape": 1},
+                "objects": [
+                    {
+                        "kind": "shape",
+                        "name": "shape-1",
+                        "bounds_pt": [0.0, 0.0, 10.0, 10.0],
+                        "text": "",
+                        "paragraphs": [],
+                        "properties": {"geometry": "rect"},
+                    }
+                ],
+            },
+        )
 
     monkeypatch.setattr(application, "compile_officecli", fake_compile)
     monkeypatch.setattr(application, "_run_officecli", lambda *args: "")
     monkeypatch.setattr(application, "_validate_build_output", lambda _: {"status": "PASS"})
     monkeypatch.setattr(application, "_collect_issues", lambda _: {"status": "PASS", "output": ""})
+    monkeypatch.setattr(
+        application,
+        "_collect_readback",
+        lambda _: {
+            "slide_count": 1,
+            "slide_size_pt": {"width": 960.0, "height": 540.0},
+            "object_kind_counts": {"shape": 1},
+            "objects": [
+                {
+                    "kind": "shape",
+                    "name": "shape-1",
+                    "source_slide": 1,
+                    "bounds_pt": [0.0, 0.0, 10.0, 10.0],
+                    "paragraphs": [],
+                    "properties": {"geometry": "rect"},
+                }
+            ],
+        },
+    )
 
     async def fake_comparisons(_: Path, __: Path, destination: Path, ___: int) -> list[dict[str, str | int]]:
         destination.mkdir(parents=True, exist_ok=True)
@@ -217,6 +266,268 @@ def _patch_successful_build(monkeypatch: pytest.MonkeyPatch) -> None:
         return [{"slide": 1, "path": str(image), "sha256": application._sha256(image)}]
 
     monkeypatch.setattr(application, "_make_comparisons", fake_comparisons)
+
+
+def _material_manifest() -> dict[str, object]:
+    run = {
+        "text": "Body",
+        "font_family": "Microsoft YaHei",
+        "font_size_pt": 12.0,
+        "bold": False,
+        "italic": False,
+        "underline": "none",
+        "color": "#000000",
+    }
+    paragraph = {
+        "text": "Body",
+        "align": "left",
+        "line_spacing": "1.200x",
+        "space_before_pt": 1.0,
+        "space_after_pt": 2.0,
+        "direction": "ltr",
+        "runs": [run],
+        "hard_break_offsets": [],
+    }
+    cell_props = {
+        "fill": "#FFFFFF",
+        "border.top": "1pt solid #000000",
+        "border.right": "1pt solid #000000",
+        "border.bottom": "1pt solid #000000",
+        "border.left": "1pt solid #000000",
+        "padding.left": "4pt",
+        "padding.right": "4pt",
+        "padding.top": "3pt",
+        "padding.bottom": "3pt",
+        "align": "center",
+        "valign": "center",
+    }
+    cells = []
+    for row in range(2):
+        for column in range(2):
+            cells.append(
+                {
+                    "bounds_pt": [column * 50.0, row * 20.0, 50.0, 20.0],
+                    "text": f"Cell {row},{column}",
+                    "props": deepcopy(cell_props),
+                    "paragraphs": [deepcopy(paragraph)],
+                }
+            )
+    return {
+        "slide_count": 1,
+        "object_kind_counts": {"textbox": 1, "shape": 1, "table": 1},
+        "objects": [
+            {
+                "kind": "textbox",
+                "name": "textbox-1",
+                "bounds_pt": [0.0, 0.0, 100.0, 50.0],
+                "text": "Body",
+                "properties": {"margin": "0pt"},
+                "paragraphs": [deepcopy(paragraph)],
+            },
+            {
+                "kind": "shape",
+                "name": "shape-1",
+                "bounds_pt": [110.0, 0.0, 100.0, 50.0],
+                "text": "",
+                "properties": {
+                    "geometry": "rect",
+                    "fill": "#DCEEFF",
+                    "opacity": "0.7800",
+                    "line": "#223344:1.5000pt",
+                    "lineOpacity": "0.7800",
+                    "rotation": "17.000",
+                    "margin": "6.0000pt",
+                },
+                "paragraphs": [],
+            },
+            {
+                "kind": "table",
+                "name": "table-1",
+                "bounds_pt": [0.0, 60.0, 100.0, 40.0],
+                "text": "Cell 0,0Cell 0,1Cell 1,0Cell 1,1",
+                "properties": {},
+                "rows": 2,
+                "columns": 2,
+                "column_widths_pt": [50.0, 50.0],
+                "row_heights_pt": [20.0, 20.0],
+                "normalized_merge_topology": [
+                    {"row": 0, "column": 0, "row_span": 1, "column_span": 1},
+                    {"row": 0, "column": 1, "row_span": 1, "column_span": 1},
+                    {"row": 1, "column": 0, "row_span": 1, "column_span": 1},
+                    {"row": 1, "column": 1, "row_span": 1, "column_span": 1},
+                ],
+                "cells": cells,
+            },
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate"),
+    [
+        (
+            "run formatting",
+            lambda manifest: manifest["objects"][0]["paragraphs"][0]["runs"][0].update(
+                font_size_pt=13.0
+            ),
+        ),
+        (
+            "paragraph spacing",
+            lambda manifest: manifest["objects"][0]["paragraphs"][0].update(
+                space_before_pt=3.0
+            ),
+        ),
+        (
+            "shape rotation",
+            lambda manifest: manifest["objects"][1]["properties"].update(rotation="18.000"),
+        ),
+        (
+            "shape opacity",
+            lambda manifest: manifest["objects"][1]["properties"].update(opacity="0.6200"),
+        ),
+        (
+            "shape line opacity",
+            lambda manifest: manifest["objects"][1]["properties"].update(
+                lineOpacity="0.6200"
+            ),
+        ),
+        (
+            "shape fill",
+            lambda manifest: manifest["objects"][1]["properties"].update(fill="#DCEEFE"),
+        ),
+        (
+            "shape outline",
+            lambda manifest: manifest["objects"][1]["properties"].update(
+                line="#223355:1.5000pt"
+            ),
+        ),
+        (
+            "shape margin",
+            lambda manifest: manifest["objects"][1]["properties"].update(margin="8.0000pt"),
+        ),
+        (
+            "table column width",
+            lambda manifest: manifest["objects"][2].update(column_widths_pt=[52.0, 48.0]),
+        ),
+        (
+            "table row height",
+            lambda manifest: manifest["objects"][2].update(row_heights_pt=[22.0, 18.0]),
+        ),
+        (
+            "table cell bounds",
+            lambda manifest: manifest["objects"][2]["cells"][0].update(
+                bounds_pt=[0.0, 0.0, 48.0, 20.0]
+            ),
+        ),
+        (
+            "table cell fill",
+            lambda manifest: manifest["objects"][2]["cells"][0]["props"].update(
+                fill="#FEF3C7"
+            ),
+        ),
+        (
+            "table cell border",
+            lambda manifest: manifest["objects"][2]["cells"][0]["props"].update(
+                **{"border.top": "2pt solid #000000"}
+            ),
+        ),
+        (
+            "table cell padding",
+            lambda manifest: manifest["objects"][2]["cells"][0]["props"].update(
+                **{"padding.left": "8pt"}
+            ),
+        ),
+        (
+            "table cell alignment",
+            lambda manifest: manifest["objects"][2]["cells"][0]["props"].update(
+                align="right"
+            ),
+        ),
+        (
+            "table cell vertical alignment",
+            lambda manifest: manifest["objects"][2]["cells"][0]["props"].update(
+                valign="top"
+            ),
+        ),
+        (
+            "table topology",
+            lambda manifest: manifest["objects"][2].update(
+                normalized_merge_topology=[
+                    {"row": 0, "column": 0, "row_span": 2, "column_span": 1}
+                ]
+            ),
+        ),
+        (
+            "table cell paragraph formatting",
+            lambda manifest: manifest["objects"][2]["cells"][0]["paragraphs"][0].update(
+                space_after_pt=4.0
+            ),
+        ),
+    ],
+)
+def test_native_material_delta_detects_supported_field_mutations(
+    label: str,
+    mutate: object,
+) -> None:
+    expected = _material_manifest()
+    actual = deepcopy(expected)
+    mutate(actual)  # type: ignore[operator]
+    assert application._native_material_delta_count(expected, actual) > 0, label
+
+
+def test_native_material_delta_only_normalizes_confirmed_readback_noise() -> None:
+    expected = _material_manifest()
+    empty_paragraph = {
+        "text": "",
+        "align": "left",
+        "line_spacing": "1.200x",
+        "space_before_pt": 0.0,
+        "space_after_pt": 0.0,
+        "direction": "ltr",
+        "runs": [],
+        "hard_break_offsets": [],
+    }
+    expected["objects"][0]["paragraphs"].append(empty_paragraph)
+    actual = deepcopy(expected)
+    actual["objects"][0]["paragraphs"][-1]["runs"] = [{"text": ""}]
+    actual["objects"][1]["properties"].update(
+        fill="#DCEEFFC7",
+        line="#223344C7:1.5000pt",
+    )
+
+    assert application._native_material_delta_count(expected, actual) == 0
+
+    alpha_mutation = deepcopy(expected)
+    alpha_mutation["objects"][1]["properties"]["fill"] = "#DCEEFFC0"
+    assert application._native_material_delta_count(expected, alpha_mutation) > 0
+
+
+def test_finalize_rejects_nonzero_native_material_delta(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_successful_build(monkeypatch)
+    author = _author(tmp_path)
+    output = tmp_path / "deck.pptx"
+    asyncio.run(application.build_author_html(author, output))
+    evidence = tmp_path / "deck.evidence"
+
+    native_path = evidence / "native-evidence.json"
+    native_evidence = json.loads(native_path.read_text(encoding="utf-8"))
+    native_evidence["diagnostics"]["material_delta"] = 1
+    native_path.write_text(
+        json.dumps(native_evidence, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    review_path = evidence / "visual-review.json"
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["status"] = "REVIEWED"
+    review["slides"][0]["status"] = "PASS"
+    review_path.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    finalized = application.finalize_build(evidence)
+    assert finalized.status == "ERROR"
+    assert finalized.exit_code == 3
+    assert finalized.diagnostics[0].code == "invalid_evidence"
 
 
 def test_build_publishes_bound_pair_and_finalize_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -237,6 +548,8 @@ def test_build_publishes_bound_pair_and_finalize_passes(tmp_path: Path, monkeypa
             "contract.json",
             "issues.json",
             "manifest.json",
+            "native-evidence.json",
+            "readback.json",
             "result.json",
             "runtime.json",
             "validate.json",
@@ -246,6 +559,16 @@ def test_build_publishes_bound_pair_and_finalize_passes(tmp_path: Path, monkeypa
     assert (evidence / "comparisons" / "slide-001.png").is_file()
     assert not list(evidence.rglob("*html_slide*"))
     assert not list(evidence.rglob("*pptx_slide*"))
+    native_evidence = json.loads(
+        (evidence / "native-evidence.json").read_text(encoding="utf-8")
+    )
+    assert native_evidence["diagnostics"] == {
+        "unsupported": 0,
+        "unresolved": 0,
+        "material_delta": 0,
+        "compiler": [],
+    }
+    assert native_evidence["counts"]["readback_object_count"] == 1
 
     review_path = evidence / "visual-review.json"
     review = json.loads(review_path.read_text(encoding="utf-8"))
@@ -257,6 +580,14 @@ def test_build_publishes_bound_pair_and_finalize_passes(tmp_path: Path, monkeypa
     assert finalized.status == "PASS"
     assert finalized.exit_code == 0
     assert (evidence / "finalization.json").is_file()
+    finalized_native = json.loads(
+        (evidence / "native-evidence.json").read_text(encoding="utf-8")
+    )
+    assert finalized_native["gate3"] == {
+        "status": "PASS",
+        "slide_count": 1,
+        "reviewed_slides": 1,
+    }
 
 
 def test_build_refuses_either_pair_target_before_compilation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
