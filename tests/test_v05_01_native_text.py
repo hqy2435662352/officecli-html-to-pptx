@@ -1,6 +1,7 @@
 """Focused Contract 1.1 text-structure acceptance tests for ticket #23."""
 
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -238,6 +239,7 @@ async def test_fixture_measurement_keeps_authored_paragraph_topology() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 async def test_fixture_officecli_readback_keeps_native_text_evidence(
     tmp_path: Path,
 ) -> None:

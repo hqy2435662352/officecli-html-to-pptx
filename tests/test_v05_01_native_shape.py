@@ -118,6 +118,10 @@ async def test_public_non_round_shape_adjustment_fails_before_output(tmp_path: P
         'border-radius:8px;background:#fff">x</div>',
     )
     output = tmp_path / "adjustment.pptx"
+    report = check_contract(html, "author")
+    assert "unsupported_shape_adjustment" in {
+        item.code for item in report.diagnostics
+    }
     with pytest.raises(OfficeCLICompilationError) as error:
         await compile_officecli(str(html), "author", str(output))
     assert any(item.code == "unsupported_shape_adjustment" for item in error.value.diagnostics)

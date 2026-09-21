@@ -1465,6 +1465,26 @@ def _check_author_shape_geometry(
             source,
         )
 
+    declared = public_value if public_value is not None else private_value
+    radius = _inline_styles(element).get("border-radius", "").strip().lower()
+    radius_parts = [part for part in re.split(r"[\s/]+", radius) if part]
+    radius_numbers = re.findall(r"-?(?:\d+(?:\.\d*)?|\.\d+)", radius)
+    has_radius = any(float(value) > 0 for value in radius_numbers)
+    ellipse_radius = bool(radius_parts) and all(part == "50%" for part in radius_parts)
+    if (
+        declared in SHAPE_GEOMETRY_TOKEN_SET
+        and has_radius
+        and declared != "roundRect"
+        and not (declared == "ellipse" and ellipse_radius)
+    ):
+        _emit(
+            findings,
+            "author",
+            "unsupported_shape_adjustment",
+            "CSS border-radius cannot adjust this native preset geometry.",
+            source,
+        )
+
     for attribute in element.attrib:
         normalized = str(attribute).lower()
         if normalized in {

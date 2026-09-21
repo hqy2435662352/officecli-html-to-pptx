@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -105,6 +106,7 @@ def test_logical_grid_rejects_holes_and_competing_anchors() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 async def test_public_compiler_emits_one_native_table_with_normalized_topology(
     tmp_path: Path,
 ) -> None:
@@ -168,6 +170,7 @@ async def test_public_compiler_emits_one_native_table_with_normalized_topology(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 async def test_merged_table_readback_compares_topology_dimensions_and_native_identity(
     tmp_path: Path,
 ) -> None:
@@ -211,6 +214,7 @@ async def test_merged_table_readback_compares_topology_dimensions_and_native_ide
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 async def test_merged_table_officehtml_projection_roundtrip_preserves_topology(
     tmp_path: Path,
 ) -> None:
