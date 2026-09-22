@@ -32,6 +32,10 @@ INDEX_HTML = r"""<!doctype html>
     dt { color: #5d6d7e; font-size: 11px; text-transform: uppercase; margin-top: 10px; }
     dd { margin: 2px 0; word-break: break-word; }
     #message { white-space: pre-wrap; color: #9b1c1c; }
+    #diagnostics { margin-top: 16px; }
+    .diagnostic { border-top: 1px solid #d5dce2; padding: 8px 0; }
+    .diagnostic code { font-weight: 600; }
+    .muted { color: #5d6d7e; }
     @media (prefers-color-scheme: dark) {
       body { background: #101418; color: #e6edf3; }
       .panel, button { background: #182027; border-color: #3a4b58; }
@@ -42,19 +46,26 @@ INDEX_HTML = r"""<!doctype html>
   <header>
     <h1>Author HTML Workbench</h1>
     <span id="state">Loading</span>
+    <button id="check" type="button">Check</button>
+    <button id="build" class="primary" type="button" disabled>Build Revision</button>
     <button id="save" class="primary" type="button">Save</button>
     <button id="recover" type="button" hidden>Recover draft</button>
   </header>
   <main>
     <section class="panel"><textarea id="editor" spellcheck="false" aria-label="Author HTML source"></textarea></section>
     <aside class="panel">
-      <p>Edit the real UTF-8 Author HTML source. Preview, Contract Check, and Build belong to later Workbench slices.</p>
+      <p>Edit the real UTF-8 Author HTML source. Preview is non-authoritative; Check and Build use the saved source/hash gates.</p>
       <dl>
         <dt>Source</dt><dd id="source"></dd>
         <dt>Saved SHA-256</dt><dd id="source-sha"></dd>
         <dt>Draft SHA-256</dt><dd id="draft-sha"></dd>
+        <dt>Candidate / Author</dt><dd id="author-status"></dd>
+        <dt>Contract</dt><dd id="contract-status"></dd>
+        <dt>Build Revision</dt><dd id="build-status"></dd>
+        <dt>Output root</dt><dd id="output-root"></dd>
         <dt>Recovery</dt><dd id="recovery"></dd>
       </dl>
+      <section id="diagnostics" aria-live="polite"></section>
       <p id="message" role="status"></p>
     </aside>
   </main>
@@ -65,7 +76,10 @@ INDEX_HTML = r"""<!doctype html>
       const state = document.getElementById("state");
       const message = document.getElementById("message");
       const save = document.getElementById("save");
+      const check = document.getElementById("check");
+      const build = document.getElementById("build");
       const recover = document.getElementById("recover");
+      const diagnostics = document.getElementById("diagnostics");
       let snapshot = null;
       let sessionId = "";
       let draftTimer = null;
@@ -92,9 +106,48 @@ INDEX_HTML = r"""<!doctype html>
         document.getElementById("source").textContent = snapshot.source_path;
         document.getElementById("source-sha").textContent = snapshot.source_sha256;
         document.getElementById("draft-sha").textContent = snapshot.draft_sha256;
+        document.getElementById("author-status").textContent = snapshot.author_status || "CANDIDATE";
+        document.getElementById("contract-status").textContent = snapshot.contract_status || "UNKNOWN";
+        document.getElementById("build-status").textContent = (snapshot.build && snapshot.build.status) || "IDLE";
+        document.getElementById("output-root").textContent = body.output_root || snapshot.output_root || "";
         const available = Boolean(body.recovery && body.recovery.available);
         document.getElementById("recovery").textContent = available ? "Available (not applied)" : "None";
         recover.hidden = !available;
+        const checkRecord = body.check || snapshot.contract_check || {};
+        const buildItems = body.build && body.build.diagnostics;
+        const items = (buildItems && buildItems.length) ? buildItems : (checkRecord.diagnostics || []);
+        diagnostics.textContent = "";
+        if (!items.length) {
+          const empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "No Contract diagnostics.";
+          diagnostics.appendChild(empty);
+        } else {
+          items.forEach((item) => {
+            const row = document.createElement("div");
+            row.className = "diagnostic";
+            const title = document.createElement("code");
+            title.textContent = `[${item.code}] ${item.severity} · ${item.blocking ? "BLOCK" : "advisory"}`;
+            row.appendChild(title);
+            const text = document.createElement("div");
+            text.textContent = item.message || "";
+            row.appendChild(text);
+            if (item.source_object) {
+              const source = document.createElement("div");
+              source.className = "muted";
+              source.textContent = `source: ${item.source_object} · navigation: unmapped`;
+              row.appendChild(source);
+            }
+            diagnostics.appendChild(row);
+          });
+        }
+        build.disabled = !(
+          snapshot.author_status === "AUTHOR" &&
+          snapshot.contract_status === "PASS" &&
+          snapshot.state !== "DIRTY" &&
+          snapshot.state !== "CONFLICT" &&
+          snapshot.build && snapshot.build.status !== "BUILDING"
+        );
         if (snapshot.state !== "ERROR") message.textContent = "";
       }
 
@@ -111,11 +164,25 @@ INDEX_HTML = r"""<!doctype html>
 
       editor.addEventListener("input", () => {
         state.textContent = "DIRTY";
+        build.disabled = true;
         if (draftTimer) clearTimeout(draftTimer);
         draftTimer = setTimeout(async () => {
           try { paint(await api("/api/draft", {method: "POST", body: JSON.stringify({text: editor.value})})); }
           catch (error) { showError(error); }
         }, 180);
+      });
+
+      check.addEventListener("click", async () => {
+        check.disabled = true;
+        try { paint(await api("/api/check", {method: "POST", body: JSON.stringify({text: editor.value})})); }
+        catch (error) { showError(error); }
+        finally { check.disabled = false; }
+      });
+
+      build.addEventListener("click", async () => {
+        build.disabled = true;
+        try { paint(await api("/api/build", {method: "POST", body: JSON.stringify({})})); }
+        catch (error) { showError(error); }
       });
 
       save.addEventListener("click", async () => {

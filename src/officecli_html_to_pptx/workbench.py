@@ -1,14 +1,15 @@
 """Source-authoritative, loopback-only Workbench session for Product 0.6.1.
 
-This module owns the first Workbench vertical slice: exact UTF-8 source load,
-an in-memory draft, conflict-checked atomic Save, draft recovery, and the small
-HTTP protocol used by the bundled editor.  It deliberately does not preview,
-check, or build the source; those are later slices and must continue to use the
-saved Author HTML file as their only compiler input.
+This module owns the source-authoritative Workbench slices: exact UTF-8 source
+load, an in-memory draft, conflict-checked atomic Save, draft recovery, the
+shared Contract check seam, hash-gated Build Revision, and the small HTTP
+protocol used by the bundled editor. Preview remains a later slice; every build
+continues to use the saved Author HTML file as its only compiler input.
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
@@ -27,6 +28,8 @@ from typing import Any, Mapping, TextIO
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 import webbrowser
 
+from .application import _diagnostic_from_contract, build_author_html
+from .contract import check_contract_text
 from .protocol import Artifact, CommandResult, Diagnostic, result
 from .workbench_assets import INDEX_HTML
 
@@ -36,6 +39,9 @@ class WorkbenchState(str, Enum):
 
     CLEAN = "CLEAN"
     DIRTY = "DIRTY"
+    CHECKING = "CHECKING"
+    BUILDING = "BUILDING"
+    STALE = "STALE"
     SAVING = "SAVING"
     SAVED = "SAVED"
     CONFLICT = "CONFLICT"
@@ -141,6 +147,8 @@ class WorkbenchDocument:
         self._draft_sha256 = source_sha256
         self._state = WorkbenchState.CLEAN
         self._last_error: dict[str, str] | None = None
+        self._contract_check: dict[str, Any] | None = None
+        self._build: dict[str, Any] | None = None
         self._lock = threading.RLock()
 
     @classmethod
@@ -303,6 +311,16 @@ class WorkbenchDocument:
                 disk_sha = self._refresh_state_locked()
             except WorkbenchError:
                 disk_sha = None
+            contract_check = self._contract_check_snapshot_locked()
+            build = dict(self._build) if self._build is not None else {
+                "status": "IDLE",
+                "stale": False,
+                "initiating_sha256": None,
+                "target_pptx": None,
+                "target_evidence": None,
+                "result": None,
+                "diagnostics": [],
+            }
             payload: dict[str, Any] = {
                 "source_path": str(self.source_path),
                 "asset_root": str(self.asset_root),
@@ -310,14 +328,216 @@ class WorkbenchDocument:
                 "draft_sha256": self._draft_sha256,
                 "disk_sha256": disk_sha,
                 "state": self._state.value,
-                # Save is deliberately not a Contract check or promotion.
-                "contract_status": "UNKNOWN",
+                "contract_status": contract_check["status"],
+                "author_status": self._author_status_locked(
+                    disk_sha=disk_sha,
+                    contract_status=contract_check["status"],
+                ),
+                "contract_check": contract_check,
+                "build": build,
             }
             if include_text:
                 payload["text"] = self._draft_text
             if self._last_error is not None:
                 payload["error"] = dict(self._last_error)
             return payload
+
+    def _contract_check_snapshot_locked(self) -> dict[str, Any]:
+        if self._contract_check is None:
+            return {
+                "status": "UNKNOWN",
+                "checked_sha256": None,
+                "stale": False,
+                "diagnostics": [],
+                "contract": None,
+            }
+        record = dict(self._contract_check)
+        stale = record.get("checked_sha256") != self._draft_sha256
+        record["stale"] = stale
+        record["status"] = "STALE" if stale else record.get("result_status", "UNKNOWN")
+        return record
+
+    def _author_status_locked(self, *, disk_sha: str | None, contract_status: str) -> str:
+        if (
+            disk_sha == self._source_sha256 == self._draft_sha256
+            and contract_status == "PASS"
+        ):
+            return "AUTHOR"
+        return "CANDIDATE"
+
+    def check(self, text: str | None = None) -> dict[str, Any]:
+        """Check the current draft through the file checker's text seam."""
+        with self._lock:
+            if text is not None:
+                if not isinstance(text, str):
+                    raise WorkbenchError("invalid_draft", "Check text must be a JSON string")
+                self.set_draft(text)
+            checked_sha256 = self._draft_sha256
+            previous_state = self._state
+            self._state = WorkbenchState.CHECKING
+            try:
+                report = check_contract_text(
+                    self._draft_text,
+                    self.source_path,
+                    "author",
+                    base_dir=self.asset_root,
+                )
+            except (OSError, UnicodeError, TypeError, ValueError) as exc:
+                self._state = WorkbenchState.ERROR
+                self._last_error = {"code": "check_failed", "message": str(exc)}
+                raise WorkbenchError("check_failed", str(exc)) from exc
+            diagnostics = tuple(_diagnostic_from_contract(item) for item in report.diagnostics)
+            check_envelope = result(
+                "check",
+                report.status,
+                diagnostics=diagnostics,
+                data={"contract": report.as_dict()},
+            ).as_dict()
+            self._contract_check = {
+                **check_envelope,
+                "checked_sha256": checked_sha256,
+                "result_status": report.status,
+                "stale": False,
+                "diagnostics": check_envelope["diagnostics"],
+                # Source ranges belong to the later Preview/source-map slice.
+                # Until that reliable seam exists, diagnostics remain visible
+                # by Contract source_object but are explicitly unmapped.
+                "source_navigation": [
+                    {
+                        "source_object": item.source_object,
+                        "status": "unmapped",
+                    }
+                    for item in diagnostics
+                ],
+                "contract": report.as_dict(),
+            }
+            self._last_error = None
+            if self._build is None or self._build.get("status") != "BUILDING":
+                self._state = previous_state if previous_state != WorkbenchState.CHECKING else (
+                    WorkbenchState.CLEAN
+                    if self._draft_text == self._source_text
+                    else WorkbenchState.DIRTY
+                )
+            return self._contract_check_snapshot_locked()
+
+    def build_readiness(self) -> dict[str, Any]:
+        """Return the hash-bound gates required before Build Revision."""
+        with self._lock:
+            disk_sha = self._refresh_state_locked()
+            check = self._contract_check_snapshot_locked()
+            diagnostics: list[dict[str, Any]] = []
+            reasons: list[str] = []
+            if self._draft_sha256 != self._source_sha256:
+                reasons.append("DIRTY")
+                diagnostics.append(
+                    {
+                        "code": "dirty_draft",
+                        "severity": "error",
+                        "message": "Build Revision requires an explicit Save for the current draft.",
+                        "blocking": True,
+                        "remediation": "Save the current Workbench draft, then rerun Build Revision.",
+                    }
+                )
+            if disk_sha != self._source_sha256:
+                reasons.append("CONFLICT")
+                diagnostics.append(
+                    {
+                        "code": "source_conflict",
+                        "severity": "error",
+                        "message": "The source changed on disk after this Workbench loaded it.",
+                        "blocking": True,
+                        "remediation": "Reopen the source after reconciling the external change.",
+                    }
+                )
+            if check["status"] == "STALE" or check["checked_sha256"] is None:
+                reasons.append("STALE_CHECK")
+                diagnostics.append(
+                    {
+                        "code": "stale_contract_check",
+                        "severity": "error",
+                        "message": "Build Revision requires Contract PASS for the exact saved SHA-256.",
+                        "blocking": True,
+                        "remediation": "Run Check for the current draft and save that exact text before building.",
+                    }
+                )
+            elif check["result_status"] != "PASS":
+                reasons.append("CONTRACT_BLOCK")
+                diagnostics.extend(check["diagnostics"])
+            if self._build is not None and self._build.get("status") == "BUILDING":
+                reasons.append("BUILDING")
+                diagnostics.append(
+                    {
+                        "code": "build_in_progress",
+                        "severity": "error",
+                        "message": "A Workbench Build Revision is already running.",
+                        "blocking": True,
+                    }
+                )
+            return {
+                "ready": not diagnostics,
+                "reasons": reasons,
+                "diagnostics": diagnostics,
+                "saved_sha256": self._source_sha256,
+                "draft_sha256": self._draft_sha256,
+                "disk_sha256": disk_sha,
+                "check": check,
+            }
+
+    def begin_build(self, initiating_sha256: str, target_pptx: Path, target_evidence: Path) -> None:
+        with self._lock:
+            self._build = {
+                "status": "BUILDING",
+                "stale": False,
+                "initiating_sha256": initiating_sha256,
+                "target_pptx": str(target_pptx),
+                "target_evidence": str(target_evidence),
+                "result": None,
+                "diagnostics": [],
+            }
+            self._state = WorkbenchState.BUILDING
+            self._last_error = None
+
+    def finish_build(
+        self,
+        build_result: CommandResult,
+        *,
+        initiating_sha256: str,
+        target_pptx: Path,
+        target_evidence: Path,
+    ) -> dict[str, Any]:
+        with self._lock:
+            try:
+                disk_sha = self._disk_sha256_locked()
+            except WorkbenchError:
+                disk_sha = None
+            successful = build_result.status in {"PASS", "PASS_WITH_FINDINGS", "VISUAL_REVIEW_REQUIRED"}
+            stale = successful and (
+                disk_sha != initiating_sha256 or self._draft_sha256 != initiating_sha256
+            )
+            status = "STALE" if successful and stale else build_result.status
+            self._build = {
+                "status": status,
+                "stale": stale,
+                "initiating_sha256": initiating_sha256,
+                "current_draft_sha256": self._draft_sha256,
+                "current_disk_sha256": disk_sha,
+                "target_pptx": str(target_pptx),
+                "target_evidence": str(target_evidence),
+                "artifact_pair_complete": (
+                    successful and target_pptx.is_file() and target_evidence.is_dir()
+                ),
+                "result": build_result.as_dict(),
+                "diagnostics": [item.as_dict() for item in build_result.diagnostics],
+            }
+            if stale:
+                self._state = WorkbenchState.STALE
+            elif build_result.status == "ERROR":
+                self._state = WorkbenchState.ERROR
+            elif self._draft_text == self._source_text:
+                self._state = WorkbenchState.SAVED
+            else:
+                self._state = WorkbenchState.DIRTY
+            return dict(self._build)
 
     def save(self, patch: SourcePatch) -> dict[str, Any]:
         expected = _validate_sha(patch.expected_sha256, "expected_sha256")
@@ -410,28 +630,32 @@ class WorkbenchStartup:
     session_id: str
     source_path: Path
     source_sha256: str
+    output_root: Path | None = None
 
     @property
     def session_token(self) -> str:
         return self.token
 
     def as_result(self) -> CommandResult:
+        data: dict[str, Any] = {
+            "ready": True,
+            "lifecycle": "running",
+            "host": self.host,
+            "port": self.port,
+            "url": self.url,
+            "session_id": self.session_id,
+            "session_token": self.token,
+            "source_path": str(self.source_path),
+            "source_sha256": self.source_sha256,
+            "browser_opened": False,
+        }
+        if self.output_root is not None:
+            data["output_root"] = str(self.output_root)
         return result(
             "workbench",
             "PASS",
             artifacts={"source": Artifact(self.source_path, self.source_sha256)},
-            data={
-                "ready": True,
-                "lifecycle": "running",
-                "host": self.host,
-                "port": self.port,
-                "url": self.url,
-                "session_id": self.session_id,
-                "session_token": self.token,
-                "source_path": str(self.source_path),
-                "source_sha256": self.source_sha256,
-                "browser_opened": False,
-            },
+            data=data,
         )
 
 
@@ -496,13 +720,25 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _document_response(self, *, ok: bool = True, error: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def _document_response(
+        self,
+        *,
+        ok: bool = True,
+        error: Mapping[str, Any] | None = None,
+        check: Mapping[str, Any] | None = None,
+        build: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "ok": ok,
             "session_id": self.session.session_id,
+            "output_root": str(self.session.output_root),
             "document": self.session.document.snapshot(),
             "recovery": self.session.document.recovery_summary(),
         }
+        if check is not None:
+            payload["check"] = dict(check)
+        if build is not None:
+            payload["build"] = dict(build)
         if error is not None:
             payload["error"] = dict(error)
         return payload
@@ -531,6 +767,12 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
             return json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise WorkbenchError("invalid_request", "Request body must be one UTF-8 JSON document") from exc
+
+    def _read_optional_json(self) -> Any:
+        """Accept an empty body for actions that operate on the current draft."""
+        if self.headers.get("Content-Length") in {None, "0"}:
+            return {}
+        return self._read_json()
 
     def _serve_index(self) -> None:
         body = INDEX_HTML.encode("utf-8")
@@ -600,6 +842,40 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
         if not self._authorized(mutating=True):
             return
         try:
+            if parsed.path == "/api/check":
+                payload = self._read_optional_json()
+                if payload is not None and not isinstance(payload, dict):
+                    raise WorkbenchError("invalid_check", "Check request must be a JSON object")
+                text = payload.get("text") if isinstance(payload, dict) else None
+                check = self.session.document.check(text)
+                self._json(self._document_response(check=check))
+                return
+            if parsed.path == "/api/build":
+                payload = self._read_optional_json()
+                if not isinstance(payload, dict):
+                    raise WorkbenchError("invalid_build", "Build request must be a JSON object")
+                if "output" in payload or "output_pptx" in payload:
+                    raise WorkbenchError(
+                        "invalid_build",
+                        "Build Revision output is session-managed; browser output paths are not accepted.",
+                    )
+                build = self.session.build_revision()
+                if not build.get("accepted", False):
+                    reasons = ", ".join(str(item) for item in build.get("reasons", []))
+                    self._json(
+                        self._document_response(
+                            ok=False,
+                            error={
+                                "code": "build_blocked",
+                                "message": f"Build Revision is blocked: {reasons or 'unknown reason'}.",
+                            },
+                            build=build,
+                        ),
+                        HTTPStatus.CONFLICT,
+                    )
+                else:
+                    self._json(self._document_response(build=build))
+                return
             if parsed.path == "/api/draft":
                 payload = self._read_json()
                 if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
@@ -659,8 +935,9 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
 class WorkbenchSession:
     """Own one source path, token, draft, HTTP lifecycle, and recovery root."""
 
-    def __init__(self, document: WorkbenchDocument) -> None:
+    def __init__(self, document: WorkbenchDocument, output_root: Path | None = None) -> None:
         self.document = document
+        self.output_root = output_root or document.source_path.parent / ".officecli-workbench"
         self.token = secrets.token_urlsafe(32)
         self.session_id = secrets.token_urlsafe(18)
         self._server: _WorkbenchHTTPServer | None = None
@@ -668,6 +945,7 @@ class WorkbenchSession:
         self._serve_thread: threading.Thread | None = None
         self._running = False
         self._lock = threading.RLock()
+        self._build_lock = threading.Lock()
 
     @classmethod
     def open(
@@ -675,8 +953,24 @@ class WorkbenchSession:
         source_path: str | Path,
         *,
         recovery_root: str | Path | None = None,
+        output_root: str | Path | None = None,
     ) -> "WorkbenchSession":
-        return cls(WorkbenchDocument.open(source_path, recovery_root=recovery_root))
+        document = WorkbenchDocument.open(source_path, recovery_root=recovery_root)
+        root = (
+            Path(output_root).expanduser().resolve()
+            if output_root is not None
+            else document.source_path.parent / ".officecli-workbench"
+        )
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise WorkbenchError(
+                "invalid_output",
+                f"Cannot create Workbench output root: {root}: {exc}",
+            ) from exc
+        if not root.is_dir():
+            raise WorkbenchError("invalid_output", f"Workbench output root is not a directory: {root}")
+        return cls(document, root)
 
     @property
     def is_running(self) -> bool:
@@ -688,6 +982,78 @@ class WorkbenchSession:
         if self._startup is None:
             raise WorkbenchError("session_not_started", "Workbench session has not started")
         return self._startup
+
+    def _next_revision_target(self) -> tuple[Path, Path]:
+        stem = self.document.source_path.stem or "workbench"
+        for revision in range(1, 10000):
+            output = self.output_root / f"{stem}-r{revision:02d}.pptx"
+            evidence = output.with_suffix(".evidence")
+            if not output.exists() and not evidence.exists():
+                return output, evidence
+        raise WorkbenchError(
+            "revision_exhausted",
+            f"No free Workbench Build Revision target remains under {self.output_root}.",
+        )
+
+    def build_revision(self) -> dict[str, Any]:
+        """Run the existing Author build for one hash-bound saved revision."""
+        if not self._build_lock.acquire(blocking=False):
+            return {
+                "accepted": False,
+                "status": "BLOCK",
+                "reasons": ["BUILDING"],
+                "diagnostics": [
+                    {
+                        "code": "build_in_progress",
+                        "severity": "error",
+                        "message": "A Workbench Build Revision is already running.",
+                        "blocking": True,
+                    }
+                ],
+            }
+        try:
+            readiness = self.document.build_readiness()
+            if not readiness["ready"]:
+                return {
+                    "accepted": False,
+                    "status": "BLOCK",
+                    "reasons": readiness["reasons"],
+                    "diagnostics": readiness["diagnostics"],
+                    "saved_sha256": readiness["saved_sha256"],
+                    "draft_sha256": readiness["draft_sha256"],
+                    "disk_sha256": readiness["disk_sha256"],
+                }
+            target_pptx, target_evidence = self._next_revision_target()
+            initiating_sha256 = str(readiness["saved_sha256"])
+            self.document.begin_build(initiating_sha256, target_pptx, target_evidence)
+            try:
+                build_result = asyncio.run(
+                    build_author_html(self.document.source_path, target_pptx)
+                )
+            except Exception as exc:  # pragma: no cover - defensive runtime boundary
+                build_result = result(
+                    "build",
+                    "ERROR",
+                    diagnostics=(
+                        Diagnostic(
+                            code="workbench_build_failed",
+                            severity="error",
+                            message=str(exc),
+                            blocking=True,
+                            remediation="Inspect the build diagnostic and retry Build Revision.",
+                            recheck="officecli-html-to-pptx doctor --json",
+                        ),
+                    ),
+                )
+            finished = self.document.finish_build(
+                build_result,
+                initiating_sha256=initiating_sha256,
+                target_pptx=target_pptx,
+                target_evidence=target_evidence,
+            )
+            return {"accepted": True, **finished}
+        finally:
+            self._build_lock.release()
 
     def start(self, *, port: int = 0) -> WorkbenchStartup:
         with self._lock:
@@ -711,6 +1077,7 @@ class WorkbenchSession:
                 session_id=self.session_id,
                 source_path=self.document.source_path,
                 source_sha256=self.document.source_sha256,
+                output_root=self.output_root,
             )
             return self._startup
 

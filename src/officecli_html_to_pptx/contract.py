@@ -2207,21 +2207,37 @@ def _check_officehtml(
                 )
 
 
-def check_contract(input_html: str | Path, profile: str = "author") -> ContractReport:
-    """Check one HTML file against the explicit ``author`` or ``officehtml`` profile."""
+def check_contract_text(
+    source_text: str,
+    logical_path: str | Path,
+    profile: str = "author",
+    *,
+    base_dir: str | Path | None = None,
+) -> ContractReport:
+    """Check UTF-8 HTML text through the same Contract implementation as files.
+
+    ``logical_path`` is retained for diagnostic identity while ``base_dir``
+    controls relative-resource validation.  The Workbench uses this seam for
+    an in-memory draft so it never has to write a temporary compiler source.
+    """
     if profile not in SUPPORTED_PROFILES:
         raise ValueError(
             f"Unsupported contract profile {profile!r}; choose 'author' or 'officehtml'."
         )
-    path = Path(input_html).expanduser()
-    if not path.is_file():
-        raise FileNotFoundError(f"HTML input does not exist: {path}")
+    if not isinstance(source_text, str):
+        raise TypeError("HTML source text must be a string")
+    path = Path(logical_path).expanduser()
+    resource_root = (
+        Path(base_dir).expanduser()
+        if base_dir is not None
+        else path.parent
+    )
     try:
         document = _lxml_html.fromstring(
-            path.read_text(encoding="utf-8"),
+            source_text,
             parser=_officehtml_parser(),
         )
-    except (OSError, UnicodeError, ValueError) as exc:
+    except (UnicodeError, ValueError) as exc:
         raise ValueError(f"Unable to parse HTML input {path}: {exc}") from exc
     findings: list[ContractDiagnostic] = []
     classifications: list[dict[str, Any]] = []
@@ -2229,7 +2245,7 @@ def check_contract(input_html: str | Path, profile: str = "author") -> ContractR
         # Localized regions are atomic authored objects.  Run their static
         # policy gate before the ordinary Author discovery walk so unsafe
         # descendants cannot be hidden by the atomic-owner skip below.
-        for finding in validate_localized_document(document, base_dir=path.parent):
+        for finding in validate_localized_document(document, base_dir=resource_root):
             _emit(
                 findings,
                 "author",
@@ -2241,6 +2257,18 @@ def check_contract(input_html: str | Path, profile: str = "author") -> ContractR
     else:
         _check_officehtml(document, findings, classifications)
     return ContractReport(str(path), profile, tuple(findings), tuple(classifications))
+
+
+def check_contract(input_html: str | Path, profile: str = "author") -> ContractReport:
+    """Check one HTML file against the explicit ``author`` or ``officehtml`` profile."""
+    path = Path(input_html).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"HTML input does not exist: {path}")
+    try:
+        source_text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"Unable to read HTML input {path}: {exc}") from exc
+    return check_contract_text(source_text, path, profile, base_dir=path.parent)
 
 
 __all__ = [
@@ -2294,6 +2322,7 @@ __all__ = [
     "shape_geometry_surface",
     "list_surface",
     "check_contract",
+    "check_contract_text",
 ]
 
 
