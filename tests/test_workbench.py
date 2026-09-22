@@ -761,6 +761,134 @@ def test_workbench_build_marks_concurrent_draft_edit_stale_without_rebinding_art
         _stop(session, thread)
 
 
+def test_workbench_rejects_save_while_building_and_preserves_build_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "author.html"
+    source.write_text(
+        "<html><head><style>.slide{width:1920px;height:1080px}</style></head>"
+        "<body><div class='slide'><p>Author</p></div></body></html>",
+        encoding="utf-8",
+    )
+    source_text = source.read_text(encoding="utf-8")
+    edited_text = source_text.replace("Author", "Edited while building")
+    initiating_bytes = source.read_bytes()
+    initiating_sha = _sha256_bytes(initiating_bytes)
+    output_root = tmp_path / "fixed-output"
+    build_started = threading.Event()
+    release_build = threading.Event()
+    delayed_input_sha: list[str] = []
+
+    async def fake_build(input_html: str | Path, output_pptx: str | Path):
+        input_path = Path(input_html)
+        output_path = Path(output_pptx)
+        build_started.set()
+        assert release_build.wait(timeout=5)
+        delayed_input_sha.append(_sha256_bytes(input_path.read_bytes()))
+        output_path.write_bytes(b"fake pptx")
+        output_path.with_suffix(".evidence").mkdir()
+        return result(
+            "build",
+            "VISUAL_REVIEW_REQUIRED",
+            artifacts={
+                "pptx": Artifact(output_path, _sha256_bytes(output_path.read_bytes())),
+                "evidence": Artifact(output_path.with_suffix(".evidence")),
+            },
+            data={
+                "author_html": {
+                    "path": str(input_path),
+                    "sha256": delayed_input_sha[-1],
+                }
+            },
+        )
+
+    monkeypatch.setattr("officecli_html_to_pptx.workbench.build_author_html", fake_build)
+    session, startup, thread = _start(
+        source,
+        tmp_path / "recovery",
+        output_root=output_root,
+    )
+    build_response: list[tuple[int, dict]] = []
+    try:
+        status, checked = _request(
+            startup,
+            "POST",
+            "/api/check",
+            token=startup.token,
+            session_id=startup.session_id,
+            payload={"text": source_text},
+        )
+        assert status == 200
+        assert checked["document"]["source_sha256"] == initiating_sha
+
+        request_thread = threading.Thread(
+            target=lambda: build_response.append(
+                _request(
+                    startup,
+                    "POST",
+                    "/api/build",
+                    token=startup.token,
+                    session_id=startup.session_id,
+                    payload=None,
+                )
+            ),
+            daemon=True,
+        )
+        request_thread.start()
+        assert build_started.wait(timeout=5)
+
+        status, edited = _request(
+            startup,
+            "POST",
+            "/api/draft",
+            token=startup.token,
+            session_id=startup.session_id,
+            payload={"text": edited_text},
+        )
+        assert status == 200
+        assert edited["document"]["state"] == "DIRTY"
+
+        status, rejected = _request(
+            startup,
+            "POST",
+            "/api/save",
+            token=startup.token,
+            session_id=startup.session_id,
+            payload={"expected_sha256": initiating_sha, "text": edited_text},
+        )
+        assert status == 409
+        assert rejected["error"]["code"] == "build_in_progress"
+        assert rejected["document"]["text"] == edited_text
+        assert source.read_bytes() == initiating_bytes
+
+        release_build.set()
+        request_thread.join(timeout=5)
+        assert not request_thread.is_alive()
+        status, built = build_response[0]
+        assert status == 200
+        assert delayed_input_sha == [initiating_sha]
+        assert built["build"]["status"] == "STALE"
+        assert built["build"]["stale"] is True
+        assert built["build"]["initiating_sha256"] == initiating_sha
+        assert built["build"]["result"]["data"]["author_html"]["sha256"] == initiating_sha
+
+        status, saved = _request(
+            startup,
+            "POST",
+            "/api/save",
+            token=startup.token,
+            session_id=startup.session_id,
+            payload={"expected_sha256": initiating_sha, "text": edited_text},
+        )
+        assert status == 200
+        assert saved["document"]["source_sha256"] == _sha256_bytes(edited_text.encode("utf-8"))
+        assert source.read_text(encoding="utf-8") == edited_text
+    finally:
+        release_build.set()
+        _stop(session, thread)
+
+
 def test_workbench_build_failure_surfaces_diagnostics_without_artifact_pair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -248,7 +248,12 @@ class WorkbenchDocument:
     def record_error(self, code: str, message: str) -> None:
         """Expose a failed public request as the document's Error state."""
         with self._lock:
-            self._set_error_locked(code, message)
+            if code == "build_in_progress":
+                # A rejected Save during Build is actionable but does not make
+                # the source or the running build erroneous.
+                self._last_error = {"code": code, "message": message}
+            else:
+                self._set_error_locked(code, message)
 
     def _refresh_state_locked(self) -> str | None:
         disk_sha = self._disk_sha256_locked()
@@ -544,6 +549,11 @@ class WorkbenchDocument:
         if not isinstance(patch.text, str):
             raise WorkbenchError("invalid_draft", "Source Patch text must be a string")
         with self._lock:
+            if self._build is not None and self._build.get("status") == "BUILDING":
+                raise WorkbenchError(
+                    "build_in_progress",
+                    "Save is unavailable while Build Revision is running; the draft was preserved.",
+                )
             self._state = WorkbenchState.SAVING
             self._last_error = None
             try:
@@ -925,6 +935,8 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.BAD_REQUEST
             if exc.code == "recovery_unavailable":
                 status = HTTPStatus.NOT_FOUND
+            elif exc.code == "build_in_progress":
+                status = HTTPStatus.CONFLICT
             self._json_error(exc, status)
         except (OSError, UnicodeError, ValueError, TypeError) as exc:
             error = WorkbenchError("request_failed", str(exc))
