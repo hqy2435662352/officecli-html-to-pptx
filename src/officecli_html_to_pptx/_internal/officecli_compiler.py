@@ -18,7 +18,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from html import escape as _html_escape
 from pathlib import Path
@@ -177,6 +177,65 @@ class _TableCellIR:
 
 
 @dataclass(frozen=True)
+class LocalizedFallbackSpec:
+    """Private typed boundary for one explicit localized raster region."""
+
+    source_identity: str
+    source_path: str
+    source_slide: int
+    bounds_pt: tuple[float, float, float, float]
+    asset_mime: str
+    asset_sha256: str
+    pixel_width: int
+    pixel_height: int
+    density: float
+    density_verified: bool
+    nonblank: bool
+    excluded_descendant_count: int
+    opt_in_reason: str
+    approved: bool
+    isolated: bool
+    isolation: str
+    isolation_evidence: dict[str, Any]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source_identity": self.source_identity,
+            "source_path": self.source_path,
+            "slide": self.source_slide,
+            "bounds_pt": list(self.bounds_pt),
+            "asset": {
+                "mime": self.asset_mime,
+                "sha256": self.asset_sha256,
+                "pixel_dimensions": [self.pixel_width, self.pixel_height],
+                "pixel_width": self.pixel_width,
+                "pixel_height": self.pixel_height,
+                "density": self.density,
+                "density_verified": self.density_verified,
+            },
+            "asset_mime": self.asset_mime,
+            "asset_sha256": self.asset_sha256,
+            "pixel_dimensions": [self.pixel_width, self.pixel_height],
+            "density": self.density,
+            "density_verified": self.density_verified,
+            "paint": {
+                "nonblank": self.nonblank,
+                "blank": not self.nonblank,
+            },
+            "excluded_descendant_count": self.excluded_descendant_count,
+            "opt_in_reason": self.opt_in_reason,
+            "reason": "explicit_author_opt_in" if self.approved else self.opt_in_reason,
+            "approved": self.approved,
+            "isolation": {
+                "isolated": self.isolated,
+                "method": self.isolation,
+                "evidence": dict(self.isolation_evidence),
+            },
+            "isolation_evidence": dict(self.isolation_evidence),
+        }
+
+
+@dataclass(frozen=True)
 class _ObjectIR:
     kind: str
     name: str
@@ -210,6 +269,17 @@ class _ObjectIR:
         }
         if self.metadata and self.kind != "table":
             manifest["metadata"] = dict(self.metadata)
+        localized = (self.metadata or {}).get("localized_fallback")
+        if isinstance(localized, Mapping):
+            manifest.update(
+                {
+                    "source_identity": localized.get("source_identity"),
+                    "disposition": "rasterized",
+                    "editable": False,
+                    "compiled_kind": self.kind,
+                    "localized_fallback": dict(localized),
+                }
+            )
         if self.kind == "table":
             manifest.update(
                 {
@@ -527,7 +597,7 @@ def _paragraph_line_spacing(
     pixels = re.search(r"(?:px|pt)\s*$", str(raw_line_height).strip(), re.IGNORECASE)
     font_size = element_size if pixels else (run_size or element_size)
     # The keyword arguments remain accepted for callers from the previous
-    # compiler surface, but Contract 1.2 has one line-height rule for every
+    # compiler surface, but Contract 1.3 has one line-height rule for every
     # native paragraph: positive px is divided by the element font size with
     # no content- or profile-specific projection.
     return _line_spacing(
@@ -1685,7 +1755,7 @@ def _border_radius(element: dict[str, Any]) -> float:
     return max(0.0, float(match.group(0))) if match else 0.0
 
 
-# The preset geometries the Contract 1.2 Author shape surface carries as
+# The preset geometries the Contract 1.3 Author shape surface carries as
 # PowerPoint presets rather than inferring from CSS.  The authority lives in the
 # Contract module so the compiler and public capability manifest cannot drift.
 DECLARED_SHAPE_GEOMETRIES = SHAPE_GEOMETRY_TOKEN_SET
@@ -1703,7 +1773,7 @@ def _is_fifty_percent_radius(element: dict[str, Any]) -> bool:
 
 
 def _ellipse_inference_allowed(element: dict[str, Any]) -> bool:
-    """Apply the Contract 1.2 tolerance for CSS 50% ellipse inference."""
+    """Apply the Contract 1.3 tolerance for CSS 50% ellipse inference."""
     if not _is_fifty_percent_radius(element):
         return False
     width = _number(element.get("width"))
@@ -2312,7 +2382,7 @@ def _table_cell_paragraph_props(
     if any(props != first for props in projected[1:]):
         raise _diagnostic(
             "unsupported_table_paragraph_format",
-            f"Table cell paragraph properties differ on source slide {source_slide}, {source_object}; OfficeCLI Contract 1.2 exposes these properties at cell scope.",
+            f"Table cell paragraph properties differ on source slide {source_slide}, {source_object}; OfficeCLI Contract 1.3 exposes these properties at cell scope.",
             source_slide,
             source_object,
         )
@@ -2769,6 +2839,138 @@ def _lower_slide(
         inherited_backdrop: tuple[int, int, int],
     ) -> None:
         tag = str(element.get("tag", "element") or "element").lower()
+        localized = element.get("localizedFallback")
+        if isinstance(localized, dict):
+            localized_source_object = str(
+                localized.get("sourcePath") or source_object
+            ).strip() or source_object
+            bounds = _bounds(element, scale_x, scale_y)
+            if bounds[2] <= 0 or bounds[3] <= 0:
+                raise _diagnostic(
+                    "invalid_localized_fallback_geometry",
+                    f"Invalid localized fallback geometry on source slide {source_slide}, {localized_source_object}: width and height must be positive.",
+                    source_slide,
+                    localized_source_object,
+                )
+            capture_failures = localized.get("captureFailureCodes")
+            if isinstance(capture_failures, (list, tuple)) and capture_failures:
+                failures = ", ".join(
+                    str(item) for item in capture_failures if str(item).strip()
+                )
+                raise _diagnostic(
+                    "unresolved_localized_fallback_capture",
+                    f"Localized fallback capture for {localized_source_object} failed safety audit: {failures or 'unknown failure'}.",
+                    source_slide,
+                    localized_source_object,
+                )
+            source_identity = str(
+                localized.get("sourceIdentity")
+                or localized.get("sourcePath")
+                or source_object
+            ).strip() or source_object
+            source = element.get("src")
+            if not isinstance(source, str) or not source.startswith("data:image/png"):
+                raise _diagnostic(
+                    "unresolved_localized_fallback_asset",
+                    f"Localized fallback {source_identity!r} has no deterministic PNG asset.",
+                    source_slide,
+                    localized_source_object,
+                )
+            mime, data = _decode_picture_source(
+                element, source_slide, localized_source_object
+            )
+            actual_hash = hashlib.sha256(data).hexdigest()
+            expected_hash = str(localized.get("assetSha256") or "")
+            if mime != "image/png" or not expected_hash or actual_hash != expected_hash:
+                raise _diagnostic(
+                    "unresolved_localized_fallback_asset",
+                    f"Localized fallback {source_identity!r} has an invalid or unstable PNG asset.",
+                    source_slide,
+                    localized_source_object,
+                )
+            pixel_width, pixel_height = _intrinsic_dimensions(mime, data)
+            declared_width = int(localized.get("pixelWidth") or 0)
+            declared_height = int(localized.get("pixelHeight") or 0)
+            if (
+                declared_width != int(pixel_width)
+                or declared_height != int(pixel_height)
+                or float(localized.get("density") or 0) != 2.0
+                or not localized.get("nonblank")
+                or not localized.get("densityVerified")
+                or not localized.get("isolated")
+            ):
+                raise _diagnostic(
+                    "unresolved_localized_fallback_asset",
+                    f"Localized fallback {source_identity!r} lacks the required 2 pixels-per-point isolated PNG proof.",
+                    source_slide,
+                    localized_source_object,
+                )
+            isolation_evidence = localized.get("isolationEvidence")
+            if not isinstance(isolation_evidence, dict):
+                capture_audit = localized.get("captureAudit")
+                isolation_evidence = (
+                    capture_audit.get("isolation_evidence", {})
+                    if isinstance(capture_audit, dict)
+                    else {}
+                )
+            spec = LocalizedFallbackSpec(
+                source_identity=source_identity,
+                source_path=localized_source_object,
+                source_slide=source_slide,
+                bounds_pt=bounds,
+                asset_mime=mime,
+                asset_sha256=actual_hash,
+                pixel_width=int(pixel_width),
+                pixel_height=int(pixel_height),
+                density=2.0,
+                density_verified=bool(localized.get("densityVerified")),
+                nonblank=bool(localized.get("nonblank")),
+                excluded_descendant_count=int(
+                    localized.get("excludedDescendantCount") or 0
+                ),
+                opt_in_reason=str(
+                    localized.get("optInReason") or "explicit-author-opt-in"
+                ),
+                approved=str(
+                    localized.get("optInReason") or "explicit-author-opt-in"
+                )
+                == "explicit-author-opt-in",
+                isolated=True,
+                isolation=str(
+                    localized.get("isolation") or "fresh-page-single-region"
+                ),
+                isolation_evidence=dict(isolation_evidence),
+            )
+            picture_props, fallback_props = _picture_props(
+                element,
+                bounds,
+                source_slide,
+                localized_source_object,
+            )
+            picture_metadata = {
+                "mime": mime,
+                "source_fingerprint": actual_hash,
+                "content_fingerprint": actual_hash,
+                "intrinsic_size": [pixel_width, pixel_height],
+                "object_fit": "fill",
+                "bounds_pt": list(bounds),
+                "fitting": {},
+                "localized_fallback": spec.as_dict(),
+            }
+            add_object(
+                element,
+                localized_source_object,
+                "picture",
+                "",
+                picture_props,
+                bounds,
+                fallback_props,
+                metadata={
+                    "picture": picture_metadata,
+                    "localized_fallback": spec.as_dict(),
+                },
+            )
+            return
         if element.get("isChart"):
             chart_name = f"slide-{source_slide:03d}-chart-{len(result.objects) + 1:03d}"
             result.objects.append(
@@ -3151,7 +3353,7 @@ def _batch_for_slides(
                     if cell.paragraphs:
                         cell_path = f"{table_path}/tr[{row_index}]/tc[{column_index}]"
                         # OfficeCLI's table-cell setter is the public paragraph
-                        # formatting surface for Contract 1.2: align,
+                        # formatting surface for Contract 1.3: align,
                         # linespacing, spacebefore, spaceafter, and direction
                         # fan out to every paragraph in the cell.  Those
                         # properties were projected into ``cell.props`` above;
@@ -3253,12 +3455,16 @@ def _failure_from_command(
 def _manifest(slides: Sequence[_SlideIR]) -> dict[str, Any]:
     objects = [obj.as_manifest() for slide in slides for obj in slide.objects]
     counts: dict[str, int] = {}
+    native_counts: dict[str, int] = {}
     for obj in objects:
         counts[obj["kind"]] = counts.get(obj["kind"], 0) + 1
+        if obj.get("disposition") != "rasterized":
+            native_counts[obj["kind"]] = native_counts.get(obj["kind"], 0) + 1
     return {
         "slide_count": len(slides),
         "slide_size_pt": {"width": SLIDE_WIDTH_PT, "height": SLIDE_HEIGHT_PT},
         "object_kind_counts": counts,
+        "native_object_kind_counts": native_counts,
         "objects": objects,
     }
 
@@ -3303,7 +3509,7 @@ async def compile_officecli(
         raise _contract_failure(contract)
 
     # This is intentionally before Chromium measurement and before the first
-    # temporary PPTX is created.  Contract 1.2 depends on OfficeCLI 1.0.151's
+    # temporary PPTX is created.  Contract 1.3 depends on OfficeCLI 1.0.151's
     # native line-break and merge behavior and must not leave a misleading
     # partial artifact when an older runtime is selected.
     runtime_snapshot = _require_officecli_runtime()
@@ -3432,5 +3638,6 @@ __all__ = [
     "CompilationDiagnostic",
     "OfficeCLICompilationError",
     "OfficeCLICompilationResult",
+    "LocalizedFallbackSpec",
     "compile_officecli",
 ]

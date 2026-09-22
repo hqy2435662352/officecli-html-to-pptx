@@ -1546,7 +1546,7 @@ def test_no_public_command_manifest_entry_or_version_change_is_added() -> None:
         "finalize",
     )
     assert capabilities["commands"] == list(PUBLIC_COMMANDS)
-    assert PRODUCT_VERSION == "0.5.2"
+    assert PRODUCT_VERSION == "0.5.3"
     # The declared scope is unchanged too: this seam adds no capability claim,
     # and it still does not edit an existing deck.
     assert capabilities["scope"] == {

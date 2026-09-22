@@ -1,4 +1,4 @@
-"""Task-oriented V0.5.2 application operations.
+"""Task-oriented V0.5.3 application operations.
 
 The module is deliberately an orchestration layer, not a second renderer.  It
 owns the public command semantics, the Artifact Pair transaction, and the
@@ -43,6 +43,11 @@ from ._internal.officecli_compiler import (
     OfficeCLICompilationError,
     OfficeCLICompilationResult,
     compile_officecli,
+)
+from ._internal.localized_evidence import (
+    LOCALIZED_DIAGNOSTIC_KEYS,
+    audit_localized_fallbacks,
+    validate_localized_evidence,
 )
 from .protocol import (
     Artifact,
@@ -512,7 +517,7 @@ def _native_slice_evidence(
     validation: Mapping[str, Any] | None = None,
     issues: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Summarize the native-slice evidence required by Contract 1.2."""
+    """Summarize the native-slice evidence required by Contract 1.3."""
 
     capability = author_capability_manifest()
     compiled_objects = [
@@ -590,6 +595,43 @@ def _native_slice_evidence(
             if item.get("kind") == "chart"
         ],
     }
+    localized_fallbacks = {
+        "compiled": [
+            {
+                "name": item.get("name"),
+                "source_slide": item.get("source_slide"),
+                "source_identity": item.get("source_identity"),
+                "source_object": item.get("source_object"),
+                "compiled_kind": item.get("compiled_kind", item.get("kind")),
+                "disposition": item.get("disposition"),
+                "editable": item.get("editable"),
+                "bounds_pt": item.get("bounds_pt", []),
+                "localized_fallback": item.get("localized_fallback", {}),
+            }
+            for item in compiled_objects
+            if item.get("disposition") == "rasterized"
+        ],
+        "readback": [
+            {
+                "name": item.get("name"),
+                "source_slide": item.get("source_slide"),
+                "source_identity": item.get("source_identity"),
+                "compiled_kind": item.get("compiled_kind", item.get("kind")),
+                "disposition": item.get("disposition"),
+                "editable": item.get("editable"),
+                "bounds_pt": item.get("bounds_pt", []),
+                "localized_fallback": item.get("localized_fallback", {}),
+            }
+            for item in readback_objects
+            if item.get("disposition") == "rasterized"
+        ],
+    }
+    readback_native_counts: dict[str, int] = {}
+    for item in readback_objects:
+        if item.get("disposition") != "rasterized":
+            kind = str(item.get("kind", ""))
+            if kind:
+                readback_native_counts[kind] = readback_native_counts.get(kind, 0) + 1
     compiled_chart_count = sum(
         item.get("kind") == "chart" for item in compiled_objects
     )
@@ -599,7 +641,22 @@ def _native_slice_evidence(
     compiler_diagnostics = [
         item.as_dict() for item in compiled.diagnostics
     ]
-    return {
+    localized = audit_localized_fallbacks(compiled.manifest, readback)
+    diagnostics = {
+        "unsupported": sum(
+            item["code"].startswith("unsupported_")
+            for item in compiler_diagnostics
+        ) + int(localized["diagnostics"]["unsupported"]),
+        "unresolved": sum(
+            item["code"].startswith("unresolved_")
+            for item in compiler_diagnostics
+        ) + int(localized["diagnostics"]["unresolved"]),
+        "material_delta": _native_material_delta_count(
+            compiled.manifest, readback
+        ) + int(localized["diagnostics"]["material_delta"]),
+        "compiler": compiler_diagnostics,
+    }
+    evidence = {
         "schema_version": NATIVE_EVIDENCE_SCHEMA_VERSION,
         "product_version": PRODUCT_VERSION,
         "contract_version": CONTRACT_VERSION,
@@ -613,6 +670,7 @@ def _native_slice_evidence(
         "normalized_merge_topology": merge_topology,
         "native_geometry": native_geometry,
         "charts": chart_structure,
+        "localized_fallbacks": localized_fallbacks,
         "validation": dict(validation or {}),
         "issues": dict(issues or {}),
         "counts": {
@@ -621,28 +679,38 @@ def _native_slice_evidence(
             "readback_object_count": len(readback_objects),
             "compiled_object_kind_counts": _manifest_object_counts(compiled.manifest),
             "readback_object_kind_counts": _manifest_object_counts(readback),
+            "compiled_native_object_kind_counts": dict(
+                compiled.manifest.get("native_object_kind_counts", {})
+            ),
+            "readback_native_object_kind_counts": readback_native_counts,
+            "rasterized_object_count": len(localized_fallbacks["compiled"]),
             "chart_counts": {
                 "authored": compiled_chart_count,
                 "compiled": compiled_chart_count,
                 "readback": readback_chart_count,
             },
         },
-        "diagnostics": {
-            "unsupported": sum(
-                item["code"].startswith("unsupported_")
-                for item in compiler_diagnostics
-            ),
-            "unresolved": sum(
-                item["code"].startswith("unresolved_")
-                for item in compiler_diagnostics
-            ),
-            "material_delta": _native_material_delta_count(
-                compiled.manifest, readback
-            ),
-            "compiler": compiler_diagnostics,
-        },
+        "diagnostics": diagnostics,
         "gate3": {"status": "PENDING", "slide_count": int(compiled.slide_count)},
     }
+    if localized["records"]:
+        evidence["localized_fallback"] = localized
+        evidence["counts"].update(
+            {
+                "native_object_count": localized["counts"]["native_object_count"],
+                "native_object_kind_counts": localized["counts"]["native_object_kind_counts"],
+                "native_ratio": localized["counts"]["native_ratio"],
+                "rasterized_count": localized["counts"]["rasterized_count"],
+            }
+        )
+        evidence["diagnostics"].update(
+            {
+                key: int(value)
+                for key, value in localized["diagnostics"].items()
+                if key not in {"unsupported", "unresolved", "material_delta"}
+            }
+        )
+    return evidence
 
 
 def _publish_file(source: Path, target: Path) -> None:
@@ -836,7 +904,12 @@ async def build_author_html(
                 raise RuntimeError(f"OfficeCLI compiler did not create {staged_pptx}")
         except OfficeCLICompilationError as exc:
             diagnostics = _diagnostics_from_compiler(exc.diagnostics)
-            if any(item.code.startswith(("unsupported_", "undecodable_", "invalid_")) for item in exc.diagnostics):
+            if any(
+                item.code.startswith(
+                    ("unsupported_", "undecodable_", "invalid_", "unresolved_")
+                )
+                for item in exc.diagnostics
+            ):
                 return result("build", "BLOCK", diagnostics=diagnostics)
             return result("build", "ERROR", diagnostics=diagnostics)
         except (FileExistsError, OSError, RuntimeError, ValueError) as exc:
@@ -1222,6 +1295,7 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
             "issues.json",
         ):
             _read_json(evidence_path / name, name)
+        manifest = _read_json(evidence_path / "manifest.json", "manifest.json")
         validation = _read_json(evidence_path / "validate.json", "validate.json")
         issues = _read_json(evidence_path / "issues.json", "issues.json")
         if validation.get("status") != "PASS":
@@ -1243,7 +1317,7 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
         if not str(officecli_runtime.get("discovered_version", "")).strip():
             raise ValueError("native-evidence.json must record the actual OfficeCLI runtime")
         if officecli_runtime.get("compatible") is not True:
-            raise ValueError("native-evidence.json OfficeCLI runtime is below the Contract 1.2 floor")
+            raise ValueError("native-evidence.json OfficeCLI runtime is below the Contract 1.3 floor")
         diagnostic_counts = _field_mapping(
             native_evidence.get("diagnostics"), "native evidence diagnostics"
         )
@@ -1252,6 +1326,20 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
                 raise ValueError(
                     f"native-evidence.json {key} must be zero before finalization"
                 )
+        localized_evidence = native_evidence.get("localized_fallback")
+        if localized_evidence is not None:
+            for key in LOCALIZED_DIAGNOSTIC_KEYS:
+                if diagnostic_counts.get(key, 0) != 0:
+                    raise ValueError(
+                        f"native-evidence.json {key} must be zero before finalization"
+                    )
+            localized_errors = validate_localized_evidence(
+                _field_mapping(localized_evidence, "localized fallback evidence"),
+                manifest,
+                readback,
+            )
+            if localized_errors:
+                raise ValueError("; ".join(localized_errors))
         counts = _field_mapping(native_evidence.get("counts"), "native evidence counts")
         if counts.get("readback_object_count") != len(readback.get("objects", []) or []):
             raise ValueError("native-evidence.json readback object count does not match readback.json")
@@ -1277,7 +1365,7 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
         if result_payload.get("product") != {"name": PRODUCT_NAME, "version": PRODUCT_VERSION}:
             raise ValueError("result.json product identity does not match this product")
         if result_payload.get("status") != "VISUAL_REVIEW_REQUIRED":
-            raise ValueError("result.json is not a pending V0.5.2 build")
+            raise ValueError("result.json is not a pending V0.5.3 build")
         build_id = result_payload.get("build_id")
         if not isinstance(build_id, str) or not build_id:
             raise ValueError("result.json must contain a build_id")

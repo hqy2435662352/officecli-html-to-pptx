@@ -8,8 +8,24 @@ the OfficeCLI renderer.
 from __future__ import annotations
 
 import base64
+from io import BytesIO
+import hashlib
+from html import escape as _html_escape
 import logging
+import math
 import os
+from pathlib import Path
+import re
+from urllib.parse import unquote, urlparse
+
+from PIL import Image
+
+from ._internal.localized_capture import (
+    LocalizedRegion,
+    audit_localized_capture,
+    validate_localized_geometry,
+    validate_localized_region_overlap,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +40,89 @@ EXTRACTION_JS = """
     const results = [];
     let _svgCounter = 0;
     let _imageCounter = 0;
+    let _localizedCounter = 0;
+    function authoredSourcePath(slideNumber, slide, element) {
+        const parts = [];
+        let current = element;
+        while (current && current !== slide) {
+            const parent = current.parentElement;
+            if (!parent) break;
+            const position = Array.from(parent.children).indexOf(current) + 1;
+            parts.unshift(`${current.tagName.toLowerCase()}[${position}]`);
+            current = parent;
+        }
+        return `slide[${slideNumber}]` + (parts.length ? '/' + parts.join('/') : '');
+    }
+
+    function hasPositiveCssTime(value) {
+        return String(value || '').split(',').some(item => {
+            const match = item.trim().match(/^(-?(?:\\d*\\.\\d+|\\d+))(ms|s)?$/i);
+            if (!match) return false;
+            return parseFloat(match[1]) > 0;
+        });
+    }
+
+    function localizedComputedSafetyFacts(el, slide, slideNumber) {
+        const animationNodes = [];
+        const transitionNodes = [];
+        const resourceStates = [];
+        const imageStates = [];
+        const nodes = [el, ...Array.from(el.querySelectorAll('*'))];
+        const resourceProperties = [
+            'backgroundImage', 'maskImage', 'webkitMaskImage',
+            'listStyleImage', 'content',
+        ];
+        for (const node of nodes) {
+            const style = getComputedStyle(node);
+            const sourcePath = authoredSourcePath(slideNumber, slide, node);
+            const animationName = String(style.animationName || '').trim();
+            if (animationName && animationName !== 'none') {
+                animationNodes.push({
+                    sourcePath: sourcePath,
+                    animationName: animationName,
+                    animationDuration: String(style.animationDuration || ''),
+                    animationPlayState: String(style.animationPlayState || ''),
+                });
+            }
+            const transitionProperty = String(style.transitionProperty || '').trim();
+            if (
+                transitionProperty
+                && transitionProperty !== 'none'
+                && hasPositiveCssTime(style.transitionDuration)
+            ) {
+                transitionNodes.push({
+                    sourcePath: sourcePath,
+                    transitionProperty: transitionProperty,
+                    transitionDuration: String(style.transitionDuration || ''),
+                });
+            }
+            for (const property of resourceProperties) {
+                const value = String(style[property] || '').trim();
+                if (/url\\s*\\(/i.test(value)) {
+                    resourceStates.push({
+                        sourcePath: sourcePath,
+                        property: property,
+                        value: value,
+                    });
+                }
+            }
+            if (node.tagName && node.tagName.toLowerCase() === 'img') {
+                imageStates.push({
+                    sourcePath: sourcePath,
+                    currentSrc: String(node.currentSrc || node.getAttribute('src') || ''),
+                    complete: Boolean(node.complete),
+                    naturalWidth: Number(node.naturalWidth || 0),
+                    naturalHeight: Number(node.naturalHeight || 0),
+                });
+            }
+        }
+        return {
+            animationNodes: animationNodes,
+            transitionNodes: transitionNodes,
+            resourceStates: resourceStates,
+            imageStates: imageStates,
+        };
+    }
     const INLINE_TAGS = new Set([
         'span','strong','em','b','i','a','code','mark','sub','sup',
         'small','u','s','del','abbr','cite','q','time','var','kbd',
@@ -376,7 +475,7 @@ EXTRACTION_JS = """
         }
     }
 
-    function measureElement(el, slideRect, depth) {
+    function measureElement(el, slide, slideRect, depth, slideNumber) {
         if (depth > 15) return null;
 
         const style = getComputedStyle(el);
@@ -404,6 +503,40 @@ EXTRACTION_JS = """
         if (ownRotation) { el.style.transform = _savedT; }
         const relX = rect.left - slideRect.left;
         const relY = rect.top - slideRect.top;
+
+        // A localized fallback is one authored object. Measure its own
+        // border box, retain only the source facts needed by the capture and
+        // lower it as an atomic node; descendants are intentionally not
+        // visited by the generic object discovery below.
+        const localizedToken = el.getAttribute('data-pptx-rasterize');
+        if (localizedToken !== null) {
+            const localizedId = 'pptx-localized-' + (_localizedCounter++);
+            el.setAttribute('data-pptx-localized-id', localizedId);
+            const sourcePath = authoredSourcePath(slideNumber, slide, el);
+            const explicitId = (el.getAttribute('id') || '').trim();
+            return {
+                tag: el.tagName.toLowerCase(),
+                x: relX,
+                y: relY,
+                width: rect.width,
+                height: rect.height,
+                text: '',
+                children: [],
+                localizedId: localizedId,
+                localizedFallback: {
+                    token: localizedToken,
+                    sourceIdentity: explicitId || sourcePath,
+                    sourcePath: sourcePath,
+                    excludedDescendantCount: el.querySelectorAll('*').length,
+                    isolated: false,
+                    computedSafety: localizedComputedSafetyFacts(
+                        el,
+                        slide,
+                        slideNumber,
+                    ),
+                },
+            };
+        }
 
         if (rect.width < 1 || rect.height < 1) {
             if (el.hasAttribute('data-pptx-chart')) {
@@ -522,7 +655,7 @@ EXTRACTION_JS = """
             naturalWidth: isImg ? (el.naturalWidth || 0) : 0,
             naturalHeight: isImg ? (el.naturalHeight || 0) : 0,
             borderRadius: style.borderRadius,
-            // A preset geometry the Contract 1.2 Author shape surface keeps as
+            // A preset geometry the Contract 1.3 Author shape surface keeps as
             // a PowerPoint preset rather than inferring from CSS.  Public
             // Author HTML uses the namespaced annotation.  The private legacy
             // spelling remains a fallback solely for the hidden projection
@@ -592,7 +725,13 @@ EXTRACTION_JS = """
         if (!isChart) {
             for (const child of el.children) {
                 if (['script', 'style', 'link', 'meta'].includes(child.tagName.toLowerCase())) continue;
-                const childData = measureElement(child, slideRect, depth + 1);
+                const childData = measureElement(
+                    child,
+                    slide,
+                    slideRect,
+                    depth + 1,
+                    slideNumber,
+                );
                 if (childData) data.children.push(childData);
             }
         }
@@ -799,7 +938,13 @@ EXTRACTION_JS = """
 
         for (const child of slide.children) {
             if (['script', 'style', 'link', 'meta'].includes(child.tagName.toLowerCase())) continue;
-            const measured = measureElement(child, slideRect, 0);
+            const measured = measureElement(
+                child,
+                slide,
+                slideRect,
+                0,
+                slideIndex + 1,
+            );
             if (measured) slideData.elements.push(measured);
         }
 
@@ -884,6 +1029,579 @@ async def _rasterize_inline_svgs(
                 logger.debug("Failed to rasterize SVG %s", element_id or "?")
 
 
+def _localized_elements(elements: list[dict]) -> list[dict]:
+    """Return localized roots without entering their excluded descendants."""
+    return [
+        element
+        for element in _walk_elements(elements)
+        if element.get("localizedFallback") and element.get("localizedId")
+    ]
+
+
+_LOCALIZED_COMPUTED_URL_RE = re.compile(
+    r"url\(\s*(?:\"(?P<double>.*?)\"|'(?P<single>.*?)'|(?P<bare>[^)]*))\s*\)",
+    re.IGNORECASE | re.DOTALL,
+)
+_ISOLATION_STRUCTURAL_KEYS = (
+    "target_id_match",
+    "authored_top_level_target",
+    "no_authored_siblings",
+    "no_master_layout_background",
+    "transparent_cleared_container",
+)
+
+
+def _empty_isolation_evidence() -> dict[str, object]:
+    return {
+        "capture_document": "fresh-page-single-region",
+        "target_id_match": False,
+        "authored_top_level_target_count": 0,
+        "authored_top_level_target": False,
+        "authored_sibling_count": 0,
+        "no_authored_siblings": False,
+        "master_layout_background_count": 0,
+        "no_master_layout_background": False,
+        "transparent_cleared_container": False,
+        "outside_paint_pixels": None,
+        "outside_pixel_count": None,
+        "outside_paint_fraction": None,
+        "pixel_outside_wrapper_zero": False,
+        "passed": False,
+    }
+
+
+def _isolation_contamination_fraction(evidence: dict[str, object]) -> float:
+    """Turn failed capture-document facts into a derived contamination signal."""
+    failed = sum(
+        1 for key in _ISOLATION_STRUCTURAL_KEYS if evidence.get(key) is not True
+    )
+    return failed / len(_ISOLATION_STRUCTURAL_KEYS)
+
+
+def _capture_resource_allowed(value: str, source_base_url: str | None) -> bool:
+    value = str(value or "").strip().strip("\"'")
+    if not value:
+        return True
+    if value.lower().startswith("data:image/"):
+        return True
+    parsed = urlparse(value)
+    if parsed.scheme.lower() != "file":
+        return False
+    if not source_base_url:
+        return False
+
+    def file_url_path(url: str) -> Path:
+        parsed_url = urlparse(url)
+        raw_path = unquote(parsed_url.path)
+        if os.name == "nt":
+            # ``file:///C:/...`` parses as ``/C:/...``.  Keeping that leading
+            # slash makes pathlib treat the drive as a relative path, which
+            # would reject a local asset that the source Contract permits.
+            if parsed_url.netloc and parsed_url.netloc.lower() != "localhost":
+                return Path("\\\\" + parsed_url.netloc + raw_path.replace("/", "\\"))
+            return Path(raw_path.lstrip("/"))
+        return Path(raw_path)
+
+    try:
+        root = file_url_path(source_base_url).resolve()
+        candidate = file_url_path(value).resolve()
+        return candidate.is_file() and candidate.is_relative_to(root)
+    except (OSError, ValueError):
+        return False
+
+
+def _localized_computed_policy_failures(
+    computed: object,
+    *,
+    source_base_url: str | None,
+) -> list[str]:
+    """Apply only Chromium-resolved safety facts; no selector matching here."""
+    if not isinstance(computed, dict):
+        return []
+    failures: list[str] = []
+    if computed.get("animationNodes"):
+        failures.append("localized_animation")
+    if computed.get("transitionNodes"):
+        failures.append("localized_animation")
+    for item in computed.get("resourceStates") or ():
+        if not isinstance(item, dict):
+            continue
+        values = _LOCALIZED_COMPUTED_URL_RE.findall(str(item.get("value") or ""))
+        urls = [next((part for part in match if part), "") for match in values]
+        if any(not _capture_resource_allowed(url, source_base_url) for url in urls):
+            failures.append("localized_external_resource")
+    for item in computed.get("imageStates") or ():
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("currentSrc") or "")
+        if source and not _capture_resource_allowed(source, source_base_url):
+            failures.append("localized_external_resource")
+        if source and (
+            item.get("complete") is not True
+            or float(item.get("naturalWidth") or 0) <= 0
+            or float(item.get("naturalHeight") or 0) <= 0
+        ):
+            failures.append("localized_external_resource")
+    return list(dict.fromkeys(failures))
+
+
+def _inspect_isolated_frame(
+    frame_png: bytes | None,
+    capture_payload: dict[str, object],
+    device_scale: float,
+) -> dict[str, object]:
+    """Measure alpha paint outside the target border box in the fresh page."""
+    evidence: dict[str, object] = {
+        "outside_paint_pixels": None,
+        "outside_pixel_count": None,
+        "outside_paint_fraction": None,
+        "pixel_outside_wrapper_zero": False,
+    }
+    if not frame_png:
+        return evidence
+    try:
+        with Image.open(BytesIO(frame_png)) as frame:
+            frame.load()
+            frame_width, frame_height = frame.size
+            alpha = frame.convert("RGBA").getchannel("A")
+            left = max(
+                0,
+                min(
+                    frame_width,
+                    math.floor(float(capture_payload.get("x") or 0.0) * device_scale),
+                ),
+            )
+            top = max(
+                0,
+                min(
+                    frame_height,
+                    math.floor(float(capture_payload.get("y") or 0.0) * device_scale),
+                ),
+            )
+            right = max(
+                left,
+                min(
+                    frame_width,
+                    math.ceil(
+                        (
+                            float(capture_payload.get("x") or 0.0)
+                            + float(capture_payload.get("width") or 0.0)
+                        )
+                        * device_scale
+                    ),
+                ),
+            )
+            bottom = max(
+                top,
+                min(
+                    frame_height,
+                    math.ceil(
+                        (
+                            float(capture_payload.get("y") or 0.0)
+                            + float(capture_payload.get("height") or 0.0)
+                        )
+                        * device_scale
+                    ),
+                ),
+            )
+
+            def painted_outside(box: tuple[int, int, int, int]) -> int:
+                histogram = alpha.crop(box).histogram()
+                return sum(histogram[1:])
+
+            outside = 0
+            if top:
+                outside += painted_outside((0, 0, frame_width, top))
+            if bottom < frame_height:
+                outside += painted_outside((0, bottom, frame_width, frame_height))
+            if left:
+                outside += painted_outside((0, top, left, bottom))
+            if right < frame_width:
+                outside += painted_outside((right, top, frame_width, bottom))
+            wrapper_pixels = max(0, right - left) * max(0, bottom - top)
+            outside_pixels = max(0, frame_width * frame_height - wrapper_pixels)
+            evidence.update(
+                {
+                    "outside_paint_pixels": outside,
+                    "outside_pixel_count": outside_pixels,
+                    "outside_paint_fraction": (
+                        outside / outside_pixels if outside_pixels else 0.0
+                    ),
+                    "pixel_outside_wrapper_zero": outside == 0,
+                }
+            )
+    except Exception:
+        logger.debug("Failed to inspect localized capture frame")
+    return evidence
+
+
+async def _rasterize_localized_fallbacks(
+    browser,
+    page,
+    measurements: list[dict],
+    *,
+    source_base_url: str | None = None,
+) -> None:
+    """Capture each opted-in region in a page containing only that region."""
+
+    async def activate_slide(index: int) -> dict | None:
+        """Make one source slide measurable before reading any target bounds."""
+        return await page.evaluate(
+            """(slideIndex) => {
+                const slides = Array.from(document.querySelectorAll('.slide'));
+                const slide = slides[slideIndex];
+                if (!slide) return null;
+                slides.forEach((item, index) => {
+                    const active = index === slideIndex;
+                    item.style.display = active ? 'flex' : 'none';
+                    item.classList.toggle('active', active);
+                });
+                // Force layout after changing display before any target query.
+                slide.offsetHeight;
+                const rect = slide.getBoundingClientRect();
+                return {
+                    width: rect.width,
+                    height: rect.height,
+                    styles: Array.from(document.querySelectorAll('style'))
+                        .map(style => style.textContent || ''),
+                };
+            }""",
+            index,
+        )
+
+    for slide_index, slide_data in enumerate(measurements):
+        localized = _localized_elements(slide_data.get("elements", []))
+        if not localized:
+            continue
+
+        # EXTRACTION_JS leaves the last slide active.  Re-activate each source
+        # slide before measuring/capturing it so hidden slides never yield a
+        # zero-sized payload or silently lose their localized assets.
+        payload = await activate_slide(slide_index)
+        if not payload:
+            continue
+
+        slide_width = float(payload.get("width") or 0)
+        slide_height = float(payload.get("height") or 0)
+        if slide_width <= 0 or slide_height <= 0:
+            continue
+        # Author canvases normalize to 960pt x 540pt. Choose the browser
+        # device scale that produces exactly 2 pixels per point for both
+        # accepted 1920px and legacy 960px canvases.
+        css_pixels_per_point = slide_width / 960.0
+        device_scale = 2.0 / css_pixels_per_point
+
+        # Geometry and overlap are checked from the same measured border boxes
+        # that drive the eventual PowerPoint picture bounds.  This is before
+        # any browser capture, so a whole-slide, cross-slide, or overlapping
+        # region cannot produce a misleading asset first.
+        slide_bounds_pt = (0.0, 0.0, 960.0, slide_height / css_pixels_per_point)
+        capture_facts: dict[str, dict[str, object]] = {}
+        regions: list[LocalizedRegion] = []
+        for element in localized:
+            localized_id = str(element.get("localizedId") or "")
+            fallback = element.setdefault("localizedFallback", {})
+            source_object = str(
+                fallback.get("sourcePath")
+                or fallback.get("sourceIdentity")
+                or localized_id
+                or "localized"
+            )
+            fallback["sourcePath"] = source_object
+            bounds_pt = (
+                float(element.get("x") or 0.0) / css_pixels_per_point,
+                float(element.get("y") or 0.0) / css_pixels_per_point,
+                float(element.get("width") or 0.0) / css_pixels_per_point,
+                float(element.get("height") or 0.0) / css_pixels_per_point,
+            )
+            geometry_findings = validate_localized_geometry(
+                source_object,
+                bounds_pt,
+                slide_bounds_pt,
+            )
+            computed_failures = _localized_computed_policy_failures(
+                fallback.get("computedSafety"),
+                source_base_url=source_base_url,
+            )
+            fallback["computedSafetyFailureCodes"] = computed_failures
+            capture_facts[localized_id] = {
+                "source_object": source_object,
+                "bounds_pt": bounds_pt,
+                "preflight_codes": [finding.code for finding in geometry_findings]
+                + computed_failures,
+            }
+            regions.append(
+                LocalizedRegion(
+                    source_object=source_object,
+                    slide=slide_index + 1,
+                    bounds_pt=bounds_pt,
+                )
+            )
+        for finding in validate_localized_region_overlap(regions):
+            for fact in capture_facts.values():
+                if fact.get("source_object") == finding.source_object:
+                    codes = fact.setdefault("preflight_codes", [])
+                    if finding.code not in codes:
+                        codes.append(finding.code)
+
+        base_tag = (
+            f'<base href="{_html_escape(source_base_url, quote=True)}">'
+            if source_base_url
+            else ""
+        )
+
+        for element in localized:
+            localized_id = str(element.get("localizedId"))
+            fallback = element.setdefault("localizedFallback", {})
+            facts = capture_facts.get(localized_id, {})
+            source_object = str(facts.get("source_object") or localized_id)
+            bounds_pt = tuple(facts.get("bounds_pt") or (0.0, 0.0, 0.0, 0.0))
+            preflight_codes = list(facts.get("preflight_codes") or [])
+            capture_payload = await page.evaluate(
+                """(value) => {
+                    const node = document.querySelector(
+                        '[data-pptx-localized-id="' + value + '"]'
+                    );
+                    if (!node) return null;
+                    const slide = node.closest('.slide');
+                    if (!slide) return null;
+                    const rect = node.getBoundingClientRect();
+                    const slideRect = slide.getBoundingClientRect();
+                    return {
+                        outerHTML: node.outerHTML,
+                        x: rect.left - slideRect.left,
+                        y: rect.top - slideRect.top,
+                        width: rect.width,
+                        height: rect.height,
+                    };
+                }""",
+                localized_id,
+            )
+            if not capture_payload:
+                isolation_evidence = _empty_isolation_evidence()
+                audit = audit_localized_capture(
+                    None,
+                    bounds_pt=bounds_pt,
+                    source_object=source_object,
+                    contamination_fraction=_isolation_contamination_fraction(
+                        isolation_evidence
+                    ),
+                    isolated=False,
+                    excluded_descendants=int(
+                        fallback.get("excludedDescendantCount") or 0
+                    ),
+                    isolation_evidence=isolation_evidence,
+                )
+                fallback.update(
+                    {
+                        "isolationEvidence": isolation_evidence,
+                        "captureAudit": audit.as_dict(),
+                        "captureFailureCodes": [
+                            *preflight_codes,
+                            *audit.failure_codes,
+                        ],
+                    }
+                )
+                continue
+
+            outer_html = str(capture_payload.get("outerHTML") or "")
+            # A script would execute if copied into the capture page. Keep the
+            # capture inert; the Contract/failure seam reports the missing asset.
+            capture_allowed = "<script" not in outer_html.lower()
+            styles = "\n".join(str(value) for value in payload.get("styles", []))
+            markup = f"""<!doctype html>
+<html><head><meta charset="utf-8">{base_tag}<style>{styles}</style></head>
+<body style="margin:0;overflow:hidden;background:transparent !important">
+<section class="slide active" style="display:block !important;position:relative;width:{slide_width}px;height:{slide_height}px;background:transparent !important;background-image:none !important;border:0 !important;"
+         data-pptx-localized-capture="true">
+  {outer_html}
+</section>
+</body></html>"""
+
+            context = await browser.new_context(
+                viewport={
+                    "width": max(1, round(slide_width)),
+                    "height": max(1, round(slide_height)),
+                },
+                device_scale_factor=device_scale,
+            )
+            png_bytes: bytes | None = None
+            frame_png: bytes | None = None
+            isolation_evidence = _empty_isolation_evidence()
+            try:
+                if capture_allowed and not preflight_codes:
+                    # Keep the source page's target facts tied to this slide;
+                    # the actual PNG is still rendered in a fresh isolated
+                    # page below.
+                    await activate_slide(slide_index)
+                    capture_page = await context.new_page()
+                    await capture_page.set_content(markup, wait_until="load")
+                    await capture_page.wait_for_function(
+                        """() => Array.from(document.images).every(image =>
+                            image.complete && image.naturalWidth > 0)""",
+                        timeout=PLAYWRIGHT_TIMEOUT_MS,
+                    )
+                    document_facts = await capture_page.evaluate(
+                        """(value) => {
+                            const container = document.querySelector(
+                                '[data-pptx-localized-capture="true"]'
+                            );
+                            if (!container) return null;
+                            const matches = Array.from(
+                                container.querySelectorAll('[data-pptx-localized-id]')
+                            ).filter(
+                                node => node.getAttribute('data-pptx-localized-id') === value
+                            );
+                            const target = matches.length === 1 ? matches[0] : null;
+                            const topLevel = Array.from(container.children);
+                            const siblings = topLevel.filter(node => node !== target);
+                            const outsideScaffold = Array.from(document.body.children)
+                                .filter(node => node !== container);
+                            const forbidden = Array.from(document.querySelectorAll(
+                                '[data-pptx-master], [data-pptx-layout], [data-pptx-background], .master, .layout, .master-slide, .layout-slide, .slide-background, .master-background, .layout-background'
+                            )).filter(
+                                node => !target || (node !== target && !target.contains(node))
+                            );
+                            const transparent = node => {
+                                const style = getComputedStyle(node);
+                                const color = String(style.backgroundColor || '').toLowerCase();
+                                return (
+                                    (color === 'transparent' || /,\\s*0\\)?$/.test(color))
+                                    && style.backgroundImage === 'none'
+                                );
+                            };
+                            return {
+                                target_id_match: matches.length === 1
+                                    && target !== null
+                                    && target.parentElement === container,
+                                authored_top_level_target_count: topLevel.filter(
+                                    node => node === target
+                                ).length,
+                                authored_top_level_target: topLevel.length === 1
+                                    && target !== null
+                                    && target.parentElement === container,
+                                authored_sibling_count: siblings.length + outsideScaffold.length,
+                                no_authored_siblings: siblings.length === 0
+                                    && outsideScaffold.length === 0,
+                                master_layout_background_count: forbidden.length,
+                                no_master_layout_background: forbidden.length === 0,
+                                transparent_cleared_container: transparent(container)
+                                    && transparent(document.body)
+                                    && transparent(document.documentElement),
+                            };
+                        }""",
+                        localized_id,
+                    )
+                    if isinstance(document_facts, dict):
+                        isolation_evidence.update(document_facts)
+                    target = capture_page.locator(
+                        f'[data-pptx-localized-id="{localized_id}"]'
+                    ).first
+                    png_bytes = await target.screenshot(
+                        type="png",
+                        animations="disabled",
+                        omit_background=True,
+                    )
+                    # This is still a fresh page containing only the target,
+                    # not a crop of the source slide.  The frame is used solely
+                    # to prove that visual paint did not escape the authored
+                    # CSS border box.
+                    frame_png = await capture_page.screenshot(
+                        type="png",
+                        animations="disabled",
+                        omit_background=True,
+                    )
+            except Exception:
+                logger.debug(
+                    "Failed to rasterize localized fallback %s",
+                    localized_id,
+                    exc_info=True,
+                )
+            finally:
+                await context.close()
+
+            pixel_evidence = _inspect_isolated_frame(
+                frame_png,
+                capture_payload,
+                device_scale,
+            )
+            isolation_evidence.update(pixel_evidence)
+            isolation_evidence["passed"] = bool(
+                all(
+                    isolation_evidence.get(key) is True
+                    for key in _ISOLATION_STRUCTURAL_KEYS
+                )
+                and isolation_evidence.get("pixel_outside_wrapper_zero") is True
+            )
+            overflow = bool(
+                isolation_evidence.get("outside_paint_pixels") is not None
+                and isolation_evidence.get("pixel_outside_wrapper_zero") is False
+            )
+            contamination_fraction = _isolation_contamination_fraction(
+                isolation_evidence
+            )
+            isolated = isolation_evidence["passed"] is True
+
+            audit = audit_localized_capture(
+                png_bytes,
+                bounds_pt=bounds_pt,
+                source_object=source_object,
+                contamination_fraction=contamination_fraction,
+                overflow=overflow,
+                isolated=isolated,
+                excluded_descendants=int(
+                    fallback.get("excludedDescendantCount") or 0
+                ),
+                isolation_evidence=isolation_evidence,
+            )
+            failure_codes = [*preflight_codes, *audit.failure_codes]
+            fallback.update(
+                {
+                    "isolationEvidence": isolation_evidence,
+                    "captureAudit": audit.as_dict(),
+                    "captureFailureCodes": list(dict.fromkeys(failure_codes)),
+                    "effectivelyTransparent": audit.effectively_transparent,
+                    "paintFraction": audit.paint_fraction,
+                    "overflow": audit.overflow,
+                    "contaminationFraction": audit.contamination_fraction,
+                }
+            )
+            if failure_codes:
+                continue
+
+            pixel_width = audit.pixel_width
+            pixel_height = audit.pixel_height
+            encoded = base64.b64encode(png_bytes).decode("ascii")
+            element["src"] = "data:image/png;base64," + encoded
+            element["isImage"] = True
+            element["objectFit"] = "fill"
+            element["naturalWidth"] = pixel_width
+            element["naturalHeight"] = pixel_height
+            element["localizedFallback"].update(
+                {
+                    "assetMime": "image/png",
+                    "assetSha256": hashlib.sha256(png_bytes).hexdigest(),
+                    "pixelWidth": pixel_width,
+                    "pixelHeight": pixel_height,
+                    "density": 2.0,
+                    "nonblank": audit.nonblank,
+                    "densityVerified": True,
+                    "isolated": audit.isolated,
+                    "isolation": str(
+                        isolation_evidence.get("capture_document")
+                        or "fresh-page-single-region"
+                    ),
+                    "optInReason": "explicit-author-opt-in",
+                }
+            )
+
+    # Restore the post-EXTRACTION_JS state (the final source slide active) so
+    # subsequent SVG fallback work does not inherit whichever localized slide
+    # happened to be processed last.
+    if measurements:
+        await activate_slide(len(measurements) - 1)
+
+
 async def extract_measurements(
     html_path: str,
     *,
@@ -942,6 +1660,13 @@ async def extract_measurements(
         measurements = await page.evaluate(
             EXTRACTION_JS,
             {"officecliMode": officecli_mode},
+        )
+
+        await _rasterize_localized_fallbacks(
+            browser,
+            page,
+            measurements,
+            source_base_url=Path(abs_path).parent.as_uri() + "/",
         )
 
         await _rasterize_inline_svgs(

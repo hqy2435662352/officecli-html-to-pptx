@@ -1,10 +1,10 @@
-# officecli-html-to-pptx V0.5.2 部署与使用指南
+# officecli-html-to-pptx V0.5.3 部署与使用指南
 
 ## 交付范围
 
 本 ZIP 是客户试用包，包含：
 
-- `core/officecli_html_to_pptx-0.5.2-py3-none-any.whl`：Python Core Product；
+- `core/officecli_html_to_pptx-0.5.3-py3-none-any.whl`：Python Core Product；
 - `plugins/officecli-html-to-pptx/`：skills-only Codex Plugin；
 - `.agents/plugins/marketplace.json`：本地 Plugin marketplace 清单；
 - 本部署与使用指南、README 和 MIT License。
@@ -37,7 +37,7 @@ OfficeCLI、Python、Node.js 和 Codex 的安装来源由部署方管理。本�
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.5.2-py3-none-any.whl
+.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.5.3-py3-none-any.whl
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
@@ -62,7 +62,7 @@ exit code `2` 和可操作的诊断。
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install ./core/officecli_html_to_pptx-0.5.2-py3-none-any.whl
+.venv/bin/python -m pip install ./core/officecli_html_to_pptx-0.5.3-py3-none-any.whl
 .venv/bin/python -m playwright install --with-deps chromium
 .venv/bin/officecli-html-to-pptx capabilities --json
 .venv/bin/officecli-html-to-pptx doctor --json
@@ -199,12 +199,14 @@ proposal.evidence/
 交付时保留整个 PPTX/Evidence Pair，不要只复制 PPTX，也不要混用不同 build 的
 PPTX、JSON 或 Comparison Image。
 
-V0.5.2 的 tracked public corpus 是
-`tests/fixtures/v05_02_public_corpus.html`，固定四页：column/bar categorical
-comparison、multi-series line trend、pie/doughnut part-to-whole，以及组合
-业务页。每个 `data-pptx-chart` 都是一个 atomic native object；可选 preview
-及其全部 descendants 不会再被 generic lowering。V0.5.1 的 corpus 和 V0.4
-projection corpus 仍是独立的回归资产，不进入 V0.5.2 chart gate 或能力计数。
+V0.5.3 的 tracked public corpus 是
+`tests/fixtures/v05_03_public_corpus.html`，固定四页：contained CSS effects、
+inline SVG、两个不重叠的 localized regions，以及组合原生 text/table/shape/
+chart 和一个 rasterized region 的业务页。每个
+`data-pptx-rasterize="localized"` 都是一个 atomic visual object；其全部
+descendants 不会再被 generic lowering。V0.5.2 chart corpus、V0.5.1 corpus
+和 V0.4 projection corpus 仍是独立的回归资产，不进入 V0.5.3 localized
+fallback gate 或能力计数。
 完成发布验收时必须执行
 `capabilities -> doctor -> check -> fresh build -> independent readback ->
 validate/issues -> four-slide semantic Gate 3 -> finalize`；authored/compiled/
@@ -212,7 +214,22 @@ readback chart counts 必须一致，OfficeCLI validation PASS、issues zero，�
 `unsupported`、`unresolved` 和 `material_delta` 必须都是零，minor findings
 仍可推导为 `PASS_WITH_FINDINGS`。
 
-## V0.5.2 正式边界
+## V0.5.3 正式边界
+
+支持：从 Contract 1.3 checked Author HTML 新建 PPTX；保留 V0.5.2 的可编辑
+文本框、闭合形状、data-URI 图片、合法矩形合并表格、冻结的文本段落/run
+矩阵和 authored native charts，并增加显式 localized visual fallback。
+
+只有大小写敏感的 `data-pptx-rasterize="localized"` 标记会触发该 fallback。
+标记节点是 atomic authored object；其 descendants 在 generic discovery 前排除。
+捕获使用节点 CSS border box、真正局部隔离渲染和固定 `2 pixels per point`，输出
+deterministic PNG picture；区域内文字包含在图片内，不宣称可编辑。首版只接受
+静态 HTML/CSS、inline SVG、data URI 和当前策略允许的本地图片；脚本、runtime
+canvas、iframe、网络资源、媒体、WebGL、动画、交互态及跨 slide capture 会
+fail closed。输出 disposition 固定为 `native`、`rasterized`、`unsupported`、
+`unresolved`；后两者以及超界绘制、隔离污染和 material delta 阻止发布。
+
+## V0.5.2 回归基线
 
 支持：从 Contract 1.2 checked Author HTML 新建 PPTX；可编辑的文本框、闭合
 形状几何、data-URI 图片、合法矩形 rowspan/colspan 合并表格、冻结的文本

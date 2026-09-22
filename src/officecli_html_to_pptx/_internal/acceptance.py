@@ -1455,6 +1455,43 @@ def _officecli_manifest(
                     object_data["metadata"] = _officecli_picture_metadata(
                         pptx_path, slide_index, detailed_format, object_data["bounds_pt"]
                     )
+                    expected_localized = (
+                        expected_by_name.get(name, {}).get("localized_fallback")
+                        if isinstance(expected_by_name.get(name), Mapping)
+                        else None
+                    )
+                    if isinstance(expected_localized, Mapping):
+                        object_data.update(
+                            {
+                                "source_identity": expected_localized.get(
+                                    "source_identity"
+                                ),
+                                "disposition": "rasterized",
+                                "editable": False,
+                                "compiled_kind": "picture",
+                                "localized_fallback": {
+                                    **dict(expected_localized),
+                                    "readback": {
+                                        "kind": kind,
+                                        "bounds_pt": list(object_data["bounds_pt"]),
+                                        "asset_present": bool(
+                                            object_data["metadata"]["picture"].get(
+                                                "content_fingerprint"
+                                            )
+                                        ),
+                                        "asset_sha256": object_data["metadata"][
+                                            "picture"
+                                        ].get("content_fingerprint"),
+                                        "pixel_dimensions": object_data["metadata"][
+                                            "picture"
+                                        ].get("intrinsic_size"),
+                                    },
+                                },
+                            }
+                        )
+                        object_data["metadata"]["localized_fallback"] = object_data[
+                            "localized_fallback"
+                        ]
             objects.append(object_data)
     slide_width = _points(shallow.get("format", {}).get("slideWidth"))
     slide_height = _points(shallow.get("format", {}).get("slideHeight"))
