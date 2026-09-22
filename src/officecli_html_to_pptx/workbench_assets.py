@@ -276,8 +276,8 @@ INDEX_HTML = r"""<!doctype html>
       }
 
       window.addEventListener("message", async (event) => {
-        if (!event.data || event.data.channel !== "officecli-workbench-preview") return;
-        if (event.data.type === "slide" && event.source === previewFrame.contentWindow) {
+        if (!event.data || event.source !== previewFrame.contentWindow || event.data.channel !== "officecli-workbench-preview") return;
+        if (event.data.type === "slide") {
           const reported = Number(event.data.index) || 1;
           if (reported === requestedSlide) selectSlide(reported, false);
           return;

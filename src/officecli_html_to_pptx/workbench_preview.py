@@ -532,7 +532,7 @@ def _injected_script(nonce: str) -> str:
     send("selection", {{marker: target.getAttribute("data-workbench-marker"), slide: Number(target.closest(".slide")?.dataset.workbenchSlide || 0)}});
   }});
   window.addEventListener("message", (event) => {{
-    if (!event.data || event.data.channel !== channel || event.data.type !== "show-slide") return;
+    if (event.source !== window.parent || !event.data || event.data.channel !== channel || event.data.type !== "show-slide") return;
     activate(event.data.index);
   }});
   slides.forEach((slide, index) => {{ slide.dataset.workbenchSlide = String(index + 1); }});

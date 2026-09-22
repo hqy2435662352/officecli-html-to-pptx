@@ -307,9 +307,36 @@ async def test_browser_preview_has_16_by_9_rail_thumbnails_and_source_selection(
             )
             await page.wait_for_timeout(100)
             assert await page.locator("#preview-status").get_attribute("data-status") == "CURRENT"
+            main_preview = page.locator("#preview-frame").content_frame
+            assert await main_preview.locator(".slide").nth(1).get_attribute("data-workbench-slide-state") == "current"
+            thumbnail_frame = page.locator("#slide-rail .slide-thumbnail iframe").nth(0).content_frame
+            await thumbnail_frame.locator("body").evaluate(
+                """() => window.top.frames[0].postMessage(
+                    {channel: 'officecli-workbench-preview', type: 'show-slide', index: 0}, '*'
+                )"""
+            )
+            await page.wait_for_timeout(100)
+            assert await main_preview.locator(".slide").nth(1).get_attribute("data-workbench-slide-state") == "current"
 
             editor = page.locator("#editor")
             draft = await editor.input_value()
+            selection_status = page.locator("#selection-status")
+            await selection_status.evaluate(
+                "element => { element.dataset.mapping = 'unchanged'; element.textContent = 'unchanged'; }"
+            )
+            await editor.focus()
+            await editor.evaluate("element => element.setSelectionRange(1, 1)")
+            before_selection = await editor.evaluate("element => [element.selectionStart, element.selectionEnd]")
+            await page.evaluate(
+                """() => window.postMessage(
+                    {channel: 'officecli-workbench-preview', type: 'selection', marker: 'wb-0'}, '*'
+                )"""
+            )
+            await page.wait_for_timeout(250)
+            assert await selection_status.get_attribute("data-mapping") == "unchanged"
+            assert await selection_status.text_content() == "unchanged"
+            assert await editor.evaluate("element => [element.selectionStart, element.selectionEnd]") == before_selection
+
             await page.locator("#preview-frame").content_frame.locator("p").nth(1).click()
             await page.wait_for_function("() => document.activeElement && document.activeElement.id === 'editor'")
             assert await editor.input_value() == draft
