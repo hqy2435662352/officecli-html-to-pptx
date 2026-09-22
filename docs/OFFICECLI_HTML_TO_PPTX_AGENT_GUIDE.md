@@ -51,9 +51,15 @@ page dimensions.
 - Validate the delivered PPTX with OfficeCLI, inspect text and structure, and
   review a screenshot of every slide.
 - Report known baseline findings separately from regressions.
-- Product 0.5.3 keeps the five public commands unchanged and requires Contract
-  1.3 with OfficeCLI `>=1.0.151`; a lower runtime must fail before measurement
-  or output creation.
+- Product 0.6.1 publishes six commands (`capabilities`, `doctor`, `check`,
+  `build`, `finalize`, and `workbench`) and requires Contract 1.3 with OfficeCLI
+  `>=1.0.151`; a lower runtime must fail before measurement or output creation.
+- `workbench` is a loopback-only source editor for one real UTF-8 Author HTML
+  file. Preview, diagnostics, thumbnails, and source maps are derived state;
+  the saved Author HTML SHA is the only compiler input. Save is conflict-safe
+  and may retain a Candidate that fails Contract. Build Revision requires an
+  exact saved SHA with no conflict and Contract PASS, then calls the existing
+  Artifact Pair workflow. It does not edit an existing PPTX.
 - For a public release gate, retain the four-slide corpus, independent
   OfficeCLI readback, `validate`/`issues`, and one reviewed Comparison Image per
   slide. Record the actual runtime, text structure/matrix, normalized merge

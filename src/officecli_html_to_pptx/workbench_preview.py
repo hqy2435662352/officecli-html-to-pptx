@@ -501,6 +501,75 @@ def _injected_script(nonce: str) -> str:
   const channel = "officecli-workbench-preview";
   const send = (type, data) => window.parent.postMessage(Object.assign({{channel, type}}, data || {{}}), "*");
   const slides = Array.from(document.querySelectorAll(".slide"));
+  const svgElement = (name, attributes) => {{
+    const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+    Object.entries(attributes || {{}}).forEach(([key, value]) => element.setAttribute(key, String(value)));
+    return element;
+  }};
+  const renderColumnChartProjection = (chart) => {{
+    const specNode = chart.querySelector("script[data-pptx-chart-spec]");
+    if (!specNode) return;
+    let spec;
+    try {{
+      spec = JSON.parse(specNode.textContent || "");
+    }} catch (_) {{
+      return;
+    }}
+    if (!spec || spec.type !== "column" || !Array.isArray(spec.categories) || !Array.isArray(spec.series) || !spec.series.length) return;
+    const series = spec.series[0];
+    if (!series || !Array.isArray(series.values) || series.values.length !== spec.categories.length) return;
+    const values = series.values.map((value) => Number(value));
+    if (values.some((value) => !Number.isFinite(value) || value < 0)) return;
+    const width = parseFloat(getComputedStyle(chart).width) || 760;
+    const height = parseFloat(getComputedStyle(chart).height) || 480;
+    const plot = {{left: 72, top: 42, right: width - 26, bottom: height - 58}};
+    const plotWidth = Math.max(1, plot.right - plot.left);
+    const plotHeight = Math.max(1, plot.bottom - plot.top);
+    const maximum = Math.max(1, ...values);
+    const axisMax = Math.max(1, Math.ceil(maximum * 2) / 2 + 0.5);
+    const step = 0.5;
+    const color = /^#[0-9a-f]{{6}}$/i.test(String(series.color || "")) ? String(series.color) : "#1D4ED8";
+    const oldProjection = chart.querySelector(".workbench-chart-projection");
+    if (oldProjection) oldProjection.remove();
+    chart.querySelectorAll(":scope > [aria-hidden='true']").forEach((node) => node.remove());
+
+    const svg = svgElement("svg", {{
+      class: "workbench-chart-projection",
+      "aria-label": String((spec.presentation && spec.presentation.title) || "Chart"),
+      role: "img",
+      viewBox: `0 0 ${{width}} ${{height}}`,
+      preserveAspectRatio: "none",
+    }});
+    svg.style.cssText = "display:block;width:100%;height:100%;pointer-events:none";
+    const title = svgElement("text", {{x: width / 2, y: 20, "text-anchor": "middle", fill: "#0f172a", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 16, "font-weight": 700}});
+    title.textContent = String((spec.presentation && spec.presentation.title) || "");
+    svg.appendChild(title);
+    for (let tick = 0; tick <= axisMax + 0.001; tick += step) {{
+      const y = plot.bottom - (tick / axisMax) * plotHeight;
+      svg.appendChild(svgElement("line", {{x1: plot.left, y1: y, x2: plot.right, y2: y, stroke: "#e2e8f0", "stroke-width": 1}}));
+      const tickLabel = svgElement("text", {{x: plot.left - 9, y: y + 4, "text-anchor": "end", fill: "#475569", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 10}});
+      tickLabel.textContent = Number.isInteger(tick) ? String(tick) : tick.toFixed(1);
+      svg.appendChild(tickLabel);
+    }}
+    svg.appendChild(svgElement("line", {{x1: plot.left, y1: plot.top, x2: plot.left, y2: plot.bottom, stroke: "#94a3b8", "stroke-width": 1}}));
+    svg.appendChild(svgElement("line", {{x1: plot.left, y1: plot.bottom, x2: plot.right, y2: plot.bottom, stroke: "#94a3b8", "stroke-width": 1}}));
+    const groupWidth = plotWidth / spec.categories.length;
+    values.forEach((value, index) => {{
+      const barWidth = groupWidth * 0.48;
+      const x = plot.left + groupWidth * index + (groupWidth - barWidth) / 2;
+      const barHeight = (value / axisMax) * plotHeight;
+      const y = plot.bottom - barHeight;
+      svg.appendChild(svgElement("rect", {{x, y, width: barWidth, height: barHeight, fill: color}}));
+      const valueLabel = svgElement("text", {{x: x + barWidth / 2, y: Math.max(plot.top + 10, y - 5), "text-anchor": "middle", fill: "#334155", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 10}});
+      valueLabel.textContent = String(value);
+      svg.appendChild(valueLabel);
+      const categoryLabel = svgElement("text", {{x: x + barWidth / 2, y: plot.bottom + 20, "text-anchor": "middle", fill: "#334155", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 10}});
+      categoryLabel.textContent = String(spec.categories[index]);
+      svg.appendChild(categoryLabel);
+    }});
+    chart.insertBefore(svg, specNode);
+  }};
+  const renderChartProjections = () => document.querySelectorAll("[data-pptx-chart]").forEach(renderColumnChartProjection);
   const initial = Math.max(0, slides.findIndex((slide) => slide.classList.contains("active")));
   slides.forEach((slide) => {{
     slide.dataset.workbenchOriginalDisplay = getComputedStyle(slide).display;
@@ -536,6 +605,7 @@ def _injected_script(nonce: str) -> str:
     activate(event.data.index);
   }});
   slides.forEach((slide, index) => {{ slide.dataset.workbenchSlide = String(index + 1); }});
+  renderChartProjections();
   fit();
   window.addEventListener("resize", fit);
   activate(initial);

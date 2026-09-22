@@ -2,7 +2,7 @@
 
 The localized-fallback tickets own capture, safety, and evidence semantics.
 This test proves that Contract 1.3 publishes those seams through the tracked
-four-slide corpus and the unchanged five-command Artifact Pair workflow.
+four-slide corpus and the current six-command Artifact Pair workflow.
 """
 
 from __future__ import annotations
@@ -44,15 +44,16 @@ def test_public_localized_corpus_and_release_authority() -> None:
     assert not report.blocked, report.as_dict()
 
     payload = get_capabilities().as_dict()
-    assert PRODUCT_VERSION == "0.5.3"
+    assert PRODUCT_VERSION == "0.6.1"
     assert CONTRACT_VERSION == "1.3"
-    assert payload["product"]["version"] == "0.5.3"
+    assert payload["product"]["version"] == "0.6.1"
     assert payload["data"]["commands"] == [
         "capabilities",
         "doctor",
         "check",
         "build",
         "finalize",
+        "workbench",
     ]
     contract = payload["data"]["contract"]
     assert contract["version"] == "1.3"

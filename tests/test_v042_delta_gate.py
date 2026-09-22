@@ -3504,12 +3504,19 @@ def test_the_gate_does_not_change_the_projection_artifacts(
         assert Path(path).is_file()
 
 
-def test_the_public_seam_has_no_new_command_or_manifest_entry() -> None:
-    """The gate adds no command, no object kind, and no capability claim."""
+def test_the_projection_gate_keeps_current_command_and_manifest_authority() -> None:
+    """The projection gate adds no extra command, object kind, or claim."""
     from officecli_html_to_pptx import get_capabilities
     from officecli_html_to_pptx.application import PUBLIC_COMMANDS
 
-    assert PUBLIC_COMMANDS == ("capabilities", "doctor", "check", "build", "finalize")
+    assert PUBLIC_COMMANDS == (
+        "capabilities",
+        "doctor",
+        "check",
+        "build",
+        "finalize",
+        "workbench",
+    )
     data = get_capabilities().data
     assert data["commands"] == [
         "capabilities",
@@ -3517,14 +3524,15 @@ def test_the_public_seam_has_no_new_command_or_manifest_entry() -> None:
         "check",
         "build",
         "finalize",
+        "workbench",
     ]
     # The capability manifest is the Author Contract's own surface.  A gate is an
     # acceptance procedure, not a capability: it must not have added an object
     # kind, a profile, or a scope claim to the published manifest.
     contract = data["contract"]
-    assert contract["object_kinds"] == ["picture", "shape", "table", "textbox"]
+    assert contract["object_kinds"] == ["chart", "picture", "shape", "table", "textbox"]
     assert contract["profile"] == "author"
-    assert contract["version"] == "1.0"
+    assert contract["version"] == "1.3"
     assert data["scope"]["existing_pptx_editing"] is False
     assert data["scope"]["officehtml_import"] is False
     assert data["scope"]["creates_new_pptx"] is True

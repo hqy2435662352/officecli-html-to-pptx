@@ -423,7 +423,7 @@ async def test_browser_preview_clicks_each_supported_object_kind_to_source(tmp_p
         <img id="picture" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCI+PC9zdmc+">
         <table id="table"><tr><td>Table</td></tr></table>
         <div id="shape" data-pptx-shape-geometry="roundRect">Shape</div>
-        <div id="chart" data-pptx-chart><svg width="100" height="50"><rect width="80" height="40"></rect></svg><script type="application/json">{"type":"column"}</script></div>
+        <div id="chart" data-pptx-chart><script type="application/json" data-pptx-chart-spec>{"type":"column","categories":["A"],"series":[{"name":"Series","values":[1],"color":"#1D4ED8"}]}</script></div>
         <div id="localized" data-pptx-rasterize="localized"><span>Fallback</span></div>
         </section></body></html>""",
         encoding="utf-8",
@@ -437,6 +437,8 @@ async def test_browser_preview_clicks_each_supported_object_kind_to_source(tmp_p
             await page.wait_for_function("() => document.querySelector('#preview-frame').contentWindow !== null")
             await page.wait_for_timeout(300)
             preview = page.locator("#preview-frame").content_frame
+            assert await preview.locator("#chart .workbench-chart-projection").count() == 1
+            assert await preview.locator("#chart .workbench-chart-projection rect").count() == 1
             for selector, kind in (
                 ("#text", "text"),
                 ("#picture", "picture"),

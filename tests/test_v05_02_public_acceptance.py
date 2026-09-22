@@ -1,7 +1,7 @@
 """Public Product 0.5.2 integration gate for ticket #32.
 
 The capability tickets own chart parsing, lowering, and independent readback.
-This test only proves that the released five-command workflow publishes those
+This test only proves that the current public workflow publishes those
 capabilities through one tracked four-slide Author corpus and a fresh Artifact
 Pair.
 """
@@ -40,15 +40,16 @@ def test_public_chart_corpus_and_release_authority() -> None:
     assert not report.blocked, report.as_dict()
 
     payload = get_capabilities().as_dict()
-    assert PRODUCT_VERSION == "0.5.3"
+    assert PRODUCT_VERSION == "0.6.1"
     assert CONTRACT_VERSION == "1.3"
-    assert payload["product"]["version"] == "0.5.3"
+    assert payload["product"]["version"] == "0.6.1"
     assert payload["data"]["commands"] == [
         "capabilities",
         "doctor",
         "check",
         "build",
         "finalize",
+        "workbench",
     ]
     contract = payload["data"]["contract"]
     assert contract["version"] == "1.3"

@@ -1,6 +1,6 @@
 """Public Author-facing API for ``officecli-html-to-pptx``.
 
-Besides the V0.5.3 Author commands, exactly one experimental development seam is
+Besides the V0.6.1 Author commands, exactly one experimental development seam is
 exported: :func:`project_pptx_to_author_html`, which projects an explicit
 ordered selection of pages from one or more existing PPTX files into Canonical
 Author HTML for the V0.4.2 representative-projection slice.  It is not a
@@ -76,7 +76,7 @@ from ._internal.source_delta_gate import (
 try:
     __version__ = version("officecli-html-to-pptx")
 except PackageNotFoundError:
-    __version__ = "0.5.3"
+    __version__ = "0.6.1"
 
 __all__ = [
     "Artifact",

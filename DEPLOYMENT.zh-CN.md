@@ -1,10 +1,10 @@
-# officecli-html-to-pptx V0.5.3 部署与使用指南
+# officecli-html-to-pptx V0.6.1 部署与使用指南
 
 ## 交付范围
 
 本 ZIP 是客户试用包，包含：
 
-- `core/officecli_html_to_pptx-0.5.3-py3-none-any.whl`：Python Core Product；
+- `core/officecli_html_to_pptx-0.6.1-py3-none-any.whl`：Python Core Product；
 - `plugins/officecli-html-to-pptx/`：skills-only Codex Plugin；
 - `.agents/plugins/marketplace.json`：本地 Plugin marketplace 清单；
 - 本部署与使用指南、README 和 MIT License。
@@ -37,7 +37,7 @@ OfficeCLI、Python、Node.js 和 Codex 的安装来源由部署方管理。本�
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.5.3-py3-none-any.whl
+.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.6.1-py3-none-any.whl
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
@@ -62,7 +62,7 @@ exit code `2` 和可操作的诊断。
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install ./core/officecli_html_to_pptx-0.5.3-py3-none-any.whl
+.venv/bin/python -m pip install ./core/officecli_html_to_pptx-0.6.1-py3-none-any.whl
 .venv/bin/python -m playwright install --with-deps chromium
 .venv/bin/officecli-html-to-pptx capabilities --json
 .venv/bin/officecli-html-to-pptx doctor --json
@@ -111,7 +111,7 @@ ZIP 根目录本身是一个本地 marketplace。使用支持 Plugin marketplace
 
 ```powershell
 codex plugin marketplace add "<ZIP解压目录>"
-codex plugin add officecli-html-to-pptx@officecli-v02-local
+codex plugin add officecli-html-to-pptx@officecli-v061-local
 ```
 
 安装后新建一个 Codex 任务，使新 Skill 被重新发现。Plugin 只提供
@@ -150,6 +150,48 @@ Candidate HTML
 
 若目标 PPTX 或同名 `.evidence` 目录已经存在，产品会拒绝覆盖。请使用新文件名；
 Agent 的自动修订使用 `-r01`、`-r02` 等后缀。
+
+## Product 0.6.1 Workbench
+
+The `workbench` command is the sixth public command and is the installed
+source-authoritative authoring loop:
+
+```powershell
+$tool = ".\.venv\Scripts\officecli-html-to-pptx.exe"
+& $tool workbench "D:\work\proposal.html" --no-browser --json
+```
+
+The startup envelope reports a loopback URL, an unguessable session token, the
+resolved source path and its loaded SHA-256. The bundled wheel contains the
+complete editor/Preview UI in the Python package; it has no CDN, remote font,
+runtime npm installation, or public-network requirement for editing. The
+server accepts one resolved source per session, binds to `127.0.0.1`, serves
+local resources only below the source directory, and requires the session token
+plus same-session ID for mutations.
+
+Preview, thumbnails, source maps, diagnostics, and browser draft state are
+derived products. They are not compiler input and are not written into the
+source file. Save is an atomic UTF-8 whole-document replacement guarded by the
+loaded source SHA; an external disk change returns `CONFLICT` and preserves the
+draft. Save may persist a Contract-invalid Candidate. Build Revision is
+disabled until the draft SHA equals the disk SHA, no conflict exists, and Check
+has returned `PASS` for that exact saved SHA. Build allocates a new target under
+the session-owned output root and calls the ordinary `build_author_html`
+Artifact Pair workflow.
+
+The normal installed acceptance is:
+
+```text
+workbench startup -> edit -> Preview/navigation/source selection -> draft Check
+-> conflict-safe Save -> exact-hash Check -> Build Revision -> independent
+readback -> validate/issues -> slide-by-slide Gate 3 -> finalize
+```
+
+The #44 tracked corpus is `tests/fixtures/v06_01_workbench_corpus.html`.
+Conflict/recovery and security cases are documented separately in
+`tests/fixtures/v06_01_workbench_scenarios.md`. Visual property forms, canvas
+drag/drop editing, existing-PPTX editing, remote collaboration, and
+editor-specific export remain outside Product 0.6.1.
 
 ## 直接使用 CLI
 

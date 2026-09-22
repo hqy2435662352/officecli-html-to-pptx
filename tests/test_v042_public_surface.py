@@ -150,6 +150,7 @@ def test_the_slice_exports_its_two_seams_and_no_third() -> None:
         "check",
         "build",
         "finalize",
+        "workbench",
     )
     added = {PROJECTION_SEAM, GATE_SEAM}
     exported_functions = {
@@ -158,7 +159,7 @@ def test_the_slice_exports_its_two_seams_and_no_third() -> None:
         if callable(getattr(officecli_html_to_pptx, name))
         and not isinstance(getattr(officecli_html_to_pptx, name), type)
     }
-    # The Author surface's own five commands plus the two seams; anything else
+    # The Author surface plus the two seams; anything else
     # would be a third entry point for the projection slice.
     assert exported_functions == {
         "build_author_html",
