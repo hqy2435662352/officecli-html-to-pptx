@@ -32,6 +32,7 @@ from .application import _diagnostic_from_contract, build_author_html
 from .contract import check_contract_text
 from .protocol import Artifact, CommandResult, Diagnostic, result
 from .workbench_assets import INDEX_HTML
+from .workbench_preview import PreviewProduct, build_preview, resource_content_type
 
 
 class WorkbenchState(str, Enum):
@@ -55,6 +56,15 @@ class WorkbenchError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class WorkbenchPreviewState(str, Enum):
+    """Ephemeral Preview lifecycle state exposed beside the document state."""
+
+    IDLE = "IDLE"
+    CURRENT = "CURRENT"
+    STALE = "STALE"
+    ERROR = "ERROR"
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -737,6 +747,7 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
         error: Mapping[str, Any] | None = None,
         check: Mapping[str, Any] | None = None,
         build: Mapping[str, Any] | None = None,
+        include_preview_html: bool = False,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "ok": ok,
@@ -744,6 +755,7 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
             "output_root": str(self.session.output_root),
             "document": self.session.document.snapshot(),
             "recovery": self.session.document.recovery_summary(),
+            "preview": self.session.preview_snapshot(include_html=include_preview_html),
         }
         if check is not None:
             payload["check"] = dict(check)
@@ -825,6 +837,44 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _serve_preview_resource(self, relative_path: str) -> None:
+        """Serve only an authorized deterministic local Preview resource."""
+        # Relative URLs in an iframe cannot retain a query string from a
+        # <base> element, so the ephemeral session token is carried in the
+        # resource URL path.  Traversal above this segment removes the token
+        # and therefore fails closed.
+        token_segment, separator, asset_path = relative_path.partition("/")
+        query_token = self._query().get("token", [""])[0]
+        if separator and hmac.compare_digest(unquote(token_segment), self.session.token):
+            pass
+        elif query_token and hmac.compare_digest(query_token, self.session.token):
+            asset_path = relative_path
+        else:
+            self._json(
+                {"ok": False, "error": {"code": "session_token_invalid", "message": "The Preview resource token is invalid."}},
+                HTTPStatus.UNAUTHORIZED,
+            )
+            return
+        try:
+            path = self.session.document.resolve_asset(unquote(asset_path))
+            if path.suffix.lower() in {".html", ".htm", ".js", ".mjs"}:
+                raise WorkbenchError("resource_forbidden", "Preview resources cannot execute or embed HTML/JavaScript")
+            body = path.read_bytes()
+        except WorkbenchError as exc:
+            status = HTTPStatus.FORBIDDEN if exc.code in {"path_forbidden", "resource_forbidden"} else HTTPStatus.NOT_FOUND
+            self._json_error(exc, status)
+            return
+        except (OSError, ValueError) as exc:
+            self._json_error(WorkbenchError("resource_read_failed", str(exc)), HTTPStatus.NOT_FOUND)
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", resource_content_type(path))
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler protocol
         parsed = urlsplit(self.path)
         if parsed.path in {"/", "/index.html"}:
@@ -836,10 +886,21 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
         if not parsed.path.startswith("/api/"):
             self._json({"ok": False, "error": {"code": "not_found", "message": "Workbench route not found."}}, HTTPStatus.NOT_FOUND)
             return
+        if parsed.path.startswith("/api/preview/resource/"):
+            self._serve_preview_resource(parsed.path[len("/api/preview/resource/") :])
+            return
         if not self._authorized(mutating=False):
             return
         if parsed.path == "/api/session":
             self._json(self._document_response())
+        elif parsed.path == "/api/preview":
+            self._json(
+                {
+                    "ok": True,
+                    "session_id": self.session.session_id,
+                    "preview": self.session.preview_snapshot(include_html=True),
+                }
+            )
         elif parsed.path == "/api/recovery":
             self._json({"ok": True, "recovery": self.session.document.recovery_summary()})
         elif parsed.path.startswith("/api/asset/"):
@@ -891,7 +952,38 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                 if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
                     raise WorkbenchError("invalid_draft", "Draft request requires a string 'text' field")
                 self.session.document.set_draft(payload["text"])
+                self.session.mark_preview_stale()
                 self._json(self._document_response())
+                return
+            if parsed.path in {"/api/preview", "/api/preview/refresh"}:
+                payload = self._read_json()
+                if not isinstance(payload, dict):
+                    raise WorkbenchError("invalid_preview", "Preview request must be a JSON object")
+                text = payload.get("text", self.session.document.text)
+                if not isinstance(text, str):
+                    raise WorkbenchError("invalid_preview", "Preview request text must be a string")
+                if text != self.session.document.text:
+                    self.session.document.set_draft(text)
+                else:
+                    self.session.mark_preview_stale()
+                preview = self.session.render_preview(text)
+                self._json(
+                    self._document_response(
+                        ok=preview.get("status") != WorkbenchPreviewState.ERROR.value,
+                        error=preview.get("error"),
+                        include_preview_html=True,
+                    )
+                )
+                return
+            if parsed.path == "/api/preview/select":
+                payload = self._read_json()
+                if not isinstance(payload, dict) or not isinstance(payload.get("marker"), str):
+                    raise WorkbenchError("invalid_preview_selection", "Preview selection requires a marker")
+                revision = payload.get("revision")
+                if revision is not None and not isinstance(revision, int):
+                    raise WorkbenchError("invalid_preview_selection", "Preview selection revision must be an integer")
+                selection = self.session.preview_selection(payload["marker"], revision)
+                self._json({"ok": True, "session_id": self.session.session_id, "selection": selection})
                 return
             if parsed.path == "/api/save":
                 payload = self._read_json()
@@ -919,10 +1011,12 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                         HTTPStatus.CONFLICT,
                     )
                 else:
+                    self.session.mark_preview_stale()
                     self._json(self._document_response())
                 return
             if parsed.path == "/api/recovery/restore":
                 self.session.document.restore_recovery()
+                self.session.mark_preview_stale()
                 self._json(self._document_response())
                 return
             if parsed.path == "/api/shutdown":
@@ -958,6 +1052,11 @@ class WorkbenchSession:
         self._running = False
         self._lock = threading.RLock()
         self._build_lock = threading.Lock()
+        self._preview: PreviewProduct | None = None
+        self._preview_status = WorkbenchPreviewState.IDLE
+        self._preview_sha256: str | None = None
+        self._preview_revision = 0
+        self._preview_error: dict[str, str] | None = None
 
     @classmethod
     def open(
@@ -1093,6 +1192,82 @@ class WorkbenchSession:
             )
             return self._startup
 
+    def mark_preview_stale(self) -> None:
+        """Mark a derived Preview stale after the draft changes."""
+        with self._lock:
+            if self._preview is not None:
+                self._preview_status = WorkbenchPreviewState.STALE
+
+    def preview_snapshot(self, *, include_html: bool = False) -> dict[str, Any]:
+        """Return Preview metadata, optionally including its transient HTML."""
+        with self._lock:
+            current_sha = self.document.draft_sha256
+            status = self._preview_status
+            if (
+                self._preview is not None
+                and self._preview_sha256 != current_sha
+                and status != WorkbenchPreviewState.ERROR
+            ):
+                status = WorkbenchPreviewState.STALE
+            payload: dict[str, Any] = {
+                "status": status.value,
+                "draft_sha256": self._preview_sha256,
+                "revision": self._preview_revision,
+                "aspect_ratio": "16:9",
+                "slide_count": self._preview.slide_count if self._preview is not None else 0,
+                "slides": list(self._preview.slides) if self._preview is not None else [],
+            }
+            if self._preview_error is not None:
+                payload["error"] = dict(self._preview_error)
+            if self._preview is not None:
+                payload["source_map"] = dict(self._preview.source_map)
+                payload["blocked_resources"] = list(self._preview.blocked_resources)
+                payload["parser_repaired"] = self._preview.parser_repaired
+                if include_html:
+                    payload["html"] = self._preview.html
+            return payload
+
+    def render_preview(self, text: str) -> dict[str, Any]:
+        """Render the current draft into an in-memory isolated Preview product."""
+        if not isinstance(text, str):
+            raise WorkbenchError("invalid_draft", "Preview text must be a string")
+        with self._lock:
+            try:
+                startup = self.startup
+                resource_base_url = (
+                    f"{startup.base_url}/api/preview/resource/{quote(self.token, safe='')}/"
+                )
+                product = build_preview(
+                    text,
+                    asset_root=self.document.asset_root,
+                    resource_base_url=resource_base_url,
+                    preview_origin=startup.base_url,
+                )
+            except Exception as exc:
+                self._preview_status = WorkbenchPreviewState.ERROR
+                self._preview_error = {"code": "preview_failed", "message": str(exc)}
+                return self.preview_snapshot(include_html=False)
+            self._preview = product
+            self._preview_sha256 = _sha256_bytes(text.encode("utf-8"))
+            self._preview_revision += 1
+            self._preview_status = WorkbenchPreviewState.CURRENT
+            self._preview_error = None
+            return self.preview_snapshot(include_html=True)
+
+    def preview_selection(self, marker: str, revision: int | None = None) -> dict[str, Any]:
+        """Resolve one Preview marker without exposing parser internals."""
+        with self._lock:
+            if self._preview is None:
+                return {"status": "unmapped", "marker": marker, "reason": "preview_unavailable"}
+            if revision is not None and revision != self._preview_revision:
+                return {"status": "stale", "marker": marker, "reason": "preview_revision_stale"}
+            if (
+                self._preview_status != WorkbenchPreviewState.CURRENT
+                or self._preview_sha256 != self.document.draft_sha256
+            ):
+                return {"status": "stale", "marker": marker, "reason": "preview_stale"}
+            return self._preview.selection(marker)
+
     def serve_forever(self) -> None:
         server = self._server
         if server is None:
@@ -1203,6 +1378,7 @@ __all__ = [
     "SourcePatch",
     "WorkbenchDocument",
     "WorkbenchError",
+    "WorkbenchPreviewState",
     "WorkbenchSession",
     "WorkbenchStartup",
     "WorkbenchState",
