@@ -334,7 +334,12 @@ class WorkbenchDocument:
                 self._draft_sha256 = _sha256_bytes(patch.text.encode("utf-8"))
                 self._persist_recovery_locked()
                 actual = self._disk_sha256_locked()
-                if actual != expected:
+                # The client must present the source revision this session
+                # loaded (or last successfully saved), not merely any SHA that
+                # happens to be on disk now.  Otherwise a client could observe
+                # an external edit, submit that new SHA, and overwrite it with
+                # its stale draft.
+                if expected != self._source_sha256 or actual != expected:
                     self._state = WorkbenchState.CONFLICT
                     self._last_error = {
                         "code": "CONFLICT",
@@ -343,6 +348,7 @@ class WorkbenchDocument:
                     return {
                         "outcome": "CONFLICT",
                         "expected_sha256": expected,
+                        "base_sha256": self._source_sha256,
                         "disk_sha256": actual,
                     }
                 payload = patch.text.encode("utf-8")
@@ -465,6 +471,20 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                 HTTPStatus.UNAUTHORIZED,
             )
             return False
+        if mutating:
+            session_id = self.headers.get("X-Workbench-Session", "")
+            if not session_id:
+                self._json(
+                    {"ok": False, "error": {"code": "session_id_required", "message": "The current Workbench session ID is required for mutations."}},
+                    HTTPStatus.UNAUTHORIZED,
+                )
+                return False
+            if not hmac.compare_digest(session_id, self.session.session_id):
+                self._json(
+                    {"ok": False, "error": {"code": "session_id_invalid", "message": "The Workbench session ID is invalid."}},
+                    HTTPStatus.UNAUTHORIZED,
+                )
+                return False
         return True
 
     def _json(self, payload: Mapping[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
@@ -606,6 +626,7 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                                 "code": "CONFLICT",
                                 "message": "Source changed on disk; the Workbench draft was preserved.",
                                 "expected_sha256": outcome["expected_sha256"],
+                                "base_sha256": outcome["base_sha256"],
                                 "disk_sha256": outcome["disk_sha256"],
                             },
                         ),

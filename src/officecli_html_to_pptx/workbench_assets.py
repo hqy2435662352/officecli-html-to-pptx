@@ -67,10 +67,12 @@ INDEX_HTML = r"""<!doctype html>
       const save = document.getElementById("save");
       const recover = document.getElementById("recover");
       let snapshot = null;
+      let sessionId = "";
       let draftTimer = null;
 
       async function api(path, options = {}) {
         const headers = Object.assign({"Accept": "application/json", "X-Workbench-Token": token}, options.headers || {});
+        if (sessionId) headers["X-Workbench-Session"] = sessionId;
         if (options.body !== undefined) headers["Content-Type"] = "application/json; charset=utf-8";
         const response = await fetch(path, Object.assign({}, options, {headers}));
         const body = await response.json();
@@ -83,6 +85,7 @@ INDEX_HTML = r"""<!doctype html>
       }
 
       function paint(body) {
+        if (body.session_id) sessionId = body.session_id;
         snapshot = body.document;
         if (document.activeElement !== editor || editor.value === "") editor.value = snapshot.text;
         state.textContent = snapshot.state;

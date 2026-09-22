@@ -38,6 +38,7 @@ def _request(
     path: str,
     *,
     token: str | None,
+    session_id: str | None = None,
     payload: dict | None = None,
 ) -> tuple[int, dict]:
     url = startup.base_url + path  # type: ignore[attr-defined]
@@ -47,6 +48,8 @@ def _request(
         headers["Content-Type"] = "application/json; charset=utf-8"
     if token is not None:
         headers["X-Workbench-Token"] = token
+    if session_id is not None:
+        headers["X-Workbench-Session"] = session_id
     request = Request(url, data=body, headers=headers, method=method)
     try:
         with urlopen(request, timeout=5) as response:
@@ -133,6 +136,7 @@ def test_workbench_save_accepts_invalid_candidate_and_preserves_exact_utf8(
             "POST",
             "/api/draft",
             token=startup.token,
+            session_id=startup.session_id,
             payload={"text": candidate},
         )
         assert status == 200
@@ -144,6 +148,7 @@ def test_workbench_save_accepts_invalid_candidate_and_preserves_exact_utf8(
             "POST",
             "/api/save",
             token=startup.token,
+            session_id=startup.session_id,
             payload={
                 "expected_sha256": _sha256_bytes(original_bytes),
                 "text": candidate,
@@ -175,6 +180,7 @@ def test_workbench_conflict_is_atomic_and_preserves_draft(
             "POST",
             "/api/draft",
             token=startup.token,
+            session_id=startup.session_id,
             payload={"text": draft},
         )
         source.write_bytes(external.encode("utf-8"))
@@ -184,6 +190,7 @@ def test_workbench_conflict_is_atomic_and_preserves_draft(
             "POST",
             "/api/save",
             token=startup.token,
+            session_id=startup.session_id,
             payload={"expected_sha256": original_sha, "text": draft},
         )
         assert status == 409
@@ -196,6 +203,97 @@ def test_workbench_conflict_is_atomic_and_preserves_draft(
         assert status == 200
         assert loaded["document"]["text"] == draft
         assert loaded["document"]["disk_sha256"] == _sha256_bytes(external.encode("utf-8"))
+    finally:
+        _stop(session, thread)
+
+
+def test_workbench_rejects_external_sha_even_when_client_submits_current_disk_hash(
+    tmp_path: Path,
+) -> None:
+    """The browser cannot turn an external edit into an accepted Save."""
+    source = tmp_path / "author.html"
+    original = "<p>one</p>\n"
+    external = "<p>external edit</p>\n"
+    draft = "<p>my draft</p>\n"
+    source.write_bytes(original.encode("utf-8"))
+    session, startup, thread = _start(source, tmp_path / "recovery")
+    try:
+        _request(
+            startup,
+            "POST",
+            "/api/draft",
+            token=startup.token,
+            session_id=startup.session_id,
+            payload={"text": draft},
+        )
+        source.write_bytes(external.encode("utf-8"))
+        external_sha = _sha256_bytes(external.encode("utf-8"))
+
+        status, conflict = _request(
+            startup,
+            "POST",
+            "/api/save",
+            token=startup.token,
+            session_id=startup.session_id,
+            payload={"expected_sha256": external_sha, "text": draft},
+        )
+
+        assert status == 409
+        assert conflict["error"]["code"] == "CONFLICT"
+        assert conflict["document"]["state"] == "CONFLICT"
+        assert conflict["document"]["text"] == draft
+        assert source.read_bytes() == external.encode("utf-8")
+    finally:
+        _stop(session, thread)
+
+
+def test_workbench_mutations_require_current_session_id_in_addition_to_token(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "author.html"
+    original = "<p>one</p>\n"
+    draft = "<p>draft</p>\n"
+    source.write_bytes(original.encode("utf-8"))
+    session, startup, thread = _start(source, tmp_path / "recovery")
+    try:
+        original_sha = _sha256_bytes(original.encode("utf-8"))
+        for method, path, payload in (
+            ("POST", "/api/draft", {"text": draft}),
+            ("POST", "/api/save", {"expected_sha256": original_sha, "text": draft}),
+            ("POST", "/api/shutdown", None),
+        ):
+            status, denied = _request(
+                startup,
+                method,
+                path,
+                token=startup.token,
+                payload=payload,
+            )
+            assert status == 401
+            assert denied["error"]["code"] == "session_id_required"
+
+        status, denied = _request(
+            startup,
+            "POST",
+            "/api/draft",
+            token=startup.token,
+            session_id="wrong-session",
+            payload={"text": draft},
+        )
+        assert status == 401
+        assert denied["error"]["code"] == "session_id_invalid"
+        assert source.read_bytes() == original.encode("utf-8")
+
+        status, accepted = _request(
+            startup,
+            "POST",
+            "/api/draft",
+            token=startup.token,
+            session_id=startup.session_id,
+            payload={"text": draft},
+        )
+        assert status == 200
+        assert accepted["document"]["state"] == "DIRTY"
     finally:
         _stop(session, thread)
 
@@ -213,6 +311,7 @@ def test_workbench_recovery_is_separate_and_never_auto_committed(tmp_path: Path)
             "POST",
             "/api/draft",
             token=startup.token,
+            session_id=startup.session_id,
             payload={"text": draft},
         )
     finally:
@@ -231,6 +330,7 @@ def test_workbench_recovery_is_separate_and_never_auto_committed(tmp_path: Path)
             "POST",
             "/api/recovery/restore",
             token=second_startup.token,
+            session_id=second_startup.session_id,
         )
         assert status == 200
         assert restored["document"]["text"] == draft
