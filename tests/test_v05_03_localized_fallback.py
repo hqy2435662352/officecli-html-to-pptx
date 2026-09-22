@@ -57,6 +57,7 @@ async def test_localized_region_is_one_captured_atomic_measurement(tmp_path: Pat
     assert root["src"].startswith("data:image/png;base64,")
 
 
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 @pytest.mark.asyncio
 async def test_localized_region_lowers_to_one_picture_with_readable_asset(
     tmp_path: Path,
@@ -102,6 +103,7 @@ async def test_localized_region_lowers_to_one_picture_with_readable_asset(
     assert output.is_file()
 
 
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 @pytest.mark.asyncio
 async def test_explicit_trimmed_id_is_unique_identity_with_separate_source_path(
     tmp_path: Path,
@@ -125,6 +127,7 @@ async def test_explicit_trimmed_id_is_unique_identity_with_separate_source_path(
     assert obj["localized_fallback"]["source_path"] == "slide[1]/div[1]"
 
 
+@pytest.mark.skipif(shutil.which("officecli") is None, reason="OfficeCLI is required")
 @pytest.mark.asyncio
 async def test_localized_region_without_id_uses_stable_source_path_across_runs(
     tmp_path: Path,

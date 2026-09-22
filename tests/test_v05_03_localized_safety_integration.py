@@ -314,8 +314,12 @@ async def test_isolated_capture_excludes_overlapping_sibling_and_overflow_blocks
     assert "localized_capture_overflow" in overflow_fallback["captureFailureCodes"]
     assert "src" not in overflow_element
 
-    with pytest.raises(OfficeCLICompilationError) as failure:
-        await compile_officecli(
-            str(overflow_source), "author", str(tmp_path / "overflow.pptx")
+    if shutil.which("officecli") is not None:
+        with pytest.raises(OfficeCLICompilationError) as failure:
+            await compile_officecli(
+                str(overflow_source), "author", str(tmp_path / "overflow.pptx")
+            )
+        assert (
+            failure.value.diagnostics[0].code
+            == "unresolved_localized_fallback_capture"
         )
-    assert failure.value.diagnostics[0].code == "unresolved_localized_fallback_capture"
