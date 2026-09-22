@@ -15,6 +15,7 @@ from .application import (
     get_capabilities,
 )
 from .protocol import CommandResult
+from .workbench import run_workbench
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -66,6 +67,25 @@ def _parser() -> argparse.ArgumentParser:
     )
     finalize.add_argument("evidence", help="The exact .evidence directory from build.")
     finalize.add_argument("--json", action="store_true", help="Write one JSON envelope to stdout.")
+
+    workbench = subparsers.add_parser(
+        "workbench",
+        help="Edit one real UTF-8 Author HTML source in a loopback Workbench.",
+    )
+    workbench.add_argument("input", help="One Candidate or Author HTML path.")
+    workbench.add_argument(
+        "--no-browser",
+        "--no-open-browser",
+        action="store_true",
+        help="Do not open the system browser after the session is ready.",
+    )
+    workbench.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="Loopback TCP port (default: choose an available port).",
+    )
+    workbench.add_argument("--json", action="store_true", help="Write one startup envelope to stdout.")
     return parser
 
 
@@ -157,6 +177,14 @@ def main(argv: list[str] | None = None) -> int:
         return _emit(asyncio.run(build_author_html(args.input, args.output)), json_mode)
     if args.command == "finalize":
         return _emit(finalize_build(args.evidence), json_mode)
+    if args.command == "workbench":
+        _use_utf8_streams()
+        return run_workbench(
+            args.input,
+            json_mode=json_mode,
+            open_browser=not args.no_browser,
+            port=args.port,
+        )
     return _invalid_invocation(f"Unsupported command: {args.command!r}", json_mode=json_mode)
 
 
