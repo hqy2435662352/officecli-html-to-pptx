@@ -1,4 +1,4 @@
-"""Task-oriented V0.5.3 application operations.
+"""Task-oriented V0.6.1 application operations.
 
 The module is deliberately an orchestration layer, not a second renderer.  It
 owns the public command semantics, the Artifact Pair transaction, and the
@@ -73,7 +73,7 @@ from .runtime import (
 )
 
 
-PUBLIC_COMMANDS = ("capabilities", "doctor", "check", "build", "finalize")
+PUBLIC_COMMANDS = ("capabilities", "doctor", "check", "build", "finalize", "workbench")
 VISUAL_REVIEW_SCHEMA_VERSION = 1
 NATIVE_EVIDENCE_SCHEMA_VERSION = 1
 EVIDENCE_FILES = (
@@ -236,6 +236,21 @@ def get_capabilities() -> CommandResult:
             "node": NODE_TESTED_RANGE,
         },
         "commands": list(PUBLIC_COMMANDS),
+        "workbench": {
+            "command": "workbench",
+            "source_authority": "saved_author_html_sha256",
+            "preview_authoritative": False,
+            "draft_check": True,
+            "save_invalid_candidate": True,
+            "build_requires": [
+                "draft_sha256_equals_disk_sha256",
+                "no_external_modification_conflict",
+                "exact_saved_sha_contract_pass",
+            ],
+            "bind": "loopback-only",
+            "session_token": "unguessable",
+            "remote_network": False,
+        },
         "scope": {
             "creates_new_pptx": True,
             "officehtml_import": False,
@@ -1365,7 +1380,7 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
         if result_payload.get("product") != {"name": PRODUCT_NAME, "version": PRODUCT_VERSION}:
             raise ValueError("result.json product identity does not match this product")
         if result_payload.get("status") != "VISUAL_REVIEW_REQUIRED":
-            raise ValueError("result.json is not a pending V0.5.3 build")
+            raise ValueError("result.json is not a pending Product 0.6.1 build")
         build_id = result_payload.get("build_id")
         if not isinstance(build_id, str) or not build_id:
             raise ValueError("result.json must contain a build_id")

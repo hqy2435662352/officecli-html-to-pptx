@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>Product 0.6.1 Workbench acceptance corpus</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+      body { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+      .slide { position: relative; display: none; width: 1920px; height: 1080px; overflow: hidden; background: #f8fafc; }
+      .slide.active { display: block; }
+      .title { position: absolute; left: 120px; top: 100px; width: 1680px; height: 80px; color: #0f172a; font-size: 48px; line-height: 1.15; font-weight: 700; }
+      .copy { position: absolute; left: 120px; top: 250px; width: 720px; height: 240px; padding: 28px; border: 3px solid #2563eb; border-radius: 20px; background: #eff6ff; color: #1e293b; font-size: 30px; line-height: 1.35; }
+      .copy strong { color: #0f766e; }
+      .picture { position: absolute; left: 980px; top: 250px; width: 420px; height: 260px; }
+      .table { position: absolute; left: 160px; top: 270px; width: 860px; height: 390px; border-collapse: collapse; table-layout: fixed; font-size: 26px; }
+      .table th, .table td { height: 90px; padding: 12px; border: 3px solid #475569; text-align: center; vertical-align: middle; }
+      .table th { background: #1d4ed8; color: #fff; }
+      .table td { background: #fff; }
+      .shape { position: absolute; left: 1180px; top: 300px; width: 520px; height: 180px; padding: 28px; border: 4px solid #0f766e; border-radius: 28px; background: #ccfbf1; color: #134e4a; font-size: 30px; }
+      .chart { position: absolute; left: 220px; top: 260px; width: 760px; height: 480px; }
+      .localized { position: absolute; left: 1180px; top: 300px; width: 560px; height: 300px; padding: 28px; border: 4px solid #be123c; border-radius: 22px; background: #fff1f2; color: #881337; font-size: 30px; line-height: 1.3; overflow: hidden; }
+      .note { position: absolute; left: 120px; top: 900px; width: 1680px; height: 70px; color: #475569; font-size: 24px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="slide active" aria-label="CJK text and deterministic picture">
+        <div class="title">&#x5DE5;&#x4F5C;&#x53F0;&#x771F;&#x5B9E;&#x6E90;&#x7801; - CJK and inline CSS</div>
+        <div class="copy">&#x8FD9;&#x662F;&#x4E00;&#x4E2A;&#x53EF;&#x4FDD;&#x5B58;&#x3001;&#x53EF;&#x68C0;&#x67E5;&#x3001;&#x53EF;&#x9884;&#x89C8;&#x7684; <strong>&#x771F;&#x5B9E; Author HTML</strong> &#x8349;&#x7A3F;&#x3002</div>
+        <img class="picture" alt="deterministic local image" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MjAiIGhlaWdodD0iMjYwIj48cmVjdCB3aWR0aD0iNDIwIiBoZWlnaHQ9IjI2MCIgZmlsbD0iIzFENEU4QSIvPjx0ZXh0IHg9IjIwIiB5PSIxNDAiIGZpbGw9IndoaXRlIiBmb250LXNpemU9IjQ4Ij5kYXRhIGltYWdlPC90ZXh0Pjwvc3ZnPg==">
+        <div class="note">Slide 1 - UTF-8 / inline CSS / deterministic data image</div>
+      </section>
+
+      <section class="slide" aria-label="native table and shape">
+        <div class="title">&#x539F;&#x751F;&#x8868;&#x683C;&#x4E0E;&#x5F62;&#x72B6; - native editable objects</div>
+        <table class="table" aria-label="native table"><thead><tr><th colspan="2">&#x9A8C;&#x6536;&#x9879;&#x76EE;</th><th>&#x72B6;&#x6001;</th></tr></thead><tbody><tr><td rowspan="2">Native</td><td>Text / table</td><td>PASS</td></tr><tr><td>Shape</td><td>PASS</td></tr></tbody></table>
+        <div class="shape" data-pptx-shape-geometry="roundRect">&#x8FD9;&#x4E2A;&#x5F62;&#x72B6;&#x4FDD;&#x6301; PowerPoint &#x539F;&#x751F;&#x53EF;&#x7F16;&#x8F91;&#x3002</div>
+        <div class="note">Slide 2 - merged table topology / annotated native shape</div>
+      </section>
+
+      <section class="slide" aria-label="native chart">
+        <div class="title">&#x539F;&#x751F;&#x56FE;&#x8868; - native chart semantics</div>
+        <div class="chart" data-pptx-chart id="workbench-chart">
+          <script type="application/json" data-pptx-chart-spec>{"type":"column","categories":["Text","Table","Shape","Chart"],"series":[{"name":"Native objects","values":[3,2,1,1],"color":"#1D4ED8"}],"presentation":{"title":"Workbench object inventory","legend":"none","labels":"value","valueAxis":{"numberFormat":"integer"}}}</script>
+          <script>
+            (() => {
+              const chart = document.currentScript.closest("[data-pptx-chart]");
+              const specNode = chart && chart.querySelector("script[data-pptx-chart-spec]");
+              if (!chart || !specNode) return;
+              let spec;
+              try { spec = JSON.parse(specNode.textContent || ""); } catch (_) { return; }
+              const series = spec && spec.series && spec.series[0];
+              if (spec.type !== "column" || !Array.isArray(spec.categories) || !series || !Array.isArray(series.values)) return;
+              const values = series.values.map(Number);
+              if (values.length !== spec.categories.length || values.some((value) => !Number.isFinite(value) || value < 0)) return;
+              const svgNS = "http://www.w3.org/2000/svg";
+              const svgElement = (name, attributes) => {
+                const element = document.createElementNS(svgNS, name);
+                Object.entries(attributes || {}).forEach(([key, value]) => element.setAttribute(key, String(value)));
+                return element;
+              };
+              const width = chart.clientWidth || 760;
+              const height = chart.clientHeight || 480;
+              const plot = {left: 72, top: 42, right: width - 26, bottom: height - 58};
+              const plotWidth = Math.max(1, plot.right - plot.left);
+              const plotHeight = Math.max(1, plot.bottom - plot.top);
+              const maximum = Math.max(1, ...values);
+              const axisMax = Math.max(1, Math.ceil(maximum * 2) / 2 + 0.5);
+              const color = /^#[0-9a-f]{6}$/i.test(String(series.color || "")) ? String(series.color) : "#1D4ED8";
+              const svg = svgElement("svg", {class: "chart-projection", role: "img", "aria-label": String(spec.presentation && spec.presentation.title || "Chart"), viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: "none"});
+              svg.style.cssText = "display:block;width:100%;height:100%;pointer-events:none";
+              const title = svgElement("text", {x: width / 2, y: 20, "text-anchor": "middle", fill: "#0f172a", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 16, "font-weight": 700});
+              title.textContent = String(spec.presentation && spec.presentation.title || "");
+              svg.appendChild(title);
+              for (let tick = 0; tick <= axisMax + 0.001; tick += 0.5) {
+                const y = plot.bottom - (tick / axisMax) * plotHeight;
+                svg.appendChild(svgElement("line", {x1: plot.left, y1: y, x2: plot.right, y2: y, stroke: "#e2e8f0", "stroke-width": 1}));
+                const tickLabel = svgElement("text", {x: plot.left - 9, y: y + 4, "text-anchor": "end", fill: "#475569", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 10});
+                tickLabel.textContent = Number.isInteger(tick) ? String(tick) : tick.toFixed(1);
+                svg.appendChild(tickLabel);
+              }
+              svg.appendChild(svgElement("line", {x1: plot.left, y1: plot.top, x2: plot.left, y2: plot.bottom, stroke: "#94a3b8", "stroke-width": 1}));
+              svg.appendChild(svgElement("line", {x1: plot.left, y1: plot.bottom, x2: plot.right, y2: plot.bottom, stroke: "#94a3b8", "stroke-width": 1}));
+              const groupWidth = plotWidth / spec.categories.length;
+              values.forEach((value, index) => {
+                const barWidth = groupWidth * 0.48;
+                const x = plot.left + groupWidth * index + (groupWidth - barWidth) / 2;
+                const barHeight = (value / axisMax) * plotHeight;
+                const y = plot.bottom - barHeight;
+                svg.appendChild(svgElement("rect", {x, y, width: barWidth, height: barHeight, fill: color}));
+                const valueLabel = svgElement("text", {x: x + barWidth / 2, y: Math.max(plot.top + 10, y - 5), "text-anchor": "middle", fill: "#334155", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 10});
+                valueLabel.textContent = String(value);
+                svg.appendChild(valueLabel);
+                const categoryLabel = svgElement("text", {x: x + barWidth / 2, y: plot.bottom + 20, "text-anchor": "middle", fill: "#334155", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 10});
+                categoryLabel.textContent = String(spec.categories[index]);
+                svg.appendChild(categoryLabel);
+              });
+              chart.querySelectorAll(":scope > [aria-hidden='true']").forEach((node) => node.remove());
+              chart.insertBefore(svg, specNode);
+            })();
+          </script>
+        </div>
+        <div class="note">Slide 3 - inert chart spec is the only chart semantic source</div>
+      </section>
+
+      <section class="slide" aria-label="localized fallback">
+        <div class="title">&#x5C40;&#x90E8;&#x89C6;&#x89C9;&#x56DE;&#x9000; - localized fallback</div>
+        <div class="copy">&#x76F8;&#x90BB;&#x6587;&#x672C;&#x4ECD;&#x662F;&#x72EC;&#x7ACB;&#x539F;&#x751F;&#x5BF9;&#x8C61;&#xFF1B;&#x56DE;&#x9000;&#x533A;&#x57DF;&#x660E;&#x786E;&#x6807;&#x8BB0;&#x4E3A; visual-only.</div>
+        <div class="localized" data-pptx-rasterize="localized"><strong>&#x5C40;&#x90E8;&#x89C6;&#x89C9;&#x533A;&#x57DF;</strong><br>&#x8FD9;&#x662F;&#x4E00;&#x4E2A;&#x6709;&#x5BA1;&#x8BA1;&#x8BC1;&#x636E;&#x7684;&#x5C40;&#x90E8;&#x56FE;&#x7247;&#xFF0C;&#x800C;&#x4E0D;&#x662F;&#x6574;&#x9875;&#x622A;&#x56FE;&#x3002</div>
+        <div class="note">Slide 4 - explicit localized fallback remains outside native counts</div>
+      </section>
+    </main>
+  </body>
+</html>

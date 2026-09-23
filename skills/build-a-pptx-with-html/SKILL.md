@@ -28,7 +28,7 @@ keep compiler and validation logic out of this Skill.
 
 ## Boundaries
 
-This is the Product Version `0.5.3` new-deck workflow. Begin with HTML,
+This is the Product Version `0.6.1` new-deck workflow. Begin with HTML,
 references, or a brief and create a new PPTX. A task that starts by editing an
 existing PPTX belongs to the separate presentation-editing workflow.
 
@@ -55,7 +55,7 @@ not install or upgrade a runtime without explicit user permission. A failed
 Contract check is a remediation signal, not authorization to change the
 Contract or product source.
 
-For Product 0.5.3, the Contract version is 1.3. It retains the V0.5.1 native
+For Product 0.6.1, the Contract version is 1.3. It retains the V0.5.1 native
 paragraph, frozen text, merged-table, and `data-pptx-shape-geometry` slices and
 adds explicitly authored native `column`, `bar`, `line`, `pie`, and `doughnut`
 charts. Author one chart as an atomic `data-pptx-chart` container with exactly
@@ -84,6 +84,30 @@ WebGL, animation, interaction-dependent content, nested/overlapping/whole-
 slide regions, and regions containing another atomic object remain rejected.
 Use the `localized_fallback_surface` section of `capabilities --json` as the
 authority for the exact policy and Evidence vocabulary.
+
+## Optional source Workbench
+
+When the user needs to edit the real HTML while iterating, start the installed
+Workbench with `officecli-html-to-pptx workbench <input.html>`. It is a local
+editor for Author HTML, not an existing-PPTX editor. The Workbench server is
+loopback-only, serves its editor assets from the installed wheel, and requires
+no CDN or runtime npm installation. It owns one resolved source, asset root,
+output root, and session token.
+
+The Workbench editor draft and isolated Preview are derived state. The saved
+UTF-8 Author HTML remains the only compiler input. Save is conflict-safe and
+may persist Contract-invalid Candidate HTML; it never promotes that file to
+Author HTML. Build Revision never implicitly saves and is enabled only after
+the draft SHA equals the disk SHA, no external change is detected, and Check
+has returned `PASS` for that exact saved SHA. Build then reuses the normal
+`build_author_html` Artifact Pair, independent readback, validation/issues,
+Comparison Images, Gate 3, and finalize flow.
+
+Use the Workbench for source editing, slide Preview/navigation, diagnostics,
+and source selection. Do not add property forms, canvas drag/drop, an AST
+rewrite, a public Source Patch schema, remote collaboration, or existing-PPTX
+editing. Preview markers and source maps are ephemeral and must never be
+copied into the saved HTML.
 
 ## Contract-first sequence
 

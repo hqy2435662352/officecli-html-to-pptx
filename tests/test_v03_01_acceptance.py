@@ -718,7 +718,7 @@ def test_capabilities_command_reports_the_executable_authority() -> None:
     assert envelope["data"]["contract"] == authority
     for surface in ("mixed_run_surface", "paragraph_layout_surface", "list_surface"):
         assert envelope["data"]["contract"][surface] == authority[surface]
-    assert authority["version"] == "1.1"
+    assert authority["version"] == "1.3"
     assert authority["profile"] == "author"
     assert envelope["data"]["commands"] == list(PUBLIC_COMMANDS) == [
         "capabilities",
@@ -726,6 +726,7 @@ def test_capabilities_command_reports_the_executable_authority() -> None:
         "check",
         "build",
         "finalize",
+        "workbench",
     ]
     assert envelope["data"]["rendering_compatibility"]["officecli"] == (
         f">={FORMAL_OFFICECLI_VERSION}"
