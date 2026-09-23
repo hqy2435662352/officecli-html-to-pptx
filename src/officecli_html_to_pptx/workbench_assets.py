@@ -104,7 +104,7 @@ INDEX_HTML = r"""<!doctype html>
       </dl>
       <section id="inspector" aria-label="Selected object Inspector">
         <h2>Inspector</h2>
-        <p id="inspector-selection" class="muted">Select a mapped text leaf or run in Preview.</p>
+        <p id="inspector-selection" class="muted">Select a mapped Preview object to inspect its supported fields.</p>
         <label for="inspector-text">Text</label>
         <textarea id="inspector-text" disabled></textarea>
         <div id="inspector-text-origin" class="muted"></div>
@@ -197,7 +197,7 @@ INDEX_HTML = r"""<!doctype html>
         paintPreviewState(body.preview);
       }
 
-      function clearInspector(messageText = "Select a mapped text leaf or run in Preview.") {
+      function clearInspector(messageText = "Select a mapped Preview object to inspect its supported fields.") {
         selected = null;
         selectionRequest += 1;
         inspectorSelection.textContent = messageText;
@@ -241,15 +241,84 @@ INDEX_HTML = r"""<!doctype html>
             allowed.textContent = `Allowed: ${field.allowed_values.join(", ")}`;
             row.appendChild(allowed);
           }
+          if (field.preview_note) {
+            const previewNote = document.createElement("div");
+            previewNote.className = "muted";
+            previewNote.textContent = field.preview_note;
+            row.appendChild(previewNote);
+          }
           if (field.local_override && field.editable) {
             const override = document.createElement("div");
             override.className = "muted";
             override.textContent = "Local override: this edits only the selected object; the shared class rule stays unchanged.";
             row.appendChild(override);
           }
+          if (field.control === "select") {
+            const select = document.createElement("select");
+            select.disabled = !field.editable;
+            select.setAttribute("aria-label", `${name} value`);
+            (field.options || []).forEach((optionValue) => {
+              const option = document.createElement("option");
+              option.value = String(optionValue);
+              option.textContent = String(optionValue);
+              select.appendChild(option);
+            });
+            if (field.edit_value != null) select.value = String(field.edit_value);
+            select.addEventListener("change", () => {
+              applyInspector({kind: "property", name, value: select.value});
+            });
+            row.appendChild(select);
+            if (field.reason) {
+              const reason = document.createElement("div");
+              reason.className = "muted";
+              reason.textContent = `Read-only: ${field.reason}`;
+              row.appendChild(reason);
+            }
+            inspectorFields.appendChild(row);
+            return;
+          }
+          if (field.control === "image-file") {
+            const fileInput = document.createElement("input");
+            fileInput.type = "file";
+            fileInput.accept = "image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml";
+            fileInput.disabled = !field.editable;
+            fileInput.setAttribute("aria-label", "Replacement image file, up to 10 MiB");
+            fileInput.addEventListener("change", () => {
+              const file = fileInput.files && fileInput.files[0];
+              if (!file) return;
+              if (file.size > 10 * 1024 * 1024) {
+                showError(new Error("Replacement image exceeds the 10 MiB decoded import limit."));
+                fileInput.value = "";
+                return;
+              }
+              const chosen = Object.assign({}, selected);
+              const reader = new FileReader();
+              reader.onerror = () => showError(new Error("Could not read the selected image file."));
+              reader.onload = () => {
+                if (typeof reader.result !== "string") {
+                  showError(new Error("The selected image did not produce a data URI."));
+                  return;
+                }
+                applyInspector({kind: "property", name, value: reader.result}, chosen);
+              };
+              reader.readAsDataURL(file);
+            });
+            const hint = document.createElement("div");
+            hint.className = "muted";
+            hint.textContent = "Choose a supported image file. MIME, payload and decoded size are checked before the Draft changes.";
+            row.append(labelNode, computedNode, sourceNode, fileInput, hint);
+            if (field.reason) {
+              const reason = document.createElement("div");
+              reason.className = "muted";
+              reason.textContent = `Read-only: ${field.reason}`;
+              row.appendChild(reason);
+            }
+            inspectorFields.appendChild(row);
+            return;
+          }
           const input = document.createElement("input");
           input.type = field.input_type || "text";
-          input.value = field.computed == null ? "" : String(field.computed);
+          input.value = field.edit_value != null ? String(field.edit_value) : (field.computed == null ? "" : String(field.computed));
           input.disabled = !field.editable;
           input.setAttribute("aria-label", `${name} value`);
           const apply = document.createElement("button");
@@ -420,19 +489,20 @@ INDEX_HTML = r"""<!doctype html>
         previewTimer = setTimeout(refreshPreview, 300);
       }
 
-      async function applyInspector(intent) {
-        if (!selected || !snapshot) return;
+      async function applyInspector(intent, selection = selected) {
+        if (!selection || !snapshot) return;
         if (!editorMatchesText(editor.value, snapshot.text)) {
           showError(new Error("Source editor has an unsent change; wait for Preview to refresh, then select the object again."));
           return;
         }
         if (previewTimer) clearTimeout(previewTimer);
         previewTimer = null;
-        const chosen = Object.assign({}, selected);
+        const chosen = Object.assign({}, selection);
         const version = editVersion;
         try {
           const body = await enqueueMutation(async () => {
             if (
+              !selected || selected.marker !== chosen.marker || selected.preview_revision !== chosen.preview_revision ||
               editVersion !== version || !editorMatchesText(editor.value, snapshot.text) ||
               snapshot.draft_revision !== chosen.draft_revision ||
               snapshot.draft_sha256 !== chosen.draft_sha256 ||

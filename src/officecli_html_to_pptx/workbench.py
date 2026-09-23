@@ -39,6 +39,7 @@ from .workbench_inspector_objects import (
     inspect_chart_selection,
     inspect_table_selection,
 )
+from .workbench_shape_picture import apply_shape_picture_patch, inspect_shape_picture_selection
 from .workbench_preview import PreviewProduct, build_preview, resource_content_type
 
 
@@ -1471,6 +1472,13 @@ class WorkbenchSession:
                 )
             elif kind == "chart":
                 inspector = inspect_chart_selection(self.document.text, selection)
+            elif kind in {"shape", "picture"}:
+                inspector = inspect_shape_picture_selection(
+                    self.document.text,
+                    selection,
+                    computed,
+                    matched_styles,
+                )
             else:
                 inspector = {
                     "writable": False,
@@ -1479,7 +1487,7 @@ class WorkbenchSession:
                     "fields": {},
                 }
             selection["inspector"] = inspector
-            if kind in {"text", "table-cell", "chart"}:
+            if kind in {"text", "shape", "picture", "table-cell", "chart"}:
                 self._inspector_context[(preview_revision, draft_revision, draft_sha256, marker)] = {
                     "computed": computed,
                     "matched_styles": matched_styles,
@@ -1537,6 +1545,13 @@ class WorkbenchSession:
                 )
             elif kind == "chart":
                 inspected = inspect_chart_selection(self.document.text, current)
+            elif kind in {"shape", "picture"}:
+                inspected = inspect_shape_picture_selection(
+                    self.document.text,
+                    current,
+                    context.get("computed"),
+                    context.get("matched_styles"),
+                )
             else:
                 inspected = {"fields": {}, "read_only_reason": "This object kind is read-only."}
             context["inspector"] = inspected
@@ -1563,13 +1578,23 @@ class WorkbenchSession:
                     )
                 elif kind == "chart":
                     patch = apply_chart_patch(self.document.text, current, intent)
-                else:
+                elif kind == "text":
                     patch = apply_text_patch(
                         self.document.text,
                         current,
                         intent,
                         context.get("matched_styles"),
                     )
+                elif kind in {"shape", "picture"}:
+                    patch = apply_shape_picture_patch(
+                        self.document.text,
+                        current,
+                        intent,
+                        context.get("computed"),
+                        context.get("matched_styles"),
+                    )
+                else:
+                    raise ValueError("This object kind is read-only in the current Inspector slice.")
             except ValueError as exc:
                 raise WorkbenchError("inspector_read_only", str(exc)) from exc
             self.document.set_draft(

@@ -724,11 +724,25 @@ def _injected_script(nonce: str, chart_projections: dict[str, dict[str, Any]]) -
   const channel = "officecli-workbench-preview";
   const send = (type, data) => window.parent.postMessage(Object.assign({{channel, type}}, data || {{}}), "*");
   const chartProjections = {chart_projection_json};
-  const inspectedProperties = new Set(["font-family", "font-size", "color", "font-weight", "font-style", "text-align", "background", "background-color", "font", "all"]);
+  const inspectedProperties = new Set([
+    "font-family", "font-size", "color", "font-weight", "font-style", "text-align", "font", "all",
+    "background", "background-color", "background-image", "border", "border-color", "border-width",
+    "border-top", "border-right", "border-bottom", "border-left", "border-top-color", "border-right-color",
+    "border-bottom-color", "border-left-color", "border-top-width", "border-right-width", "border-bottom-width",
+    "border-left-width", "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
+    "border-radius", "opacity", "object-fit",
+  ]);
   const inspectStyles = (target) => {{
     const styles = {{}};
     const computed = getComputedStyle(target);
-    ["font-family", "font-size", "color", "font-weight", "font-style", "text-align", "background-color", "display"].forEach((name) => {{
+    [
+      "font-family", "font-size", "color", "font-weight", "font-style", "text-align", "display",
+      "background-color", "background-image", "border-color", "border-width", "opacity", "object-fit",
+      "border-radius", "width", "height",
+      "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+      "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+      "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
+    ].forEach((name) => {{
       styles[name] = computed.getPropertyValue(name);
     }});
     const sources = [];
@@ -770,6 +784,7 @@ def _injected_script(nonce: str, chart_projections: dict[str, dict[str, Any]]) -
     for (let element = target, scope = "element"; element; element = element.parentElement, scope = "ancestor") {{
       collectDeclarations(element.style, "element.style", scope);
       for (const sheet of document.styleSheets) {{
+        if (sheet.ownerNode && sheet.ownerNode.hasAttribute("data-workbench-geometry-projection")) continue;
         try {{ if (sheet.cssRules) visitRules(sheet.cssRules, element, scope); }}
         catch (_) {{ rulesComplete = false; }}
       }}
@@ -777,6 +792,31 @@ def _injected_script(nonce: str, chart_projections: dict[str, dict[str, Any]]) -
     return {{text: target.textContent || "", styles, matched_styles: {{rules_complete: rulesComplete, sources}}}};
   }};
   const slides = Array.from(document.querySelectorAll(".slide"));
+  const shapeProjectionStyle = document.createElement("style");
+  shapeProjectionStyle.nonce = "{nonce}";
+  shapeProjectionStyle.dataset.workbenchGeometryProjection = "true";
+  shapeProjectionStyle.textContent = [
+    '[data-workbench-preview-shape="ellipse"] {{ border-radius: 50% !important; }}',
+    '[data-workbench-preview-shape="roundRect"] {{ border-radius: var(--workbench-roundrect-radius) !important; }}',
+  ].join("\\n");
+  document.head.appendChild(shapeProjectionStyle);
+  const renderShapeProjections = () => document.querySelectorAll("[data-pptx-shape-geometry]").forEach((shape) => {{
+    const geometry = shape.getAttribute("data-pptx-shape-geometry");
+    delete shape.dataset.workbenchPreviewShape;
+    if (geometry === "ellipse") {{
+      shape.dataset.workbenchPreviewShape = "ellipse";
+      return;
+    }}
+    if (geometry !== "roundRect") return;
+    const currentStyle = getComputedStyle(shape);
+    const currentRadius = currentStyle.borderRadius;
+    if (!/^0(?:\\.0+)?(?:px|pt)?$/.test(currentRadius)) return;
+    const width = parseFloat(currentStyle.width);
+    const height = parseFloat(currentStyle.height);
+    const radius = Math.max(0, Math.min(width || 0, height || 0) * 0.16667);
+    shape.style.setProperty("--workbench-roundrect-radius", `${{radius}}px`);
+    shape.dataset.workbenchPreviewShape = "roundRect";
+  }});
   const svgElement = (name, attributes) => {{
     const element = document.createElementNS("http://www.w3.org/2000/svg", name);
     Object.entries(attributes || {{}}).forEach(([key, value]) => element.setAttribute(key, String(value)));
@@ -881,6 +921,7 @@ def _injected_script(nonce: str, chart_projections: dict[str, dict[str, Any]]) -
   }});
   slides.forEach((slide, index) => {{ slide.dataset.workbenchSlide = String(index + 1); }});
   renderChartProjections();
+  renderShapeProjections();
   fit();
   window.addEventListener("resize", fit);
   activate(initial);
