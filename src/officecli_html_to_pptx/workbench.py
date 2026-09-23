@@ -33,6 +33,12 @@ from .contract import check_contract_text
 from .protocol import Artifact, CommandResult, Diagnostic, result
 from .workbench_assets import INDEX_HTML
 from .workbench_inspector import apply_text_patch, inspect_text_selection
+from .workbench_inspector_objects import (
+    apply_chart_patch,
+    apply_table_patch,
+    inspect_chart_selection,
+    inspect_table_selection,
+)
 from .workbench_preview import PreviewProduct, build_preview, resource_content_type
 
 
@@ -1448,19 +1454,32 @@ class WorkbenchSession:
             selection = self._preview.selection(marker)
             if selection.get("status") != "mapped":
                 return selection
-            inspector = inspect_text_selection(
-                self.document.text,
-                selection,
-                computed,
-                matched_styles,
-            ) if selection.get("kind") == "text" else {
-                "writable": False,
-                "read_only_reason": "This ticket only edits simple text leaves/runs.",
-                "text": {"editable": False, "reason": "This object kind is read-only in the text Inspector."},
-                "fields": {},
-            }
+            kind = selection.get("kind")
+            if kind == "text":
+                inspector = inspect_text_selection(
+                    self.document.text,
+                    selection,
+                    computed,
+                    matched_styles,
+                )
+            elif kind == "table-cell":
+                inspector = inspect_table_selection(
+                    self.document.text,
+                    selection,
+                    computed,
+                    matched_styles,
+                )
+            elif kind == "chart":
+                inspector = inspect_chart_selection(self.document.text, selection)
+            else:
+                inspector = {
+                    "writable": False,
+                    "read_only_reason": "This object kind is read-only in the available Inspector.",
+                    "text": {"editable": False, "reason": "This object kind is read-only in the available Inspector."},
+                    "fields": {},
+                }
             selection["inspector"] = inspector
-            if selection.get("kind") == "text":
+            if kind in {"text", "table-cell", "chart"}:
                 self._inspector_context[(preview_revision, draft_revision, draft_sha256, marker)] = {
                     "computed": computed,
                     "matched_styles": matched_styles,
@@ -1501,17 +1520,32 @@ class WorkbenchSession:
             current = self._preview.selection(marker) if self._preview is not None else {}
             if current.get("status") != "mapped":
                 raise WorkbenchError("inspector_read_only", str(current.get("reason") or "The selected object is unmapped."))
-            inspected = inspect_text_selection(
-                self.document.text,
-                current,
-                context.get("computed"),
-                context.get("matched_styles"),
-            )
+            kind = current.get("kind")
+            if kind == "text":
+                inspected = inspect_text_selection(
+                    self.document.text,
+                    current,
+                    context.get("computed"),
+                    context.get("matched_styles"),
+                )
+            elif kind == "table-cell":
+                inspected = inspect_table_selection(
+                    self.document.text,
+                    current,
+                    context.get("computed"),
+                    context.get("matched_styles"),
+                )
+            elif kind == "chart":
+                inspected = inspect_chart_selection(self.document.text, current)
+            else:
+                inspected = {"fields": {}, "read_only_reason": "This object kind is read-only."}
             context["inspector"] = inspected
             if not isinstance(intent, dict):
                 raise WorkbenchError("invalid_inspector_edit", "Inspector edit must be one text or property intent.")
             if intent.get("kind") == "text":
                 field = inspected.get("text", {})
+            elif intent.get("kind") == "chart":
+                field = inspected.get("fields", {}).get(str(intent.get("field_key", "")), {})
             elif intent.get("kind") == "property":
                 field = inspected.get("fields", {}).get(str(intent.get("name", "")).lower(), {})
             else:
@@ -1520,12 +1554,22 @@ class WorkbenchSession:
                 reason = field.get("reason") or inspected.get("read_only_reason") or "This field is read-only."
                 raise WorkbenchError("inspector_read_only", str(reason))
             try:
-                patch = apply_text_patch(
-                    self.document.text,
-                    current,
-                    intent,
-                    context.get("matched_styles"),
-                )
+                if kind == "table-cell":
+                    patch = apply_table_patch(
+                        self.document.text,
+                        current,
+                        intent,
+                        context.get("matched_styles"),
+                    )
+                elif kind == "chart":
+                    patch = apply_chart_patch(self.document.text, current, intent)
+                else:
+                    patch = apply_text_patch(
+                        self.document.text,
+                        current,
+                        intent,
+                        context.get("matched_styles"),
+                    )
             except ValueError as exc:
                 raise WorkbenchError("inspector_read_only", str(exc)) from exc
             self.document.set_draft(

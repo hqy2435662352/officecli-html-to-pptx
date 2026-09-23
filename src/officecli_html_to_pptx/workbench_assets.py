@@ -219,7 +219,7 @@ INDEX_HTML = r"""<!doctype html>
         inspectorTextOrigin.textContent = [
           text.computed != null ? `Computed: ${text.computed}` : "Computed: unavailable",
           text.origin ? `Source/origin: ${text.origin}` : "",
-          text.reason || "",
+          text.reason || inspector.read_only_reason || "",
         ].filter(Boolean).join(" · ");
         applyTextButton.disabled = !text.editable;
         inspectorFields.replaceChildren();
@@ -235,6 +235,12 @@ INDEX_HTML = r"""<!doctype html>
           sourceNode.className = "muted";
           sourceNode.textContent = `Source/origin: ${field.source || field.origin || "none"}`;
           row.append(labelNode, computedNode, sourceNode);
+          if (field.allowed_values) {
+            const allowed = document.createElement("div");
+            allowed.className = "muted";
+            allowed.textContent = `Allowed: ${field.allowed_values.join(", ")}`;
+            row.appendChild(allowed);
+          }
           if (field.local_override && field.editable) {
             const override = document.createElement("div");
             override.className = "muted";
@@ -242,7 +248,7 @@ INDEX_HTML = r"""<!doctype html>
             row.appendChild(override);
           }
           const input = document.createElement("input");
-          input.type = "text";
+          input.type = field.input_type || "text";
           input.value = field.computed == null ? "" : String(field.computed);
           input.disabled = !field.editable;
           input.setAttribute("aria-label", `${name} value`);
@@ -250,7 +256,9 @@ INDEX_HTML = r"""<!doctype html>
           apply.type = "button";
           apply.textContent = `Apply ${name}`;
           apply.disabled = !field.editable;
-          apply.addEventListener("click", () => applyInspector({kind: "property", name, value: input.value}));
+          apply.addEventListener("click", () => applyInspector(Object.assign(
+            {}, field.intent || {kind: "property", name}, {value: input.value}
+          )));
           row.append(input, apply);
           if (field.reason) {
             const reason = document.createElement("div");
