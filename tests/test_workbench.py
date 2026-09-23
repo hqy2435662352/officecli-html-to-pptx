@@ -15,7 +15,7 @@ import pytest
 from officecli_html_to_pptx import cli
 from officecli_html_to_pptx import check_author_html
 from officecli_html_to_pptx.protocol import Artifact, result
-from officecli_html_to_pptx.workbench import WorkbenchSession
+from officecli_html_to_pptx.workbench import WorkbenchError, WorkbenchSession
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -51,7 +51,42 @@ def _request(
     token: str | None,
     session_id: str | None = None,
     payload: dict | None = None,
+    inject_preconditions: bool = True,
 ) -> tuple[int, dict]:
+    mutation_paths = {
+        "/api/draft",
+        "/api/check",
+        "/api/preview",
+        "/api/preview/refresh",
+        "/api/preview/select",
+        "/api/inspector/apply",
+        "/api/save",
+        "/api/recovery/restore",
+    }
+    if inject_preconditions and method == "POST" and path in mutation_paths and token is not None and session_id is not None:
+        if payload is None:
+            payload = {}
+        if not any(key in payload for key in ("expected_draft_revision", "draft_revision")):
+            session_request = Request(
+                startup.base_url + "/api/session",  # type: ignore[attr-defined]
+                headers={"X-Workbench-Token": token},
+            )
+            with urlopen(session_request, timeout=5) as response:
+                current = json.loads(response.read().decode("utf-8"))
+            document = current["document"]
+            if path == "/api/preview/select":
+                preview = current["preview"]
+                payload.setdefault("preview_revision", payload.pop("revision", preview["revision"]))
+                payload.setdefault("draft_revision", preview["draft_revision"])
+                payload.setdefault("draft_sha256", preview["draft_sha256"])
+            elif path == "/api/inspector/apply":
+                preview = current["preview"]
+                payload.setdefault("preview_revision", preview["revision"])
+                payload.setdefault("draft_revision", preview["draft_revision"])
+                payload.setdefault("draft_sha256", preview["draft_sha256"])
+            else:
+                payload.setdefault("expected_draft_revision", document["draft_revision"])
+                payload.setdefault("expected_draft_sha256", document["draft_sha256"])
     url = startup.base_url + path  # type: ignore[attr-defined]
     body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {"Accept": "application/json"}
@@ -305,6 +340,87 @@ def test_workbench_mutations_require_current_session_id_in_addition_to_token(
         )
         assert status == 200
         assert accepted["document"]["state"] == "DIRTY"
+    finally:
+        _stop(session, thread)
+
+
+def test_workbench_draft_revision_cas_invalidates_a_to_b_to_a_and_rejects_stale_routes(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "author.html"
+    original = "<p>A</p>\n"
+    source.write_bytes(original.encode("utf-8"))
+    session, startup, thread = _start(source, tmp_path / "recovery")
+    try:
+        initial = session.document.snapshot()
+        session.update_draft("<p>B</p>\n", initial["draft_revision"], initial["draft_sha256"])
+        middle = session.document.snapshot()
+        session.update_draft(original, middle["draft_revision"], middle["draft_sha256"])
+        current = session.document.snapshot()
+
+        assert current["draft_sha256"] == initial["draft_sha256"]
+        assert current["draft_revision"] == initial["draft_revision"] + 2
+
+        stale_identity = {
+            "expected_draft_revision": initial["draft_revision"],
+            "expected_draft_sha256": initial["draft_sha256"],
+        }
+        original_sha = _sha256_bytes(original.encode("utf-8"))
+        for path, payload in (
+            ("/api/draft", {"text": "<p>stale</p>", **stale_identity}),
+            ("/api/check", {"text": "<p>stale</p>", **stale_identity}),
+            ("/api/preview", {"text": "<p>stale</p>", **stale_identity}),
+            ("/api/preview/refresh", {"text": "<p>stale</p>", **stale_identity}),
+            ("/api/save", {"expected_sha256": original_sha, "text": "<p>stale</p>", **stale_identity}),
+            ("/api/recovery/restore", stale_identity),
+        ):
+            status, rejected = _request(
+                startup,
+                "POST",
+                path,
+                token=startup.token,
+                session_id=startup.session_id,
+                payload=payload,
+                inject_preconditions=False,
+            )
+            assert status == 409
+            assert rejected["error"]["code"] == "stale_draft"
+            assert rejected["document"]["text"] == original
+            assert rejected["document"]["draft_revision"] == current["draft_revision"]
+            assert source.read_bytes() == original.encode("utf-8")
+    finally:
+        _stop(session, thread)
+
+
+def test_workbench_text_bearing_mutations_reject_missing_draft_preconditions(tmp_path: Path) -> None:
+    source = tmp_path / "author.html"
+    original = "<p>saved</p>"
+    source.write_text(original, encoding="utf-8")
+    session, startup, thread = _start(source, tmp_path / "recovery")
+    try:
+        before = session.document.snapshot()
+        for path, payload in (
+            ("/api/draft", {"text": "<p>draft</p>"}),
+            ("/api/check", {"text": "<p>draft</p>"}),
+            ("/api/preview", {"text": "<p>draft</p>"}),
+            ("/api/preview/refresh", {"text": "<p>draft</p>"}),
+            ("/api/save", {"expected_sha256": before["source_sha256"], "text": "<p>draft</p>"}),
+            ("/api/recovery/restore", {}),
+        ):
+            status, rejected = _request(
+                startup,
+                "POST",
+                path,
+                token=startup.token,
+                session_id=startup.session_id,
+                payload=payload,
+                inject_preconditions=False,
+            )
+            assert status == 400
+            assert rejected["error"]["code"] == "draft_preconditions_required"
+            assert rejected["document"]["text"] == original
+            assert rejected["document"]["draft_revision"] == before["draft_revision"]
+            assert source.read_text(encoding="utf-8") == original
     finally:
         _stop(session, thread)
 

@@ -32,6 +32,7 @@ from .application import _diagnostic_from_contract, build_author_html
 from .contract import check_contract_text
 from .protocol import Artifact, CommandResult, Diagnostic, result
 from .workbench_assets import INDEX_HTML
+from .workbench_inspector import apply_text_patch, inspect_text_selection
 from .workbench_preview import PreviewProduct, build_preview, resource_content_type
 
 
@@ -133,6 +134,8 @@ class SourcePatch:
 
     expected_sha256: str
     text: str
+    expected_draft_revision: int
+    expected_draft_sha256: str
 
 
 class WorkbenchDocument:
@@ -155,6 +158,7 @@ class WorkbenchDocument:
         self._source_sha256 = source_sha256
         self._draft_text = source_text
         self._draft_sha256 = source_sha256
+        self._draft_revision = 0
         self._state = WorkbenchState.CLEAN
         self._last_error: dict[str, str] | None = None
         self._contract_check: dict[str, Any] | None = None
@@ -193,6 +197,21 @@ class WorkbenchDocument:
     def draft_sha256(self) -> str:
         with self._lock:
             return self._draft_sha256
+
+    @property
+    def draft_revision(self) -> int:
+        with self._lock:
+            return self._draft_revision
+
+    def _check_draft_preconditions_locked(self, expected_revision: Any, expected_sha256: Any) -> None:
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
+            raise WorkbenchError("invalid_draft_revision", "expected_draft_revision must be a non-negative integer")
+        expected_sha = _validate_sha(expected_sha256, "expected_draft_sha256")
+        if expected_revision != self._draft_revision or expected_sha != self._draft_sha256:
+            raise WorkbenchError(
+                "stale_draft",
+                "Draft changed since this request was created; the current Draft and source were preserved.",
+            )
 
     @property
     def state(self) -> WorkbenchState:
@@ -243,6 +262,7 @@ class WorkbenchDocument:
             "source_path": str(self.source_path),
             "base_sha256": self._source_sha256,
             "draft_sha256": self._draft_sha256,
+            "draft_revision": self._draft_revision,
             "text": self._draft_text,
             "updated_at": time.time(),
         }
@@ -258,9 +278,15 @@ class WorkbenchDocument:
     def record_error(self, code: str, message: str) -> None:
         """Expose a failed public request as the document's Error state."""
         with self._lock:
-            if code == "build_in_progress":
-                # A rejected Save during Build is actionable but does not make
-                # the source or the running build erroneous.
+            if code in {
+                "build_in_progress",
+                "stale_draft",
+                "stale_preview",
+                "inspector_read_only",
+                "draft_preconditions_required",
+            }:
+                # A rejected user action does not make the source or Draft
+                # erroneous; retain its current lifecycle state.
                 self._last_error = {"code": code, "message": message}
             else:
                 self._set_error_locked(code, message)
@@ -277,35 +303,36 @@ class WorkbenchDocument:
             )
         return disk_sha
 
-    def set_draft(self, text: str) -> None:
+    def _assign_draft_locked(self, text: str) -> None:
+        changed = text != self._draft_text
+        self._draft_text = text
+        self._draft_sha256 = _sha256_bytes(text.encode("utf-8"))
+        if changed:
+            self._draft_revision += 1
+        self._last_error = None
+        self._state = WorkbenchState.CLEAN if text == self._source_text else WorkbenchState.DIRTY
+        try:
+            self._persist_recovery_locked()
+        except (OSError, UnicodeError, ValueError) as exc:
+            # The Draft remains in memory; a recovery write failure is visible
+            # instead of being mistaken for a durable recovery.
+            self._set_error_locked("recovery_write_failed", str(exc))
+            raise WorkbenchError("recovery_write_failed", str(exc)) from exc
+
+    def set_draft(self, text: str, *, expected_revision: int, expected_sha256: str) -> None:
         if not isinstance(text, str):
             raise WorkbenchError("invalid_draft", "Draft text must be a JSON string")
         with self._lock:
-            self._draft_text = text
-            self._draft_sha256 = _sha256_bytes(text.encode("utf-8"))
-            self._last_error = None
-            self._state = (
-                WorkbenchState.CLEAN
-                if text == self._source_text
-                else WorkbenchState.DIRTY
-            )
-            try:
-                self._persist_recovery_locked()
-            except (OSError, UnicodeError, ValueError) as exc:
-                # The draft remains in memory; a recovery write failure is
-                # visible instead of being mistaken for a durable recovery.
-                self._set_error_locked("recovery_write_failed", str(exc))
-                raise WorkbenchError("recovery_write_failed", str(exc)) from exc
+            self._check_draft_preconditions_locked(expected_revision, expected_sha256)
+            self._assign_draft_locked(text)
 
-    def restore_recovery(self) -> None:
+    def restore_recovery(self, *, expected_revision: int, expected_sha256: str) -> None:
         with self._lock:
+            self._check_draft_preconditions_locked(expected_revision, expected_sha256)
             payload = self._recovery_record_locked()
             if payload is None:
                 raise WorkbenchError("recovery_unavailable", "No compatible draft recovery is available")
-            self._draft_text = str(payload["text"])
-            self._draft_sha256 = _sha256_bytes(self._draft_text.encode("utf-8"))
-            self._state = WorkbenchState.DIRTY
-            self._last_error = None
+            self._assign_draft_locked(str(payload["text"]))
 
     def recovery_summary(self) -> dict[str, Any]:
         with self._lock:
@@ -341,6 +368,7 @@ class WorkbenchDocument:
                 "asset_root": str(self.asset_root),
                 "source_sha256": self._source_sha256,
                 "draft_sha256": self._draft_sha256,
+                "draft_revision": self._draft_revision,
                 "disk_sha256": disk_sha,
                 "state": self._state.value,
                 "contract_status": contract_check["status"],
@@ -380,13 +408,22 @@ class WorkbenchDocument:
             return "AUTHOR"
         return "CANDIDATE"
 
-    def check(self, text: str | None = None) -> dict[str, Any]:
+    def check(
+        self,
+        text: str | None = None,
+        *,
+        expected_revision: int | None = None,
+        expected_sha256: str | None = None,
+    ) -> dict[str, Any]:
         """Check the current draft through the file checker's text seam."""
         with self._lock:
             if text is not None:
                 if not isinstance(text, str):
                     raise WorkbenchError("invalid_draft", "Check text must be a JSON string")
-                self.set_draft(text)
+                if expected_revision is None or expected_sha256 is None:
+                    raise WorkbenchError("draft_preconditions_required", "Check text requires current Draft revision and SHA-256")
+                self._check_draft_preconditions_locked(expected_revision, expected_sha256)
+                self._assign_draft_locked(text)
             checked_sha256 = self._draft_sha256
             previous_state = self._state
             self._state = WorkbenchState.CHECKING
@@ -559,6 +596,10 @@ class WorkbenchDocument:
         if not isinstance(patch.text, str):
             raise WorkbenchError("invalid_draft", "Source Patch text must be a string")
         with self._lock:
+            self._check_draft_preconditions_locked(
+                patch.expected_draft_revision,
+                patch.expected_draft_sha256,
+            )
             if self._build is not None and self._build.get("status") == "BUILDING":
                 raise WorkbenchError(
                     "build_in_progress",
@@ -570,9 +611,7 @@ class WorkbenchDocument:
                 # Save carries the complete draft so a click racing the
                 # browser's debounced draft request cannot lose user text on a
                 # conflict response.
-                self._draft_text = patch.text
-                self._draft_sha256 = _sha256_bytes(patch.text.encode("utf-8"))
-                self._persist_recovery_locked()
+                self._assign_draft_locked(patch.text)
                 actual = self._disk_sha256_locked()
                 # The client must present the source revision this session
                 # loaded (or last successfully saved), not merely any SHA that
@@ -597,8 +636,6 @@ class WorkbenchDocument:
                 saved_sha = _sha256_bytes(payload)
                 self._source_text = patch.text
                 self._source_sha256 = saved_sha
-                self._draft_text = patch.text
-                self._draft_sha256 = saved_sha
                 self._state = WorkbenchState.SAVED
                 self._last_error = None
                 try:
@@ -747,6 +784,7 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
         error: Mapping[str, Any] | None = None,
         check: Mapping[str, Any] | None = None,
         build: Mapping[str, Any] | None = None,
+        source_patch: Mapping[str, Any] | None = None,
         include_preview_html: bool = False,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -761,6 +799,8 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
             payload["check"] = dict(check)
         if build is not None:
             payload["build"] = dict(build)
+        if source_patch is not None:
+            payload["source_patch"] = dict(source_patch)
         if error is not None:
             payload["error"] = dict(error)
         return payload
@@ -918,7 +958,11 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                 if payload is not None and not isinstance(payload, dict):
                     raise WorkbenchError("invalid_check", "Check request must be a JSON object")
                 text = payload.get("text") if isinstance(payload, dict) else None
-                check = self.session.document.check(text)
+                if text is not None:
+                    revision, draft_sha = self._draft_preconditions(payload, "Check")
+                    check = self.session.check_draft(text, revision, draft_sha)
+                else:
+                    check = self.session.document.check()
                 self._json(self._document_response(check=check))
                 return
             if parsed.path == "/api/build":
@@ -951,22 +995,19 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                 payload = self._read_json()
                 if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
                     raise WorkbenchError("invalid_draft", "Draft request requires a string 'text' field")
-                self.session.document.set_draft(payload["text"])
-                self.session.mark_preview_stale()
+                revision, draft_sha = self._draft_preconditions(payload, "Draft")
+                self.session.update_draft(payload["text"], revision, draft_sha)
                 self._json(self._document_response())
                 return
             if parsed.path in {"/api/preview", "/api/preview/refresh"}:
                 payload = self._read_json()
                 if not isinstance(payload, dict):
                     raise WorkbenchError("invalid_preview", "Preview request must be a JSON object")
-                text = payload.get("text", self.session.document.text)
+                text = payload.get("text")
                 if not isinstance(text, str):
-                    raise WorkbenchError("invalid_preview", "Preview request text must be a string")
-                if text != self.session.document.text:
-                    self.session.document.set_draft(text)
-                else:
-                    self.session.mark_preview_stale()
-                preview = self.session.render_preview(text)
+                    raise WorkbenchError("invalid_preview", "Preview request requires a string 'text' field")
+                revision, draft_sha = self._draft_preconditions(payload, "Preview")
+                preview = self.session.update_and_render_preview(text, revision, draft_sha)
                 self._json(
                     self._document_response(
                         ok=preview.get("status") != WorkbenchPreviewState.ERROR.value,
@@ -979,11 +1020,52 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                 payload = self._read_json()
                 if not isinstance(payload, dict) or not isinstance(payload.get("marker"), str):
                     raise WorkbenchError("invalid_preview_selection", "Preview selection requires a marker")
-                revision = payload.get("revision")
-                if revision is not None and not isinstance(revision, int):
-                    raise WorkbenchError("invalid_preview_selection", "Preview selection revision must be an integer")
-                selection = self.session.preview_selection(payload["marker"], revision)
+                revision = payload.get("preview_revision")
+                draft_revision = payload.get("draft_revision")
+                draft_sha = payload.get("draft_sha256")
+                if isinstance(revision, bool) or not isinstance(revision, int):
+                    raise WorkbenchError("invalid_preview_selection", "Preview selection requires preview_revision")
+                if isinstance(draft_revision, bool) or not isinstance(draft_revision, int):
+                    raise WorkbenchError("invalid_preview_selection", "Preview selection requires draft_revision")
+                if not isinstance(draft_sha, str):
+                    raise WorkbenchError("invalid_preview_selection", "Preview selection requires draft_sha256")
+                selection = self.session.preview_selection(
+                    payload["marker"],
+                    revision,
+                    draft_revision,
+                    draft_sha,
+                    payload.get("computed"),
+                    payload.get("matched_styles"),
+                )
                 self._json({"ok": True, "session_id": self.session.session_id, "selection": selection})
+                return
+            if parsed.path == "/api/inspector/apply":
+                payload = self._read_json()
+                if not isinstance(payload, dict) or not isinstance(payload.get("marker"), str):
+                    raise WorkbenchError("invalid_inspector_edit", "Inspector apply requires a selected marker")
+                preview_revision = payload.get("preview_revision")
+                draft_revision = payload.get("draft_revision")
+                draft_sha = payload.get("draft_sha256")
+                if isinstance(preview_revision, bool) or not isinstance(preview_revision, int):
+                    raise WorkbenchError("invalid_inspector_edit", "Inspector apply requires preview_revision")
+                if isinstance(draft_revision, bool) or not isinstance(draft_revision, int):
+                    raise WorkbenchError("invalid_inspector_edit", "Inspector apply requires draft_revision")
+                if not isinstance(draft_sha, str):
+                    raise WorkbenchError("invalid_inspector_edit", "Inspector apply requires draft_sha256")
+                applied = self.session.apply_inspector(
+                    payload["marker"],
+                    preview_revision,
+                    draft_revision,
+                    draft_sha,
+                    payload.get("intent"),
+                )
+                self._json(
+                    self._document_response(
+                        check=applied["check"],
+                        source_patch=applied["source_patch"],
+                        include_preview_html=True,
+                    )
+                )
                 return
             if parsed.path == "/api/save":
                 payload = self._read_json()
@@ -992,10 +1074,13 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                 expected = payload.get("expected_sha256")
                 if not isinstance(expected, str):
                     raise WorkbenchError("invalid_save", "Save request requires expected_sha256")
+                draft_revision, draft_sha = self._draft_preconditions(payload, "Save")
                 text = payload.get("text", self.session.document.text)
                 if not isinstance(text, str):
                     raise WorkbenchError("invalid_save", "Save request text must be a string")
-                outcome = self.session.document.save(SourcePatch(expected, text))
+                outcome = self.session.save_draft(
+                    SourcePatch(expected, text, draft_revision, draft_sha)
+                )
                 if outcome["outcome"] == "CONFLICT":
                     self._json(
                         self._document_response(
@@ -1011,12 +1096,14 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
                         HTTPStatus.CONFLICT,
                     )
                 else:
-                    self.session.mark_preview_stale()
                     self._json(self._document_response())
                 return
             if parsed.path == "/api/recovery/restore":
-                self.session.document.restore_recovery()
-                self.session.mark_preview_stale()
+                payload = self._read_json()
+                if not isinstance(payload, dict):
+                    raise WorkbenchError("invalid_recovery", "Recovery restore requires current Draft preconditions")
+                revision, draft_sha = self._draft_preconditions(payload, "Recovery restore")
+                self.session.restore_draft(revision, draft_sha)
                 self._json(self._document_response())
                 return
             if parsed.path == "/api/shutdown":
@@ -1029,13 +1116,24 @@ class _WorkbenchHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.BAD_REQUEST
             if exc.code == "recovery_unavailable":
                 status = HTTPStatus.NOT_FOUND
-            elif exc.code == "build_in_progress":
+            elif exc.code in {"build_in_progress", "stale_draft", "stale_preview", "inspector_read_only"}:
                 status = HTTPStatus.CONFLICT
             self._json_error(exc, status)
         except (OSError, UnicodeError, ValueError, TypeError) as exc:
             error = WorkbenchError("request_failed", str(exc))
             self.session.document.record_error(error.code, error.message)
             self._json_error(error, HTTPStatus.BAD_REQUEST)
+
+    @staticmethod
+    def _draft_preconditions(payload: Mapping[str, Any], action: str) -> tuple[int, str]:
+        revision = payload.get("expected_draft_revision")
+        draft_sha = payload.get("expected_draft_sha256")
+        if revision is None or draft_sha is None:
+            raise WorkbenchError(
+                "draft_preconditions_required",
+                f"{action} requires expected_draft_revision and expected_draft_sha256.",
+            )
+        return revision, draft_sha
 
 
 class WorkbenchSession:
@@ -1056,7 +1154,9 @@ class WorkbenchSession:
         self._preview_status = WorkbenchPreviewState.IDLE
         self._preview_sha256: str | None = None
         self._preview_revision = 0
+        self._preview_draft_revision: int | None = None
         self._preview_error: dict[str, str] | None = None
+        self._inspector_context: dict[tuple[int, int, str, str], dict[str, Any]] = {}
 
     @classmethod
     def open(
@@ -1197,6 +1297,61 @@ class WorkbenchSession:
         with self._lock:
             if self._preview is not None:
                 self._preview_status = WorkbenchPreviewState.STALE
+            self._inspector_context.clear()
+
+    def update_draft(self, text: str, expected_revision: int, expected_sha256: str) -> None:
+        with self._lock:
+            self.document.set_draft(
+                text,
+                expected_revision=expected_revision,
+                expected_sha256=expected_sha256,
+            )
+            self.mark_preview_stale()
+
+    def check_draft(self, text: str, expected_revision: int, expected_sha256: str) -> dict[str, Any]:
+        with self._lock:
+            before_revision = self.document.draft_revision
+            checked = self.document.check(
+                text,
+                expected_revision=expected_revision,
+                expected_sha256=expected_sha256,
+            )
+            if self.document.draft_revision != before_revision:
+                self.mark_preview_stale()
+            return checked
+
+    def save_draft(self, patch: SourcePatch) -> dict[str, Any]:
+        with self._lock:
+            before_revision = self.document.draft_revision
+            outcome = self.document.save(patch)
+            if self.document.draft_revision != before_revision:
+                self.mark_preview_stale()
+            return outcome
+
+    def restore_draft(self, expected_revision: int, expected_sha256: str) -> None:
+        with self._lock:
+            before_revision = self.document.draft_revision
+            self.document.restore_recovery(
+                expected_revision=expected_revision,
+                expected_sha256=expected_sha256,
+            )
+            if self.document.draft_revision != before_revision:
+                self.mark_preview_stale()
+
+    def update_and_render_preview(
+        self,
+        text: str,
+        expected_revision: int,
+        expected_sha256: str,
+    ) -> dict[str, Any]:
+        with self._lock:
+            self.document.set_draft(
+                text,
+                expected_revision=expected_revision,
+                expected_sha256=expected_sha256,
+            )
+            self.mark_preview_stale()
+            return self._render_preview_locked(text)
 
     def preview_snapshot(self, *, include_html: bool = False) -> dict[str, Any]:
         """Return Preview metadata, optionally including its transient HTML."""
@@ -1209,10 +1364,17 @@ class WorkbenchSession:
                 and status != WorkbenchPreviewState.ERROR
             ):
                 status = WorkbenchPreviewState.STALE
+            if (
+                self._preview is not None
+                and self._preview_draft_revision != self.document.draft_revision
+                and status != WorkbenchPreviewState.ERROR
+            ):
+                status = WorkbenchPreviewState.STALE
             payload: dict[str, Any] = {
                 "status": status.value,
                 "draft_sha256": self._preview_sha256,
                 "revision": self._preview_revision,
+                "draft_revision": self._preview_draft_revision,
                 "aspect_ratio": "16:9",
                 "slide_count": self._preview.slide_count if self._preview is not None else 0,
                 "slides": list(self._preview.slides) if self._preview is not None else [],
@@ -1232,41 +1394,162 @@ class WorkbenchSession:
         if not isinstance(text, str):
             raise WorkbenchError("invalid_draft", "Preview text must be a string")
         with self._lock:
-            try:
-                startup = self.startup
-                resource_base_url = (
-                    f"{startup.base_url}/api/preview/resource/{quote(self.token, safe='')}/"
-                )
-                product = build_preview(
-                    text,
-                    asset_root=self.document.asset_root,
-                    resource_base_url=resource_base_url,
-                    preview_origin=startup.base_url,
-                )
-            except Exception as exc:
-                self._preview_status = WorkbenchPreviewState.ERROR
-                self._preview_error = {"code": "preview_failed", "message": str(exc)}
-                return self.preview_snapshot(include_html=False)
-            self._preview = product
-            self._preview_sha256 = _sha256_bytes(text.encode("utf-8"))
-            self._preview_revision += 1
-            self._preview_status = WorkbenchPreviewState.CURRENT
-            self._preview_error = None
-            return self.preview_snapshot(include_html=True)
+            if text != self.document.text:
+                raise WorkbenchError("stale_draft", "Preview text does not match the current Draft.")
+            return self._render_preview_locked(text)
 
-    def preview_selection(self, marker: str, revision: int | None = None) -> dict[str, Any]:
+    def _render_preview_locked(self, text: str) -> dict[str, Any]:
+        try:
+            startup = self.startup
+            resource_base_url = (
+                f"{startup.base_url}/api/preview/resource/{quote(self.token, safe='')}/"
+            )
+            product = build_preview(
+                text,
+                asset_root=self.document.asset_root,
+                resource_base_url=resource_base_url,
+                preview_origin=startup.base_url,
+            )
+        except Exception as exc:
+            self._preview_status = WorkbenchPreviewState.ERROR
+            self._preview_error = {"code": "preview_failed", "message": str(exc)}
+            return self.preview_snapshot(include_html=False)
+        self._preview = product
+        self._preview_sha256 = _sha256_bytes(text.encode("utf-8"))
+        self._preview_revision += 1
+        self._preview_draft_revision = self.document.draft_revision
+        self._preview_status = WorkbenchPreviewState.CURRENT
+        self._preview_error = None
+        self._inspector_context.clear()
+        return self.preview_snapshot(include_html=True)
+
+    def preview_selection(
+        self,
+        marker: str,
+        preview_revision: int,
+        draft_revision: int,
+        draft_sha256: str,
+        computed: Any = None,
+        matched_styles: Any = None,
+    ) -> dict[str, Any]:
         """Resolve one Preview marker without exposing parser internals."""
         with self._lock:
             if self._preview is None:
                 return {"status": "unmapped", "marker": marker, "reason": "preview_unavailable"}
-            if revision is not None and revision != self._preview_revision:
+            if preview_revision != self._preview_revision or draft_revision != self._preview_draft_revision:
                 return {"status": "stale", "marker": marker, "reason": "preview_revision_stale"}
             if (
                 self._preview_status != WorkbenchPreviewState.CURRENT
                 or self._preview_sha256 != self.document.draft_sha256
+                or draft_sha256 != self.document.draft_sha256
+                or draft_revision != self.document.draft_revision
             ):
                 return {"status": "stale", "marker": marker, "reason": "preview_stale"}
-            return self._preview.selection(marker)
+            selection = self._preview.selection(marker)
+            if selection.get("status") != "mapped":
+                return selection
+            inspector = inspect_text_selection(
+                self.document.text,
+                selection,
+                computed,
+                matched_styles,
+            ) if selection.get("kind") == "text" else {
+                "writable": False,
+                "read_only_reason": "This ticket only edits simple text leaves/runs.",
+                "text": {"editable": False, "reason": "This object kind is read-only in the text Inspector."},
+                "fields": {},
+            }
+            selection["inspector"] = inspector
+            if selection.get("kind") == "text":
+                self._inspector_context[(preview_revision, draft_revision, draft_sha256, marker)] = {
+                    "computed": computed,
+                    "matched_styles": matched_styles,
+                    "inspector": inspector,
+                }
+            return selection
+
+    def _preview_identity_matches_locked(
+        self,
+        preview_revision: int,
+        draft_revision: int,
+        draft_sha256: str,
+    ) -> bool:
+        return (
+            self._preview is not None
+            and preview_revision == self._preview_revision
+            and draft_revision == self._preview_draft_revision
+            and self._preview_status == WorkbenchPreviewState.CURRENT
+            and draft_revision == self.document.draft_revision
+            and draft_sha256 == self._preview_sha256 == self.document.draft_sha256
+        )
+
+    def apply_inspector(
+        self,
+        marker: str,
+        preview_revision: int,
+        draft_revision: int,
+        draft_sha256: str,
+        intent: Any,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if not self._preview_identity_matches_locked(preview_revision, draft_revision, draft_sha256):
+                raise WorkbenchError("stale_preview", "The selected Preview object is stale; select it again after Preview refreshes.")
+            key = (preview_revision, draft_revision, draft_sha256, marker)
+            context = self._inspector_context.get(key)
+            if context is None:
+                raise WorkbenchError("stale_preview", "Select the current Preview object before applying an Inspector edit.")
+            current = self._preview.selection(marker) if self._preview is not None else {}
+            if current.get("status") != "mapped":
+                raise WorkbenchError("inspector_read_only", str(current.get("reason") or "The selected object is unmapped."))
+            inspected = inspect_text_selection(
+                self.document.text,
+                current,
+                context.get("computed"),
+                context.get("matched_styles"),
+            )
+            context["inspector"] = inspected
+            if not isinstance(intent, dict):
+                raise WorkbenchError("invalid_inspector_edit", "Inspector edit must be one text or property intent.")
+            if intent.get("kind") == "text":
+                field = inspected.get("text", {})
+            elif intent.get("kind") == "property":
+                field = inspected.get("fields", {}).get(str(intent.get("name", "")).lower(), {})
+            else:
+                field = {}
+            if not field.get("editable"):
+                reason = field.get("reason") or inspected.get("read_only_reason") or "This field is read-only."
+                raise WorkbenchError("inspector_read_only", str(reason))
+            try:
+                patch = apply_text_patch(
+                    self.document.text,
+                    current,
+                    intent,
+                    context.get("matched_styles"),
+                )
+            except ValueError as exc:
+                raise WorkbenchError("inspector_read_only", str(exc)) from exc
+            self.document.set_draft(
+                patch["text"],
+                expected_revision=draft_revision,
+                expected_sha256=draft_sha256,
+            )
+            self._preview_status = WorkbenchPreviewState.STALE
+            self._inspector_context.clear()
+            preview = self._render_preview_locked(patch["text"])
+            check = self.document.check()
+            return {
+                "source_patch": {
+                    "property": patch["property"],
+                    "before": patch["before"],
+                    "after": patch["after"],
+                    "diff": patch["diff"],
+                    "local_override": patch["local_override"],
+                    "draft_revision": self.document.draft_revision,
+                    "draft_sha256": self.document.draft_sha256,
+                },
+                "preview": preview,
+                "check": check,
+            }
 
     def serve_forever(self) -> None:
         server = self._server

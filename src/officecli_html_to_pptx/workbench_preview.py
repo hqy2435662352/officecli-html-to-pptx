@@ -8,13 +8,15 @@ base, and the isolated-frame policy are added to a transient copy only.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from html import escape
+from html import escape, unescape
 from html.parser import HTMLParser
 import mimetypes
 from pathlib import Path
 import re
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
+
+from .contract import SUPPORTED_INLINE_ELEMENTS
 
 
 _VOID_TAGS = {
@@ -52,7 +54,7 @@ _TEXT_TAGS = {
     "span",
     "td",
     "th",
-}
+} | set(SUPPORTED_INLINE_ELEMENTS)
 _URL_ATTRIBUTES = {
     "action",
     "cite",
@@ -157,11 +159,15 @@ class _StartEvent:
     start: int
     end: int
     attrs: dict[str, str | None]
+    attr_ranges: dict[str, tuple[int, int]]
     slide: int | None
     self_closing: bool
     inside_special: bool
     has_element_child: bool = False
     has_text: bool = False
+    has_comment: bool = False
+    end_start: int | None = None
+    end_end: int | None = None
 
 
 def _line_offsets(text: str) -> list[int]:
@@ -172,8 +178,9 @@ def _line_offsets(text: str) -> list[int]:
 
 
 def _editor_offset(text: str) -> int:
-    """Convert a Python code-point offset to a browser textarea offset."""
-    return len(text.encode("utf-16-le")) // 2
+    """Map source offsets to UTF-16 positions in the newline-normalized textarea."""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return len(normalized.encode("utf-16-le")) // 2
 
 
 class _SourceParser(HTMLParser):
@@ -218,6 +225,16 @@ class _SourceParser(HTMLParser):
         end = start + len(raw)
         lowered = tag.lower()
         attrs_dict = self._attrs_dict(attrs)
+        attr_ranges = {
+            match.group("name").lower(): (start + match.start("value"), start + match.end("value"))
+            for match in _ATTRIBUTE_RE.finditer(raw)
+        }
+        attr_ranges.update(
+            {
+                match.group("name").lower(): (start + match.start("value"), start + match.end("value"))
+                for match in _UNQUOTED_ATTRIBUTE_RE.finditer(raw)
+            }
+        )
         if any(key.startswith("__duplicate__") for key in attrs_dict):
             self.repaired = True
         if self.stack:
@@ -240,6 +257,7 @@ class _SourceParser(HTMLParser):
                 start=start,
                 end=end,
                 attrs=attrs_dict,
+                attr_ranges=attr_ranges,
                 slide=slide,
                 self_closing=self_closing,
                 inside_special=any(is_special for _, is_special, _, _ in self.stack),
@@ -270,7 +288,14 @@ class _SourceParser(HTMLParser):
             if lowered in stack_tags:
                 del self.stack[stack_tags.index(lowered) :]
             return
-        _, _, parent_slide, _ = self.stack.pop()
+        _, _, parent_slide, event_index = self.stack.pop()
+        start = self._offset()
+        closing = re.match(r"</\s*[\w:-]+\s*>", self.text[start:], re.IGNORECASE)
+        if closing is None:
+            self.repaired = True
+        else:
+            self.events[event_index].end_start = start
+            self.events[event_index].end_end = start + closing.end()
         self.current_slide = parent_slide
 
     def handle_data(self, data: str) -> None:
@@ -279,6 +304,22 @@ class _SourceParser(HTMLParser):
             self.style_data.append((start, start + len(data)))
         elif self.stack and data.strip():
             self.events[self.stack[-1][3]].has_text = True
+
+    def handle_entityref(self, name: str) -> None:
+        if self.stack:
+            self.events[self.stack[-1][3]].has_text = True
+
+    def handle_charref(self, name: str) -> None:
+        if self.stack:
+            self.events[self.stack[-1][3]].has_text = True
+
+    def handle_comment(self, data: str) -> None:
+        if self.stack:
+            self.events[self.stack[-1][3]].has_comment = True
+
+    def handle_decl(self, decl: str) -> None:
+        if self.stack:
+            self.events[self.stack[-1][3]].has_comment = True
 
     def finish(self) -> None:
         if self.stack:
@@ -500,6 +541,58 @@ def _injected_script(nonce: str) -> str:
 (() => {{
   const channel = "officecli-workbench-preview";
   const send = (type, data) => window.parent.postMessage(Object.assign({{channel, type}}, data || {{}}), "*");
+  const inspectedProperties = new Set(["font-family", "font-size", "color", "font-weight", "font-style", "text-align", "font", "all"]);
+  const inspectStyles = (target) => {{
+    const styles = {{}};
+    const computed = getComputedStyle(target);
+    ["font-family", "font-size", "color", "font-weight", "font-style", "text-align", "display"].forEach((name) => {{
+      styles[name] = computed.getPropertyValue(name);
+    }});
+    const sources = [];
+    let rulesComplete = true;
+    const collectDeclarations = (style, selector, scope) => {{
+      for (let index = 0; index < style.length; index += 1) {{
+        const property = style.item(index).toLowerCase();
+        if (!inspectedProperties.has(property)) continue;
+        sources.push({{
+          property,
+          value: style.getPropertyValue(property),
+          important: style.getPropertyPriority(property) === "important",
+          selector,
+          scope,
+        }});
+        if (sources.length >= 200) {{ rulesComplete = false; return; }}
+      }}
+    }};
+    const visitRules = (rules, element, scope) => {{
+      for (const rule of rules) {{
+        if (rule.selectorText && rule.style) {{
+          try {{
+            if (element.matches(rule.selectorText)) collectDeclarations(rule.style, rule.selectorText, scope);
+          }} catch (_) {{ rulesComplete = false; }}
+        }} else if (rule.cssRules) {{
+          let active = true;
+          if (rule.conditionText) {{
+            if (rule.constructor.name === "CSSMediaRule") active = matchMedia(rule.conditionText).matches;
+            else if (rule.constructor.name === "CSSSupportsRule") active = CSS.supports(rule.conditionText);
+            else {{ rulesComplete = false; active = false; }}
+          }} else if (!new Set(["CSSMediaRule", "CSSSupportsRule"]).has(rule.constructor.name)) {{
+            rulesComplete = false;
+            active = false;
+          }}
+          if (active) visitRules(rule.cssRules, element, scope);
+        }} else rulesComplete = false;
+      }}
+    }};
+    for (let element = target, scope = "element"; element; element = element.parentElement, scope = "ancestor") {{
+      collectDeclarations(element.style, "element.style", scope);
+      for (const sheet of document.styleSheets) {{
+        try {{ if (sheet.cssRules) visitRules(sheet.cssRules, element, scope); }}
+        catch (_) {{ rulesComplete = false; }}
+      }}
+    }}
+    return {{text: target.textContent || "", styles, matched_styles: {{rules_complete: rulesComplete, sources}}}};
+  }};
   const slides = Array.from(document.querySelectorAll(".slide"));
   const svgElement = (name, attributes) => {{
     const element = document.createElementNS("http://www.w3.org/2000/svg", name);
@@ -598,7 +691,10 @@ def _injected_script(nonce: str) -> str:
   document.addEventListener("click", (event) => {{
     const target = event.target && event.target.closest ? event.target.closest("[data-workbench-marker]") : null;
     if (!target) return;
-    send("selection", {{marker: target.getAttribute("data-workbench-marker"), slide: Number(target.closest(".slide")?.dataset.workbenchSlide || 0)}});
+    send("selection", Object.assign(
+      {{marker: target.getAttribute("data-workbench-marker"), slide: Number(target.closest(".slide")?.dataset.workbenchSlide || 0)}},
+      inspectStyles(target),
+    ));
   }});
   window.addEventListener("message", (event) => {{
     if (event.source !== window.parent || !event.data || event.data.channel !== channel || event.data.type !== "show-slide") return;
@@ -675,6 +771,37 @@ def build_preview(
             status=status,
             reason=reason,
         ).as_dict()
+        inner_start = event.end
+        inner_end = event.end_start
+        inner = text[inner_start:inner_end] if inner_end is not None else ""
+        editable_text = (
+            kind == "text"
+            and not parser.repaired
+            and not event.self_closing
+            and not event.has_element_child
+            and not event.has_comment
+            and inner_end is not None
+            and "<" not in inner
+        )
+        entry.update(
+            {
+                "text_start": inner_start if editable_text else None,
+                "text_end": inner_end if editable_text else None,
+                "text_value": unescape(inner) if editable_text else None,
+                "text_editable": editable_text,
+                "text_reason": None
+                if editable_text
+                else (
+                    "parser_repaired_candidate"
+                    if parser.repaired
+                    else "text_leaf_required"
+                    if kind == "text"
+                    else "not_text"
+                ),
+                "attributes": dict(event.attrs),
+                "attribute_ranges": dict(event.attr_ranges),
+            }
+        )
         source_map[marker] = entry
         replacements.append((event.start, event.end, _insert_marker(sanitized, marker)))
 
