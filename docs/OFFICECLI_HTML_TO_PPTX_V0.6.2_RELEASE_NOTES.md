@@ -56,3 +56,12 @@ compared by failing/error test identity and cause with that baseline. Counts
 alone do not waive new failures or errors. Historical 0.6.1 failures are not
 silently repaired by changing assertions, Contract semantics, or the
 OfficeCLI compatibility floor.
+
+The installed 0.6.2 wheel acceptance completed ten Inspector edits, Contract
+PASS, an ordinary seven-slide Artifact Pair, zero native material deltas, and
+independent readback of all 11 charts. Per-slide Gate 3 passed with three minor
+chart-layout findings; Finalization returned `PASS_WITH_FINDINGS`. The one
+integration full-suite run produced 21 failures and 39 errors, with test-node
+identity sets exactly equal to the 0.6.1 baseline and no new failure/error.
+The measured hashes, comparison review, and full-run logs are recorded in the
+public corpus acceptance note.

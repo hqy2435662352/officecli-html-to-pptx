@@ -103,3 +103,28 @@ All seven comparisons were reviewed and bound to this Pair. Installed
 `finalize --json` returned `PASS_WITH_FINDINGS`: Gate 3 `PASS`, seven reviewed
 slides, zero major and three minor findings. The chart projection is deliberately
 semantic rather than pixel-equivalent to editable native PowerPoint plots.
+
+## Historical full-suite gate
+
+The primary agent ran the full suite once on the integrated
+`codex/v0.6.2-inspector` branch at `b6e2b39a50169b3a815b375444d139ba90489d34`,
+using the 0.6.1 virtual environment, `PYTHONPATH=src`, and `pytest -q` with
+JUnit output. The result was **21 failed, 782 passed, 5 skipped, 39 errors in
+2954.81s**. The frozen 0.6.1 baseline is **21 failed, 738 passed, 5 skipped,
+39 errors**. Exact failing/error test-node identity sets are identical:
+zero new and zero resolved failures; zero new and zero resolved errors. The four
+new `test_v062_workbench_release.py` checks all passed.
+
+Failure-cause review compared the historical full pytest log with this run.
+Twenty failure sections have the same first assertion or exception text; the
+remaining missing historical Gate report has the same `FileNotFoundError` and
+differs only in the checkout-root path. The 39 V0.4.2 setup errors retain the
+same OfficeCLI `range end 93 out of bounds (scope text has 92 chars)` cause.
+The six V0.5.2 chart-version failures still assert OfficeCLI 1.0.151 against
+the installed 1.0.152. No historical expectation was weakened to obtain this
+result.
+
+Local full-run artifacts are `C:\TEMP\officecli-v062-final-full.xml` (SHA-256
+`b9d958c12666264d2a16f35608f7dedadfc1513a47f83f67072b3f8681ef903e`)
+and `C:\TEMP\officecli-v062-final-full.log` (SHA-256
+`3710dd54ea424a9dcc7cad844888074129f344c952f5eeb524c020da8967efd8`).
