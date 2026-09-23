@@ -108,6 +108,8 @@ def test_class_rule_property_edit_is_an_object_local_override() -> None:
     patch = apply_text_patch(html, selection, {"kind": "property", "name": "color", "value": "#445566"}, matched)
     assert patch["local_override"]
     assert '<p class="label" style="color: #445566">First</p>' in patch["text"]
+    assert '-<p class="label">' in patch["diff"]
+    assert '+<p class="label" style="color: #445566">' in patch["diff"]
     assert '<p class="label">Second</p>' in patch["text"]
     assert ".label { color: #112233; }" in patch["text"]
 

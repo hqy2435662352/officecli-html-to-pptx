@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+from io import BytesIO
 import json
 import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 import officecli_html_to_pptx._internal.officecli_compiler as officecli_compiler
 from officecli_html_to_pptx._internal.officecli_compiler import (
@@ -25,6 +29,40 @@ _SVG_DATA_URI = "data:image/svg+xml;base64," + base64.b64encode(
     b'<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">'
     b'<rect width="20" height="10" fill="#e60012"/></svg>'
 ).decode("ascii")
+
+
+def test_contain_import_scales_small_raster_into_picture_box() -> None:
+    source = BytesIO()
+    Image.new("RGB", (48, 24), (218, 45, 88)).save(source, format="PNG")
+    boxed = officecli_compiler._raster_boxed_source(source.getvalue(), 520, 320)
+    with Image.open(BytesIO(base64.b64decode(boxed.partition(",")[2]))) as image:
+        assert image.size == (520, 320)
+        assert image.getbbox() == (0, 30, 520, 290)
+
+
+@pytest.mark.asyncio
+async def test_contain_import_manifest_describes_embedded_pixels(tmp_path: Path) -> None:
+    source = BytesIO()
+    Image.new("RGB", (48, 24), (218, 45, 88)).save(source, format="PNG")
+    data_uri = "data:image/png;base64," + base64.b64encode(source.getvalue()).decode("ascii")
+    author = tmp_path / "author.html"
+    output = tmp_path / "output.pptx"
+    author.write_text(
+        _author_html().replace(
+            '<div class="accent"></div>',
+            f'<img class="accent" src="{data_uri}" alt="fitted" '
+            'style="width:520px;height:320px;object-fit:contain">',
+        ),
+        encoding="utf-8",
+    )
+    result = await compile_officecli(str(author), "author", str(output), slide_indices=[0])
+    picture = next(item for item in result.manifest["objects"] if item["kind"] == "picture")
+    metadata = picture["metadata"]["picture"]
+    assert metadata["source_fingerprint"] == hashlib.sha256(source.getvalue()).hexdigest()
+    assert metadata["intrinsic_size"] == [520.0, 320.0]
+    with zipfile.ZipFile(output) as deck:
+        media = next(name for name in deck.namelist() if name.startswith("ppt/media/") and name.endswith(".png"))
+        assert metadata["content_fingerprint"] == hashlib.sha256(deck.read(media)).hexdigest()
 
 
 def _run_json(*args: str) -> dict:

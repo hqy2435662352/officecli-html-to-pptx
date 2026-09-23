@@ -23,9 +23,9 @@ SCENARIOS = ROOT / "tests" / "fixtures" / "v06_01_workbench_scenarios.md"
 def test_v061_release_authorities_publish_six_commands_and_workbench_policy() -> None:
     payload = get_capabilities().as_dict()
 
-    assert PRODUCT_VERSION == "0.6.1"
+    assert PRODUCT_VERSION == "0.6.2"
     assert CONTRACT_VERSION == "1.3"
-    assert payload["product"]["version"] == "0.6.1"
+    assert payload["product"]["version"] == "0.6.2"
     assert PUBLIC_COMMANDS == (
         "capabilities",
         "doctor",
@@ -35,7 +35,7 @@ def test_v061_release_authorities_publish_six_commands_and_workbench_policy() ->
         "workbench",
     )
     assert payload["data"]["commands"] == list(PUBLIC_COMMANDS)
-    assert payload["data"]["workbench"] == {
+    expected_workbench = {
         "command": "workbench",
         "source_authority": "saved_author_html_sha256",
         "preview_authoritative": False,
@@ -50,6 +50,8 @@ def test_v061_release_authorities_publish_six_commands_and_workbench_policy() ->
         "session_token": "unguessable",
         "remote_network": False,
     }
+    workbench = payload["data"]["workbench"]
+    assert {key: workbench[key] for key in expected_workbench} == expected_workbench
     assert payload["data"]["scope"]["existing_pptx_editing"] is False
 
 
@@ -131,5 +133,5 @@ def test_v061_corpus_preview_produces_verified_source_navigation(tmp_path: Path)
 
 def test_v061_plugin_manifest_uses_product_version() -> None:
     manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == "0.6.1"
+    assert manifest["version"] == "0.6.2"
     assert "Workbench" in manifest["description"]

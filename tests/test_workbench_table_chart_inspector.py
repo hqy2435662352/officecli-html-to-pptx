@@ -96,6 +96,34 @@ def test_table_anchor_text_and_fill_patches_preserve_merge_topology() -> None:
     assert html not in {text_patch["text"], fill_patch["text"]}
 
 
+def test_cell_fill_ignores_ancestor_background_and_none_image_but_rejects_own_gradient() -> None:
+    html = (
+        '<section class="slide" style="background:#f8fafc"><table><tr>'
+        '<td id="anchor" class="cell">Anchor</td></tr></table></section>'
+    )
+    preview = _preview(html)
+    anchor = next(item for item in preview.source_map.values() if item.get("attributes", {}).get("id") == "anchor")
+    computed = {"text": "Anchor", "styles": {"background-color": "rgb(255, 255, 255)"}}
+    rules = {"rules_complete": True, "sources": [
+        {"property": "background", "value": "rgb(248, 250, 252)", "important": False, "selector": ".slide", "scope": "ancestor"},
+        {"property": "background-image", "value": "none", "important": False, "selector": ".slide", "scope": "ancestor"},
+        {"property": "background-color", "value": "rgb(255, 255, 255)", "important": False, "selector": ".cell", "scope": "element"},
+    ]}
+    inspected = inspect_table_selection(html, anchor, computed, rules)
+    assert inspected["fields"]["background-color"]["editable"]
+    patch = apply_table_patch(html, anchor, {"kind": "property", "name": "background-color", "value": "#E0F2FE"}, rules)
+    assert 'style="background-color: #E0F2FE"' in patch["text"]
+
+    own_gradient = {"rules_complete": True, "sources": [
+        *rules["sources"],
+        {"property": "background-image", "value": "linear-gradient(red, blue)", "important": False, "selector": ".cell", "scope": "element"},
+    ]}
+    blocked = inspect_table_selection(html, anchor, computed, own_gradient)
+    assert not blocked["fields"]["background-color"]["editable"]
+    with pytest.raises(ValueError, match="background shorthand or image"):
+        apply_table_patch(html, anchor, {"kind": "property", "name": "background-color", "value": "#E0F2FE"}, own_gradient)
+
+
 def test_ambiguous_table_merge_is_read_only_and_never_patched() -> None:
     html = (
         '<section class="slide"><table><tr><td>One</td><td rowspan="2">Anchor</td></tr>'

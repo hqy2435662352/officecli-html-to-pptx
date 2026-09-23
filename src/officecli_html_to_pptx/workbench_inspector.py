@@ -326,7 +326,8 @@ def _patch_inline_property(text: str, event: Any, name: str, value: Any, sources
             raise ValueError("The selected start tag cannot be patched safely.")
         insertion = f' style="{name}: {escape(normalized, quote=True)}"'
         new_text = text[: event.start + closing_index] + insertion + text[event.start + closing_index :]
-        return new_text, opening, text[event.start : event.end + len(insertion)], True
+        new_opening = opening[:closing_index] + insertion + opening[closing_index:]
+        return new_text, opening, new_opening, True
 
     raw, attr_start, declarations, error = _inline_declarations(text, event)
     if error or raw is None or attr_start is None:

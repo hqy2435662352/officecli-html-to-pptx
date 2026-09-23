@@ -51,7 +51,7 @@ page dimensions.
 - Validate the delivered PPTX with OfficeCLI, inspect text and structure, and
   review a screenshot of every slide.
 - Report known baseline findings separately from regressions.
-- Product 0.6.1 publishes six commands (`capabilities`, `doctor`, `check`,
+- Product 0.6.2 publishes six commands (`capabilities`, `doctor`, `check`,
   `build`, `finalize`, and `workbench`) and requires Contract 1.3 with OfficeCLI
   `>=1.0.151`; a lower runtime must fail before measurement or output creation.
 - `workbench` is a loopback-only source editor for one real UTF-8 Author HTML

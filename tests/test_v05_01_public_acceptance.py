@@ -36,9 +36,9 @@ def test_public_corpus_is_four_author_slides_and_keeps_projection_corpus_separat
 
 def test_release_authorities_publish_product_contract_and_current_commands() -> None:
     payload = get_capabilities().as_dict()
-    assert PRODUCT_VERSION == "0.6.1"
+    assert PRODUCT_VERSION == "0.6.2"
     assert CONTRACT_VERSION == "1.3"
-    assert payload["product"]["version"] == "0.6.1"
+    assert payload["product"]["version"] == "0.6.2"
     assert payload["data"]["contract"]["version"] == "1.3"
     assert payload["data"]["commands"] == [
         "capabilities",

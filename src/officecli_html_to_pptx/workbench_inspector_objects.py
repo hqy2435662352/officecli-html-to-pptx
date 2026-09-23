@@ -139,7 +139,8 @@ def _fill_field(
     matched = [
         item
         for item in sources
-        if item["property"] in {"background", "background-color", "all"}
+        if item["scope"] == "element"
+        and item["property"] in {"background", "background-color", "all"}
     ]
     source_parts: list[str] = []
     for source in matched:
@@ -172,7 +173,12 @@ def _fill_field(
         or any("var(" in item.value.lower() for item in direct + conflicts)
     ):
         reason = "CSS variables make the selected fill cascade ambiguous."
-    if reason is None and any(item["property"] == "background-image" for item in sources):
+    if reason is None and any(
+        item["scope"] == "element"
+        and item["property"] == "background-image"
+        and item["value"].strip().lower() not in {"", "none"}
+        for item in sources
+    ):
         reason = "A background image makes the selected fill read-only."
     return {
         "computed": computed_value,
@@ -234,7 +240,12 @@ def _apply_fill(
     sources, rules_complete = _source_match_records(matched_styles)
     if not rules_complete:
         raise ValueError("The Preview could not verify all matched CSS rules.")
-    relevant = [item for item in sources if item["property"] in {"background", "background-color", "background-image", "all"}]
+    relevant = [
+        item for item in sources
+        if item["scope"] == "element"
+        and item["property"] in {"background", "background-color", "background-image", "all"}
+        and (item["property"] != "background-image" or item["value"].strip().lower() not in {"", "none"})
+    ]
     if any(item["important"] for item in relevant):
         raise ValueError("A matching !important declaration may override a local fill edit.")
     if any("var(" in item["value"].lower() for item in relevant):

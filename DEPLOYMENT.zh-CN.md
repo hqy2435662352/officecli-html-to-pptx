@@ -1,10 +1,10 @@
-# officecli-html-to-pptx V0.6.1 部署与使用指南
+# officecli-html-to-pptx V0.6.2 部署与使用指南
 
 ## 交付范围
 
 本 ZIP 是客户试用包，包含：
 
-- `core/officecli_html_to_pptx-0.6.1-py3-none-any.whl`：Python Core Product；
+- `core/officecli_html_to_pptx-0.6.2-py3-none-any.whl`：Python Core Product；
 - `plugins/officecli-html-to-pptx/`：skills-only Codex Plugin；
 - `.agents/plugins/marketplace.json`：本地 Plugin marketplace 清单；
 - 本部署与使用指南、README 和 MIT License。
@@ -37,7 +37,7 @@ OfficeCLI、Python、Node.js 和 Codex 的安装来源由部署方管理。本�
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.6.1-py3-none-any.whl
+.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.6.2-py3-none-any.whl
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
@@ -62,7 +62,7 @@ exit code `2` 和可操作的诊断。
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install ./core/officecli_html_to_pptx-0.6.1-py3-none-any.whl
+.venv/bin/python -m pip install ./core/officecli_html_to_pptx-0.6.2-py3-none-any.whl
 .venv/bin/python -m playwright install --with-deps chromium
 .venv/bin/officecli-html-to-pptx capabilities --json
 .venv/bin/officecli-html-to-pptx doctor --json
@@ -111,7 +111,7 @@ ZIP 根目录本身是一个本地 marketplace。使用支持 Plugin marketplace
 
 ```powershell
 codex plugin marketplace add "<ZIP解压目录>"
-codex plugin add officecli-html-to-pptx@officecli-v061-local
+codex plugin add officecli-html-to-pptx@officecli-v062-local
 ```
 
 安装后新建一个 Codex 任务，使新 Skill 被重新发现。Plugin 只提供
@@ -151,10 +151,18 @@ Candidate HTML
 若目标 PPTX 或同名 `.evidence` 目录已经存在，产品会拒绝覆盖。请使用新文件名；
 Agent 的自动修订使用 `-r01`、`-r02` 等后缀。
 
-## Product 0.6.1 Workbench
+## Product 0.6.2 Workbench and Inspector
 
 The `workbench` command is the sixth public command and is the installed
-source-authoritative authoring loop:
+source-authoritative authoring loop. The Inspector exposes only source-mapped
+Contract 1.3 fields: one simple text leaf/run; Shape geometry, solid fill,
+border, opacity and simple text; Picture data-image replacement (maximum 10 MiB
+decoded bytes) and `object-fit`; merged Table anchor-cell text/fill; and
+ChartSpec title, category labels, series names/values/colors and supported
+presentation fields. All five chart families are supported; category charts
+allow one to three series, while pie and doughnut allow one. Preview displays
+chart semantics from the same inert ChartSpec; it does not promise PowerPoint
+pixel parity. `capabilities --json` publishes this boundary and exclusions.
 
 ```powershell
 $tool = ".\.venv\Scripts\officecli-html-to-pptx.exe"
@@ -187,11 +195,16 @@ workbench startup -> edit -> Preview/navigation/source selection -> draft Check
 readback -> validate/issues -> slide-by-slide Gate 3 -> finalize
 ```
 
-The #44 tracked corpus is `tests/fixtures/v06_01_workbench_corpus.html`.
-Conflict/recovery and security cases are documented separately in
-`tests/fixtures/v06_01_workbench_scenarios.md`. Visual property forms, canvas
-drag/drop editing, existing-PPTX editing, remote collaboration, and
-editor-specific export remain outside Product 0.6.1.
+The #49 tracked Inspector corpus is `tests/fixtures/v06_02_inspector_corpus.html`;
+it covers a real editable text leaf and shared-class override, native Shape,
+bounded data Picture, merged Table anchor and covered cell, every chart family
+and allowed series cardinality, and a localized-fallback object shown
+read-only. The #44 regression corpus and conflict/recovery/security cases stay
+at `tests/fixtures/v06_01_workbench_corpus.html` and
+`tests/fixtures/v06_01_workbench_scenarios.md`. Direct canvas editing,
+mixed-run replacement, shared class-rule editing, table/chart structure
+changes, existing-PPTX editing, remote collaboration, and editor-specific
+export remain outside Product 0.6.2.
 
 ## 直接使用 CLI
 

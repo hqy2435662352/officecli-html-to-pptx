@@ -1,4 +1,4 @@
-"""Source-authoritative, loopback-only Workbench session for Product 0.6.1.
+"""Source-authoritative, loopback-only Workbench session for Product 0.6.2.
 
 This module owns the source-authoritative Workbench slices: exact UTF-8 source
 load, an in-memory draft, conflict-checked atomic Save, draft recovery, the
