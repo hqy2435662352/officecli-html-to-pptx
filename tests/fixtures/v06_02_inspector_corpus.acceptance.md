@@ -93,7 +93,7 @@ delta diagnostics.
 | --- | --- |
 | 1 | Text, CJK/markup escaping, sibling color, and fitted Picture visibly match. |
 | 2 | Native ellipse geometry, solid fill, border, and text visibly match. |
-| 3 | Native merged anchor text/fill and 2 × 2 span visibly match. |
+| 3 | Native merged anchor text/fill and 2 × 2 span visibly match. A separate installed Workbench read-only check clicked both the anchor's upper-left and its covered lower-right quadrant; both selected the same anchor text, and source bytes stayed unchanged. |
 | 4 | Four column/bar charts preserve all semantics; minor finding: native axis/legend text is crowded in the four-up layout, while the Author projection is a semantic table. |
 | 5 | Four bar/line charts preserve all semantics; the same minor representation/layout finding. |
 | 6 | Three line/pie/doughnut charts preserve all semantics; the same minor representation/layout finding. |
@@ -103,6 +103,9 @@ All seven comparisons were reviewed and bound to this Pair. Installed
 `finalize --json` returned `PASS_WITH_FINDINGS`: Gate 3 `PASS`, seven reviewed
 slides, zero major and three minor findings. The chart projection is deliberately
 semantic rather than pixel-equivalent to editable native PowerPoint plots.
+The additional covered-cell selection record is
+`C:\TEMP\officecli-v062-49-acceptance\covered-cell-selection.json` (SHA-256
+`20eeb9a36ce7467eb72e31b113fc0a3f83758c384826624ad890bfe91c0fbc2e`).
 
 ## Historical full-suite gate
 
