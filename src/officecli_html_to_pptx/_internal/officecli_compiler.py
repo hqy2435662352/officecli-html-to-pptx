@@ -2197,7 +2197,12 @@ def _raster_boxed_source(
     canvas_size = (max(1, round(box_width)), max(1, round(box_height)))
     with Image.open(BytesIO(data)) as source_image:
         image = source_image.convert("RGBA")
-    image.thumbnail(canvas_size, Image.Resampling.LANCZOS)
+    scale = min(canvas_size[0] / image.width, canvas_size[1] / image.height)
+    fitted_size = (
+        max(1, min(canvas_size[0], round(image.width * scale))),
+        max(1, min(canvas_size[1], round(image.height * scale))),
+    )
+    image = image.resize(fitted_size, Image.Resampling.LANCZOS)
     canvas = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
     offset = (
         (canvas.width - image.width) // 2,
@@ -3021,8 +3026,13 @@ def _lower_slide(
             mime, picture_data = _decode_picture_source(
                 element, source_slide, source_object
             )
+            embedded_element = dict(element)
+            embedded_element["src"] = picture_props["src"]
+            embedded_mime, embedded_data = _decode_picture_source(
+                embedded_element, source_slide, source_object
+            )
             intrinsic_width, intrinsic_height = _intrinsic_dimensions(
-                mime, picture_data
+                embedded_mime, embedded_data
             )
             fallback_intrinsic_size: list[float] | None = None
             if fallback_props is not None:
@@ -3036,9 +3046,9 @@ def _lower_slide(
                 )
                 fallback_intrinsic_size = [fallback_width, fallback_height]
             picture_metadata: dict[str, Any] = {
-                "mime": mime,
+                "mime": embedded_mime,
                 "source_fingerprint": hashlib.sha256(picture_data).hexdigest(),
-                "content_fingerprint": hashlib.sha256(picture_data).hexdigest(),
+                "content_fingerprint": hashlib.sha256(embedded_data).hexdigest(),
                 "intrinsic_size": [intrinsic_width, intrinsic_height],
                 "object_fit": str(element.get("objectFit", "fill") or "fill").lower(),
                 "bounds_pt": list(picture_bounds),

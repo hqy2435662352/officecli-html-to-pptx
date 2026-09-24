@@ -40,9 +40,9 @@ def test_public_chart_corpus_and_release_authority() -> None:
     assert not report.blocked, report.as_dict()
 
     payload = get_capabilities().as_dict()
-    assert PRODUCT_VERSION == "0.6.1"
+    assert PRODUCT_VERSION == "0.6.2"
     assert CONTRACT_VERSION == "1.3"
-    assert payload["product"]["version"] == "0.6.1"
+    assert payload["product"]["version"] == "0.6.2"
     assert payload["data"]["commands"] == [
         "capabilities",
         "doctor",

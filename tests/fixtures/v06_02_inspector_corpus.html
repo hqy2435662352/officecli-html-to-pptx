@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Product 0.6.2 Visual Inspector acceptance corpus</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+      body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+      .slide { position: relative; display: none; width: 1920px; height: 1080px; overflow: hidden; background: #f8fafc; }
+      .slide.active { display: block; }
+      .title { position: absolute; left: 110px; top: 76px; width: 1700px; height: 72px; color: #0f172a; font-size: 42px; line-height: 1.15; font-weight: 700; }
+      .subtitle { position: absolute; left: 112px; top: 145px; width: 1680px; height: 42px; color: #475569; font-size: 23px; }
+      .shared { color: #155e75; background-color: #ecfeff; border: 2px solid #0891b2; border-radius: 12px; padding: 18px; font-size: 27px; line-height: 1.3; }
+      #editable-text { position: absolute; left: 120px; top: 260px; width: 720px; height: 130px; }
+      #shared-sibling { position: absolute; left: 120px; top: 420px; width: 720px; height: 130px; }
+      #editable-picture { position: absolute; left: 1030px; top: 245px; width: 520px; height: 320px; object-fit: cover; }
+      .shape { position: absolute; left: 570px; top: 245px; width: 780px; height: 460px; padding: 40px; border: 8px solid #0f766e; background: #ccfbf1; color: #134e4a; font-size: 42px; font-weight: 700; text-align: center; }
+      .shape[data-pptx-shape-geometry="ellipse"] { border-radius: 50%; }
+      .table { position: absolute; left: 180px; top: 260px; width: 1560px; height: 440px; border-collapse: collapse; table-layout: fixed; font-size: 30px; }
+      .table th, .table td { height: 110px; padding: 18px; border: 3px solid #475569; text-align: center; vertical-align: middle; }
+      .table th { background-color: #1d4ed8; color: #fff; }
+      .table td { background-color: #fff; }
+      .chart { position: absolute; width: 820px; height: 370px; border: 2px solid #cbd5e1; border-radius: 10px; background: #fff; padding: 12px; overflow: hidden; }
+      .chart-a { left: 100px; top: 205px; }
+      .chart-b { left: 1000px; top: 205px; }
+      .chart-c { left: 100px; top: 620px; }
+      .chart-d { left: 1000px; top: 620px; }
+      .chart-summary { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 18px; color: #0f172a; }
+      .chart-summary caption { height: 42px; color: #0f172a; font-size: 22px; font-weight: 700; text-align: left; }
+      .chart-summary th, .chart-summary td { border: 1px solid #cbd5e1; padding: 8px 10px; text-align: left; overflow-wrap: anywhere; }
+      .chart-summary thead th { background: #e2e8f0; }
+      .chart-summary .series-name { font-weight: 700; }
+      .chart-summary .series-color { display: inline-block; width: 14px; height: 14px; margin-right: 7px; vertical-align: -2px; }
+      .chart-kind { margin: 3px 0 8px; color: #475569; font-size: 14px; }
+      .localized { position: absolute; left: 400px; top: 280px; width: 1120px; height: 430px; padding: 42px; border: 5px solid #be123c; border-radius: 22px; background: #fff1f2; color: #881337; font-size: 36px; line-height: 1.35; overflow: hidden; }
+      .note { position: absolute; left: 110px; bottom: 58px; width: 1700px; height: 48px; color: #475569; font-size: 22px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="slide active" aria-label="Text local override and bounded picture">
+        <div class="title">Product 0.6.2 Visual Inspector</div>
+        <div class="subtitle">Simple leaf editing, class-derived local override, and an imported data image</div>
+        <p id="editable-text" class="shared">Correct this simple text leaf: old label 🙂</p>
+        <p id="shared-sibling" class="shared">Shared class sibling stays unchanged</p>
+        <img id="editable-picture" alt="Inspector-replaceable local data image" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI1MjAiIGhlaWdodD0iMzIwIj48cmVjdCB3aWR0aD0iNTIwIiBoZWlnaHQ9IjMyMCIgZmlsbD0iIzFGNEREQiIvPjxjaXJjbGUgY3g9IjI2MCIgY3k9IjE2MCIgcj0iMTAwIiBmaWxsPSIjRkZGRkZGIi8+PHRleHQgeD0iMjYwIiB5PSIyNTAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMzIiIGZpbGw9IiMwRjE3MkEiPkRBVEEgUElDVFVSRTwvdGV4dD48L3N2Zz4=">
+        <div class="note">Text and Picture source patches remain Draft edits until explicit Save.</div>
+      </section>
+
+      <section class="slide" aria-label="Native shape">
+        <div class="title">Native Shape properties</div>
+        <div class="subtitle">Geometry token, solid fill, border, opacity, and simple shape text</div>
+        <div id="editable-shape" class="shape" data-pptx-shape-geometry="rect">Editable native shape</div>
+        <div class="note">The ellipse CSS selector follows the same geometry token patched into Author HTML.</div>
+      </section>
+
+      <section class="slide" aria-label="Merged table anchor and covered region">
+        <div class="title">Merged Table ownership</div>
+        <div class="subtitle">The anchor owns the merged region; the covered coordinate has no independent source cell.</div>
+        <table id="editable-table" class="table" aria-label="Merged inspector table">
+          <thead><tr><th colspan="2">Merged Header</th><th>Owner</th></tr></thead>
+          <tbody>
+            <tr><td id="merged-anchor" rowspan="2" colspan="2">Anchor cell: editable text and solid fill</td><td>Text</td></tr>
+            <tr><td>Covered region</td></tr>
+          </tbody>
+        </table>
+        <div class="note">The merged anchor keeps rowspan=2 and colspan=2 after editing.</div>
+      </section>
+
+      <section class="slide" aria-label="Column and bar native chart series cardinalities">
+        <div class="title">Native ChartSpec families and series counts</div>
+        <div class="subtitle">Column and bar support one, two, or three series; these previews summarize the exact inert ChartSpec.</div>
+        <div class="chart chart-a" id="column-one" data-pptx-chart><script type="application/json" data-pptx-chart-spec>{"type":"column","categories":["North","South","West"],"series":[{"name":"Actual","values":[12,18,14],"color":"#2563EB"}],"presentation":{"title":"Column · one series","legend":"bottom","labels":"value","categoryAxis":{"title":"Region"},"valueAxis":{"title":"Units","numberFormat":"integer"}}}</script></div>
+        <div class="chart chart-b" id="column-two" data-pptx-chart><script type="application/json" data-pptx-chart-spec>{"type":"column","categories":["North","South","West"],"series":[{"name":"Actual","values":[12,18,14],"color":"#2563EB"},{"name":"Plan","values":[10,16,15],"color":"#0F766E"}],"presentation":{"title":"Column · two series","legend":"bottom","labels":"value","categoryAxis":{"title":"Region"},"valueAxis":{"title":"Units","numberFormat":"integer"}}}</script></div>
+        <div class="chart chart-c" id="column-three" data-pptx-chart><script type="application/json" data-pptx-chart-spec>{"type":"column","categories":["North","South","West"],"series":[{"name":"Actual","values":[12,18,14],"color":"#2563EB"},{"name":"Plan","values":[10,16,15],"color":"#0F766E"},{"name":"Prior year","values":[8,14,12],"color":"#F59E0B"}],"presentation":{"title":"Column · three series","legend":"bottom","labels":"value","categoryAxis":{"title":"Region"},"valueAxis":{"title":"Units","numberFormat":"integer"}}}</script></div>
+        <div class="chart chart-d" id="bar-one" data-pptx-chart><script type="application/json" data-pptx-chart-spec>{"type":"bar","categories":["North","South","West"],"series":[{"name":"Actual","values":[12,18,14],"color":"#2563EB"}],"presentation":{"title":"Bar · one series","legend":"bottom","labels":"value","categoryAxis":{"title":"Region"},"valueAxis":{"title":"Units","numberFormat":"integer"}}}</script>
+          <script>
+            document.addEventListener("DOMContentLoaded", () => {
+              document.querySelectorAll("[data-pptx-chart]").forEach((chart) => {
+                const node = chart.querySelector("script[data-pptx-chart-spec]");
+                if (!node) return;
+                let spec;
+                try { spec = JSON.parse(node.textContent || ""); } catch (_) { return; }
+                if (!spec || !Array.isArray(spec.categories) || !Array.isArray(spec.series)) return;
+                const wrapper = document.createElement("div");
+                wrapper.className = "chart-semantic-preview";
+                const kind = document.createElement("p");
+                kind.className = "chart-kind";
+                const presentation = spec.presentation || {};
+                kind.textContent = `${spec.type} · ${spec.series.length} series · Legend: ${presentation.legend || "none"} · Labels: ${presentation.labels || "none"}`;
+                wrapper.appendChild(kind);
+                const table = document.createElement("table");
+                table.className = "chart-summary";
+                const caption = document.createElement("caption");
+                caption.textContent = presentation.title || `${spec.type} chart`;
+                table.appendChild(caption);
+                const head = document.createElement("thead");
+                const header = document.createElement("tr");
+                ["Series / category", ...spec.categories].forEach((value) => {
+                  const cell = document.createElement("th");
+                  cell.scope = "col";
+                  cell.textContent = String(value);
+                  header.appendChild(cell);
+                });
+                head.appendChild(header);
+                table.appendChild(head);
+                const body = document.createElement("tbody");
+                spec.series.forEach((series) => {
+                  const row = document.createElement("tr");
+                  const name = document.createElement("th");
+                  name.scope = "row";
+                  name.className = "series-name";
+                  const color = document.createElement("span");
+                  color.className = "series-color";
+                  color.style.backgroundColor = /^#[0-9a-f]{6}$/i.test(String(series.color || "")) ? series.color : "#64748B";
+                  color.setAttribute("aria-hidden", "true");
+                  name.append(color, document.createTextNode(String(series.name)));
+                  row.appendChild(name);
+                  series.values.forEach((value) => {
+                    const cell = document.createElement("td");
+                    cell.textContent = String(value);
+                    row.appendChild(cell);
+                  });
+                  body.appendChild(row);
+                });
+                table.appendChild(body);
+                wrapper.appendChild(table);
+                chart.insertBefore(wrapper, node);
+              });
+            });
+          </script>
+        </div>
+        <div class="note">Author-side projector is visual-only and reads the sole inert ChartSpec; no chart data is duplicated.</div>
+      </section>
+
+      <section class="slide" aria-label="Bar and line native chart series cardinalities">
+        <div class="title">Bar and Line series counts</div>
+        <div class="subtitle">All three allowed category-series cardinalities are represented in the corpus.</div>
+        <div class="chart chart-a" id="bar-two" data-pptx-chart><script type="application/json" data-pptx-chart-spec>{"type":"bar","categories":["North","South","West"],"series":[{"name":"Actual","values":[12,18,14],"color":"#2563EB"},{"name":"Plan","values":[10,16,15],"color":"#0F766E"}],"presentation":{"title":"Bar · two series","legend":"bottom","labels":"value","categoryAxis":{"title":"Region"},"valueAxis":{"title":"Units","numberFormat":"integer"}}}</script></div>
+        <div class="chart chart-b" id="bar-three" data-pptx-chart><script type="application/json" data-pptx-chart-spec>{"type":"bar","categories":["North","South","West"],"series":[{"name":"Actual","values":[12,18,14],"color":"#2563EB"},{"name":"Plan","values":[10,16,15],"color":"#0F766E"},{"name":"Prior year","values":[8,14,12],"color":"#F59E0B"}],"presentation":{"title":"Bar · three series","legend":"bottom","labels":"value","categoryAxis":{"title":"Region"},"valueAxis":{"title":"Units","numberFormat":"integer"}}}</script></div>
+        <div class="chart chart-c" id="line-one" data-pptx-chart><script type="application/json" data-pptx-chart-spec>{"type":"line","categories":["North","South","West"],"series":[{"name":"Actual","values":[12,18,14],"color":"#2563EB"}],"presentation":{"title":"Line · one series","legend":"bottom","labels":"value","categoryAxis":{"title":"Region"},"valueAxis":{"title":"Units","numberFormat":"integer"}}}</script></div>
+        <div class="chart chart-d" id="line-two" data-pptx-chart><script type="application/json" data-pptx-chart-spec>{"type":"line","categories":["North","South","West"],"series":[{"name":"Actual","values":[12,18,14],"color":"#2563EB"},{"name":"Plan","values":[10,16,15],"color":"#0F766E"}],"presentation":{"title":"Line · two series","legend":"bottom","labels":"value","categoryAxis":{"title":"Region"},"valueAxis":{"title":"Units","numberFormat":"integer"}}}</script></div>
+        <div class="note">A Chart Inspector edit updates this same JSON spec; structure changes remain read-only.</div>
+      </section>
+
+      <section class="slide" aria-label="Line three series and part-to-whole native charts">
+        <div class="title">Line, Pie, and Doughnut semantics</div>
+        <div class="subtitle">Line supports three series; Pie and Doughnut require exactly one series.</div>
+        <div class="chart chart-a" id="line-three" data-pptx-chart><script type="application/json" data-pptx-chart-spec>{"type":"line","categories":["North","South","West"],"series":[{"name":"Actual","values":[12,18,14],"color":"#2563EB"},{"name":"Plan","values":[10,16,15],"color":"#0F766E"},{"name":"Prior year","values":[8,14,12],"color":"#F59E0B"}],"presentation":{"title":"Line · three series","legend":"bottom","labels":"value","categoryAxis":{"title":"Region"},"valueAxis":{"title":"Units","numberFormat":"integer"}}}</script></div>
+        <div class="chart chart-b" id="pie-one" data-pptx-chart><script type="application/json" data-pptx-chart-spec>{"type":"pie","categories":["Retail","Online","Partner"],"series":[{"name":"Share","values":[42,35,23],"color":"#2563EB"}],"presentation":{"title":"Pie · one series","legend":"right","labels":"percent"}}</script></div>
+        <div class="chart chart-c" id="doughnut-one" data-pptx-chart><script type="application/json" data-pptx-chart-spec>{"type":"doughnut","categories":["Retail","Online","Partner"],"series":[{"name":"Share","values":[42,35,23],"color":"#0F766E"}],"presentation":{"title":"Doughnut · one series","legend":"right","labels":"percent"}}</script></div>
+        <div class="note">Preview and Author projection report categories, names, values, colors, and supported presentation tokens from the same spec.</div>
+      </section>
+
+      <section class="slide" aria-label="Localized fallback read only">
+        <div class="title">Localized fallback stays read-only</div>
+        <div class="subtitle">Inspector reports the explicit visual-only object and its reason without offering native-property controls.</div>
+        <div id="localized-fallback" class="localized" data-pptx-rasterize="localized"><strong>Visual-only localized object</strong><br>This object is explicitly rasterized as one local picture with Evidence. Its descendants are not separate editable native objects.</div>
+        <div class="note">Native Inspector controls do not claim that a rasterized fallback remains editable.</div>
+      </section>
+    </main>
+  </body>
+</html>

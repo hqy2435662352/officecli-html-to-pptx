@@ -1,8 +1,8 @@
 # officecli-html-to-pptx
 
-`officecli-html-to-pptx` 0.6.1 builds a new editable PowerPoint deck from
+`officecli-html-to-pptx` 0.6.2 builds a new editable PowerPoint deck from
 Contract-checked Author HTML and provides a source-authoritative local
-Workbench for editing that HTML. Chromium supplies final layout measurements
+Workbench with a Visual Inspector for editing that HTML. Chromium supplies final layout measurements
 and OfficeCLI creates the native PowerPoint objects. The supported public path
 is task-oriented and produces a matching PPTX/Evidence Pair:
 
@@ -22,12 +22,12 @@ content remains blocking.
 
 ## Install
 
-For a packaged V0.6.1 release, install the bundled wheel from the ZIP
+For a packaged V0.6.2 release, install the bundled wheel from the ZIP
 root and then install its Playwright-managed Chromium:
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.6.1-py3-none-any.whl
+.\.venv\Scripts\python.exe -m pip install .\core\officecli_html_to_pptx-0.6.2-py3-none-any.whl
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
@@ -77,8 +77,15 @@ expected-SHA replacement and may persist a Contract-invalid Candidate; Build
 Revision requires a clean saved SHA, no external conflict, and Contract PASS
 for that exact SHA. Build then reuses the normal compiler, Artifact Pair,
 Evidence, independent readback, validation/issues, Gate 3, and finalize path.
-The command's JSON mode emits one startup envelope and keeps the long-running
-session alive until browser/API shutdown or Ctrl+C.
+The Inspector adds source-patched text leaf/run, Shape, Picture, merged Table
+anchor-cell, and ChartSpec editing. It shows computed values beside source and
+origin, marks class-derived inline edits as local overrides, and keeps unsafe
+or ambiguous selections read-only. Text editing is limited to one simple
+leaf/run; charts retain their family/category/series structure, and their
+Preview is a semantic projection of the single inert ChartSpec rather than a
+PowerPoint pixel simulation. See `capabilities --json` for exact support and
+exclusions. The command's JSON mode emits one startup envelope and keeps the
+long-running session alive until browser/API shutdown or Ctrl+C.
 
 Exit classes are stable: `0` means the defined operation completed, `2` means
 an actionable block or revision decision, `3` means invalid invocation or
@@ -220,8 +227,10 @@ integrated native text/table/shape/chart page with one rasterized region. The
 V0.5.2 chart corpus and V0.5.1 native corpus remain focused regression
 fixtures. V0.4 projection experiments remain a separate internal regression
 corpus and do not contribute to public gates or capability counts. The MIT
-license and upstream history are preserved. The #44 Workbench integration
-corpus is tracked at `tests/fixtures/v06_01_workbench_corpus.html`; its
-conflict/recovery/security scenarios are kept in a separate scenario record so
-failure attribution remains explicit. Product 0.5.3 remains a regression
-acceptance path rather than a second current version authority.
+license and upstream history are preserved. The #49 Inspector integration
+corpus is tracked at `tests/fixtures/v06_02_inspector_corpus.html`; it covers
+text and local overrides, Shape and Picture, merged Table ownership, all five
+Chart families and allowed series counts, and explicit localized fallback.
+The #44 Product 0.6.1 corpus and its conflict/recovery/security scenarios stay
+as regression assets. Product 0.5.3 remains a regression acceptance path
+rather than a second current version authority.

@@ -8,13 +8,21 @@ base, and the isolated-frame policy are added to a transient copy only.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from html import escape
+from html import escape, unescape
 from html.parser import HTMLParser
+import json
 import mimetypes
 from pathlib import Path
 import re
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
+
+from ._internal.charts import ChartSpecError, parse_chart_spec
+from .contract import (
+    SUPPORTED_INLINE_ELEMENTS,
+    TableTopologyError,
+    build_logical_table_grid,
+)
 
 
 _VOID_TAGS = {
@@ -52,7 +60,7 @@ _TEXT_TAGS = {
     "span",
     "td",
     "th",
-}
+} | set(SUPPORTED_INLINE_ELEMENTS)
 _URL_ATTRIBUTES = {
     "action",
     "cite",
@@ -157,11 +165,18 @@ class _StartEvent:
     start: int
     end: int
     attrs: dict[str, str | None]
+    attr_ranges: dict[str, tuple[int, int]]
     slide: int | None
     self_closing: bool
     inside_special: bool
+    parent_index: int | None = None
+    table_index: int | None = None
+    table_selectable: bool = False
     has_element_child: bool = False
     has_text: bool = False
+    has_comment: bool = False
+    end_start: int | None = None
+    end_end: int | None = None
 
 
 def _line_offsets(text: str) -> list[int]:
@@ -172,8 +187,9 @@ def _line_offsets(text: str) -> list[int]:
 
 
 def _editor_offset(text: str) -> int:
-    """Convert a Python code-point offset to a browser textarea offset."""
-    return len(text.encode("utf-16-le")) // 2
+    """Map source offsets to UTF-16 positions in the newline-normalized textarea."""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return len(normalized.encode("utf-16-le")) // 2
 
 
 class _SourceParser(HTMLParser):
@@ -218,10 +234,28 @@ class _SourceParser(HTMLParser):
         end = start + len(raw)
         lowered = tag.lower()
         attrs_dict = self._attrs_dict(attrs)
+        attr_ranges = {
+            match.group("name").lower(): (start + match.start("value"), start + match.end("value"))
+            for match in _ATTRIBUTE_RE.finditer(raw)
+        }
+        attr_ranges.update(
+            {
+                match.group("name").lower(): (start + match.start("value"), start + match.end("value"))
+                for match in _UNQUOTED_ATTRIBUTE_RE.finditer(raw)
+            }
+        )
         if any(key.startswith("__duplicate__") for key in attrs_dict):
             self.repaired = True
         if self.stack:
             self.events[self.stack[-1][3]].has_element_child = True
+        parent_index = self.stack[-1][3] if self.stack else None
+        table_index = next(
+            (item[3] for item in reversed(self.stack) if self.events[item[3]].tag == "table"),
+            None,
+        )
+        table_selectable = (
+            table_index is not None and not self.events[table_index].inside_special
+        )
         slide = self.current_slide
         if "slide" in set((attrs_dict.get("class") or "").split()):
             self.slide_count += 1
@@ -240,9 +274,13 @@ class _SourceParser(HTMLParser):
                 start=start,
                 end=end,
                 attrs=attrs_dict,
+                attr_ranges=attr_ranges,
                 slide=slide,
                 self_closing=self_closing,
                 inside_special=any(is_special for _, is_special, _, _ in self.stack),
+                parent_index=parent_index,
+                table_index=(len(self.events) if lowered == "table" else table_index),
+                table_selectable=table_selectable,
             )
         )
         event_index = len(self.events) - 1
@@ -270,7 +308,14 @@ class _SourceParser(HTMLParser):
             if lowered in stack_tags:
                 del self.stack[stack_tags.index(lowered) :]
             return
-        _, _, parent_slide, _ = self.stack.pop()
+        _, _, parent_slide, event_index = self.stack.pop()
+        start = self._offset()
+        closing = re.match(r"</\s*[\w:-]+\s*>", self.text[start:], re.IGNORECASE)
+        if closing is None:
+            self.repaired = True
+        else:
+            self.events[event_index].end_start = start
+            self.events[event_index].end_end = start + closing.end()
         self.current_slide = parent_slide
 
     def handle_data(self, data: str) -> None:
@@ -280,6 +325,22 @@ class _SourceParser(HTMLParser):
         elif self.stack and data.strip():
             self.events[self.stack[-1][3]].has_text = True
 
+    def handle_entityref(self, name: str) -> None:
+        if self.stack:
+            self.events[self.stack[-1][3]].has_text = True
+
+    def handle_charref(self, name: str) -> None:
+        if self.stack:
+            self.events[self.stack[-1][3]].has_text = True
+
+    def handle_comment(self, data: str) -> None:
+        if self.stack:
+            self.events[self.stack[-1][3]].has_comment = True
+
+    def handle_decl(self, decl: str) -> None:
+        if self.stack:
+            self.events[self.stack[-1][3]].has_comment = True
+
     def finish(self) -> None:
         if self.stack:
             self.repaired = True
@@ -288,6 +349,8 @@ class _SourceParser(HTMLParser):
 def _kind_for(event: _StartEvent) -> str | None:
     attrs = event.attrs
     if event.inside_special:
+        if event.tag in {"td", "th"} and event.table_selectable:
+            return "table-cell"
         return None
     if event.tag in {"html", "head", "body", "style", "script", "meta", "link", "base"}:
         return None
@@ -303,6 +366,158 @@ def _kind_for(event: _StartEvent) -> str | None:
         return "table"
     if event.tag in _TEXT_TAGS or (event.tag == "div" and event.has_text and not event.has_element_child):
         return "text"
+    return None
+
+
+def _ancestor_index(events: list[_StartEvent], index: int | None, tag: str) -> int | None:
+    while index is not None:
+        if events[index].tag == tag:
+            return index
+        index = events[index].parent_index
+    return None
+
+
+def _table_cell_metadata(
+    text: str, events: list[_StartEvent], *, parser_repaired: bool
+) -> dict[int, dict[str, Any]]:
+    """Resolve table cell ownership through the Contract's normalized grid."""
+    result: dict[int, dict[str, Any]] = {}
+    table_number = 0
+    for table_index, table in enumerate(events):
+        if table.tag != "table" or table.inside_special:
+            continue
+        table_number += 1
+        table_id = str(table.attrs.get("id") or "").strip()
+        table_source = f"table#{table_id}" if table_id else f"table[{table_number}]"
+        rows = [
+            index
+            for index, event in enumerate(events)
+            if event.tag == "tr" and event.table_index == table_index
+        ]
+        cell_indexes: list[list[int]] = []
+        grid_rows: list[list[dict[str, Any]]] = []
+        for row_number, row_index in enumerate(rows, start=1):
+            cells = [
+                index
+                for index, event in enumerate(events)
+                if event.tag in {"td", "th"}
+                and event.table_index == table_index
+                and _ancestor_index(events, event.parent_index, "tr") == row_index
+            ]
+            cell_indexes.append(cells)
+            row: list[dict[str, Any]] = []
+            for column_number, cell_index in enumerate(cells, start=1):
+                cell = events[cell_index]
+                inner = text[cell.end : cell.end_start] if cell.end_start is not None else ""
+                cell_source = f"{table_source}/row[{row_number}]/cell[{column_number}]"
+                row.append(
+                    {
+                        "rowspan": cell.attrs.get("rowspan"),
+                        "colspan": cell.attrs.get("colspan"),
+                        "source_object": cell_source,
+                        "text": inner,
+                    }
+                )
+            grid_rows.append(row)
+
+        reason: str | None = "parser_repaired_candidate" if parser_repaired else None
+        regions_by_source: dict[str, Any] = {}
+        if reason is None:
+            try:
+                grid = build_logical_table_grid(grid_rows, source_object=table_source)
+                regions_by_source = {region.source_object: region for region in grid.regions}
+            except TableTopologyError as exc:
+                reason = exc.message
+
+        for row_number, cells in enumerate(cell_indexes, start=1):
+            for column_number, cell_index in enumerate(cells, start=1):
+                cell_source = f"{table_source}/row[{row_number}]/cell[{column_number}]"
+                region = regions_by_source.get(cell_source)
+                result[cell_index] = {
+                    "table_source": table_source,
+                    "table_id": table_id or None,
+                    "ownership": "anchor" if region is not None else "unknown",
+                    "anchor_row": region.anchor_row if region is not None else None,
+                    "anchor_column": region.anchor_column if region is not None else None,
+                    "row_span": region.row_span if region is not None else None,
+                    "column_span": region.column_span if region is not None else None,
+                    "source_row": row_number,
+                    "source_column": column_number,
+                    "topology": (
+                        [region.anchor_row, region.anchor_column, region.row_span, region.column_span]
+                        if region is not None
+                        else None
+                    ),
+                    "read_only_reason": reason,
+                }
+    return result
+
+
+def _chart_projection(spec: Any) -> dict[str, Any]:
+    projection = {
+        "type": spec.chart_type,
+        "title": spec.title,
+        "categories": list(spec.categories),
+        "series": [
+            {"name": series.name, "values": list(series.values), "color": series.color}
+            for series in spec.series
+        ],
+        "legend": spec.legend,
+        "labels": spec.data_labels,
+        "category_axis_title": spec.category_axis_title,
+        "value_axis_title": spec.value_axis_title,
+        "value_axis_number_format": spec.value_axis_number_format,
+    }
+    if spec.doughnut_hole_size is not None:
+        projection["hole_size"] = spec.doughnut_hole_size
+    return projection
+
+
+def _chart_info(
+    text: str,
+    events: list[_StartEvent],
+    chart_index: int,
+    *,
+    parser_repaired: bool,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    spec_events = [
+        event
+        for event in events
+        if event.tag == "script"
+        and "data-pptx-chart-spec" in event.attrs
+        and _chart_ancestor_index(events, event.parent_index) == chart_index
+    ]
+    info: dict[str, Any] = {"count": len(spec_events)}
+    if len(spec_events) != 1:
+        info["reason"] = "The selected chart must contain exactly one inert ChartSpec."
+        return info, None
+    spec_event = spec_events[0]
+    mime_type = str(spec_event.attrs.get("type") or "").strip().lower()
+    info["mime_type"] = mime_type
+    if mime_type != "application/json":
+        info["reason"] = "The chart spec must be an inert script type=application/json."
+        return info, None
+    if parser_repaired or spec_event.end_start is None:
+        info["reason"] = "The Preview parser repaired this Candidate, so chart source ranges are read-only."
+        return info, None
+    spec_start = spec_event.end
+    spec_end = spec_event.end_start
+    info.update({"spec_start": spec_start, "spec_end": spec_end})
+    source_object = f"chart[{chart_index + 1}]"
+    try:
+        parsed = parse_chart_spec(text[spec_start:spec_end], source_object=source_object)
+    except ChartSpecError as exc:
+        info["reason"] = exc.message
+        return info, None
+    info["valid"] = True
+    return info, _chart_projection(parsed)
+
+
+def _chart_ancestor_index(events: list[_StartEvent], index: int | None) -> int | None:
+    while index is not None:
+        if "data-pptx-chart" in events[index].attrs:
+            return index
+        index = events[index].parent_index
     return None
 
 
@@ -493,83 +708,180 @@ def _insert_marker(raw: str, marker: str) -> str:
     return f'{raw[:index]} data-workbench-marker="{marker}"{raw[index:]}'
 
 
-def _injected_script(nonce: str) -> str:
+def _injected_script(nonce: str, chart_projections: dict[str, dict[str, Any]]) -> str:
     # Keep this script self-contained: it is the only executable code allowed
     # in the Preview frame, and it communicates through postMessage only.
+    chart_projection_json = (
+        json.dumps(chart_projections, ensure_ascii=False, separators=(",", ":"))
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
     return f"""<script nonce=\"{nonce}\">
 (() => {{
   const channel = "officecli-workbench-preview";
   const send = (type, data) => window.parent.postMessage(Object.assign({{channel, type}}, data || {{}}), "*");
+  const chartProjections = {chart_projection_json};
+  const inspectedProperties = new Set([
+    "font-family", "font-size", "color", "font-weight", "font-style", "text-align", "font", "all",
+    "background", "background-color", "background-image", "border", "border-color", "border-width",
+    "border-top", "border-right", "border-bottom", "border-left", "border-top-color", "border-right-color",
+    "border-bottom-color", "border-left-color", "border-top-width", "border-right-width", "border-bottom-width",
+    "border-left-width", "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
+    "border-radius", "opacity", "object-fit",
+  ]);
+  const inspectStyles = (target) => {{
+    const styles = {{}};
+    const computed = getComputedStyle(target);
+    [
+      "font-family", "font-size", "color", "font-weight", "font-style", "text-align", "display",
+      "background-color", "background-image", "border-color", "border-width", "opacity", "object-fit",
+      "border-radius", "width", "height",
+      "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+      "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+      "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
+    ].forEach((name) => {{
+      styles[name] = computed.getPropertyValue(name);
+    }});
+    const sources = [];
+    let rulesComplete = true;
+    const collectDeclarations = (style, selector, scope) => {{
+      for (let index = 0; index < style.length; index += 1) {{
+        const property = style.item(index).toLowerCase();
+        if (!inspectedProperties.has(property)) continue;
+        sources.push({{
+          property,
+          value: style.getPropertyValue(property),
+          important: style.getPropertyPriority(property) === "important",
+          selector,
+          scope,
+        }});
+        if (sources.length >= 200) {{ rulesComplete = false; return; }}
+      }}
+    }};
+    const visitRules = (rules, element, scope) => {{
+      for (const rule of rules) {{
+        if (rule.selectorText && rule.style) {{
+          try {{
+            if (element.matches(rule.selectorText)) collectDeclarations(rule.style, rule.selectorText, scope);
+          }} catch (_) {{ rulesComplete = false; }}
+        }} else if (rule.cssRules) {{
+          let active = true;
+          if (rule.conditionText) {{
+            if (rule.constructor.name === "CSSMediaRule") active = matchMedia(rule.conditionText).matches;
+            else if (rule.constructor.name === "CSSSupportsRule") active = CSS.supports(rule.conditionText);
+            else {{ rulesComplete = false; active = false; }}
+          }} else if (!new Set(["CSSMediaRule", "CSSSupportsRule"]).has(rule.constructor.name)) {{
+            rulesComplete = false;
+            active = false;
+          }}
+          if (active) visitRules(rule.cssRules, element, scope);
+        }} else rulesComplete = false;
+      }}
+    }};
+    for (let element = target, scope = "element"; element; element = element.parentElement, scope = "ancestor") {{
+      collectDeclarations(element.style, "element.style", scope);
+      for (const sheet of document.styleSheets) {{
+        if (sheet.ownerNode && sheet.ownerNode.hasAttribute("data-workbench-geometry-projection")) continue;
+        try {{ if (sheet.cssRules) visitRules(sheet.cssRules, element, scope); }}
+        catch (_) {{ rulesComplete = false; }}
+      }}
+    }}
+    return {{text: target.textContent || "", styles, matched_styles: {{rules_complete: rulesComplete, sources}}}};
+  }};
   const slides = Array.from(document.querySelectorAll(".slide"));
+  const shapeProjectionStyle = document.createElement("style");
+  shapeProjectionStyle.nonce = "{nonce}";
+  shapeProjectionStyle.dataset.workbenchGeometryProjection = "true";
+  shapeProjectionStyle.textContent = [
+    '[data-workbench-preview-shape="ellipse"] {{ border-radius: 50% !important; }}',
+    '[data-workbench-preview-shape="roundRect"] {{ border-radius: var(--workbench-roundrect-radius) !important; }}',
+  ].join("\\n");
+  document.head.appendChild(shapeProjectionStyle);
+  const renderShapeProjections = () => document.querySelectorAll("[data-pptx-shape-geometry]").forEach((shape) => {{
+    const geometry = shape.getAttribute("data-pptx-shape-geometry");
+    delete shape.dataset.workbenchPreviewShape;
+    if (geometry === "ellipse") {{
+      shape.dataset.workbenchPreviewShape = "ellipse";
+      return;
+    }}
+    if (geometry !== "roundRect") return;
+    const currentStyle = getComputedStyle(shape);
+    const currentRadius = currentStyle.borderRadius;
+    if (!/^0(?:\\.0+)?(?:px|pt)?$/.test(currentRadius)) return;
+    const width = parseFloat(currentStyle.width);
+    const height = parseFloat(currentStyle.height);
+    const radius = Math.max(0, Math.min(width || 0, height || 0) * 0.16667);
+    shape.style.setProperty("--workbench-roundrect-radius", `${{radius}}px`);
+    shape.dataset.workbenchPreviewShape = "roundRect";
+  }});
   const svgElement = (name, attributes) => {{
     const element = document.createElementNS("http://www.w3.org/2000/svg", name);
     Object.entries(attributes || {{}}).forEach(([key, value]) => element.setAttribute(key, String(value)));
     return element;
   }};
-  const renderColumnChartProjection = (chart) => {{
-    const specNode = chart.querySelector("script[data-pptx-chart-spec]");
-    if (!specNode) return;
-    let spec;
-    try {{
-      spec = JSON.parse(specNode.textContent || "");
-    }} catch (_) {{
-      return;
-    }}
-    if (!spec || spec.type !== "column" || !Array.isArray(spec.categories) || !Array.isArray(spec.series) || !spec.series.length) return;
-    const series = spec.series[0];
-    if (!series || !Array.isArray(series.values) || series.values.length !== spec.categories.length) return;
-    const values = series.values.map((value) => Number(value));
-    if (values.some((value) => !Number.isFinite(value) || value < 0)) return;
+  const renderChartProjection = (chart) => {{
+    const spec = chartProjections[chart.getAttribute("data-workbench-marker")];
+    if (!spec || !Array.isArray(spec.categories) || !Array.isArray(spec.series)) return;
     const width = parseFloat(getComputedStyle(chart).width) || 760;
     const height = parseFloat(getComputedStyle(chart).height) || 480;
-    const plot = {{left: 72, top: 42, right: width - 26, bottom: height - 58}};
-    const plotWidth = Math.max(1, plot.right - plot.left);
-    const plotHeight = Math.max(1, plot.bottom - plot.top);
-    const maximum = Math.max(1, ...values);
-    const axisMax = Math.max(1, Math.ceil(maximum * 2) / 2 + 0.5);
-    const step = 0.5;
-    const color = /^#[0-9a-f]{{6}}$/i.test(String(series.color || "")) ? String(series.color) : "#1D4ED8";
     const oldProjection = chart.querySelector(".workbench-chart-projection");
     if (oldProjection) oldProjection.remove();
-    chart.querySelectorAll(":scope > [aria-hidden='true']").forEach((node) => node.remove());
-
+    const left = Math.min(132, Math.max(54, width * 0.2));
+    const right = width - 12;
+    const top = Math.min(76, Math.max(45, height * 0.28));
+    const rowHeight = Math.max(15, Math.min(30, (height - top - 8) / Math.max(1, spec.series.length)));
+    const columnWidth = Math.max(1, (right - left) / Math.max(1, spec.categories.length));
     const svg = svgElement("svg", {{
       class: "workbench-chart-projection",
-      "aria-label": String((spec.presentation && spec.presentation.title) || "Chart"),
-      role: "img",
+      "aria-label": `${{spec.type}} chart semantic projection: ${{spec.categories.length}} categories, ${{spec.series.length}} series`,
+      role: "table",
       viewBox: `0 0 ${{width}} ${{height}}`,
       preserveAspectRatio: "none",
     }});
-    svg.style.cssText = "display:block;width:100%;height:100%;pointer-events:none";
-    const title = svgElement("text", {{x: width / 2, y: 20, "text-anchor": "middle", fill: "#0f172a", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 16, "font-weight": 700}});
-    title.textContent = String((spec.presentation && spec.presentation.title) || "");
+    svg.style.cssText = "display:block;width:100%;height:100%;pointer-events:none;overflow:hidden;background:#fff";
+    const title = svgElement("text", {{x: 10, y: 18, fill: "#0f172a", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": Math.max(11, Math.min(16, height * 0.04)), "font-weight": 700}});
+    title.textContent = String(spec.title || "Untitled chart");
     svg.appendChild(title);
-    for (let tick = 0; tick <= axisMax + 0.001; tick += step) {{
-      const y = plot.bottom - (tick / axisMax) * plotHeight;
-      svg.appendChild(svgElement("line", {{x1: plot.left, y1: y, x2: plot.right, y2: y, stroke: "#e2e8f0", "stroke-width": 1}}));
-      const tickLabel = svgElement("text", {{x: plot.left - 9, y: y + 4, "text-anchor": "end", fill: "#475569", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 10}});
-      tickLabel.textContent = Number.isInteger(tick) ? String(tick) : tick.toFixed(1);
-      svg.appendChild(tickLabel);
+    const summary = svgElement("text", {{x: 10, y: 35, fill: "#475569", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 10}});
+    const hole = spec.hole_size == null ? "" : ` · Hole: ${{spec.hole_size}}%`;
+    summary.textContent = `${{String(spec.type).toUpperCase()}} · Legend: ${{spec.legend}} · Labels: ${{spec.labels}} · Number format: ${{spec.value_axis_number_format}}${{hole}}`;
+    svg.appendChild(summary);
+    if (spec.category_axis_title || spec.value_axis_title) {{
+      const axes = svgElement("text", {{x: 10, y: 47, fill: "#64748b", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 9}});
+      axes.textContent = `Axes: ${{spec.category_axis_title || "—"}} / ${{spec.value_axis_title || "—"}}`;
+      svg.appendChild(axes);
     }}
-    svg.appendChild(svgElement("line", {{x1: plot.left, y1: plot.top, x2: plot.left, y2: plot.bottom, stroke: "#94a3b8", "stroke-width": 1}}));
-    svg.appendChild(svgElement("line", {{x1: plot.left, y1: plot.bottom, x2: plot.right, y2: plot.bottom, stroke: "#94a3b8", "stroke-width": 1}}));
-    const groupWidth = plotWidth / spec.categories.length;
-    values.forEach((value, index) => {{
-      const barWidth = groupWidth * 0.48;
-      const x = plot.left + groupWidth * index + (groupWidth - barWidth) / 2;
-      const barHeight = (value / axisMax) * plotHeight;
-      const y = plot.bottom - barHeight;
-      svg.appendChild(svgElement("rect", {{x, y, width: barWidth, height: barHeight, fill: color}}));
-      const valueLabel = svgElement("text", {{x: x + barWidth / 2, y: Math.max(plot.top + 10, y - 5), "text-anchor": "middle", fill: "#334155", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 10}});
-      valueLabel.textContent = String(value);
-      svg.appendChild(valueLabel);
-      const categoryLabel = svgElement("text", {{x: x + barWidth / 2, y: plot.bottom + 20, "text-anchor": "middle", fill: "#334155", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 10}});
-      categoryLabel.textContent = String(spec.categories[index]);
-      svg.appendChild(categoryLabel);
+    spec.categories.forEach((category, index) => {{
+      const x = left + columnWidth * (index + 0.5);
+      const header = svgElement("text", {{x, y: top - 8, "text-anchor": "middle", fill: "#334155", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": Math.max(6, Math.min(11, columnWidth * 0.2)), "textLength": Math.max(1, columnWidth - 3), "lengthAdjust": "spacingAndGlyphs"}});
+      header.textContent = String(category);
+      const tip = svgElement("title", {{}}); tip.textContent = `Category ${{index + 1}}: ${{category}}`; header.appendChild(tip);
+      svg.appendChild(header);
+      svg.appendChild(svgElement("line", {{x1: left + columnWidth * index, y1: top, x2: left + columnWidth * index, y2: height - 6, stroke: "#e2e8f0", "stroke-width": 0.7}}));
     }});
-    chart.insertBefore(svg, specNode);
+    spec.series.forEach((series, rowIndex) => {{
+      const y = top + rowIndex * rowHeight;
+      const color = /^#[0-9a-f]{{6}}$/i.test(String(series.color || "")) ? String(series.color) : "#64748b";
+      svg.appendChild(svgElement("rect", {{x: 8, y: y + 1, width: 8, height: 8, fill: color}}));
+      const name = svgElement("text", {{x: 21, y: y + 9, fill: "#334155", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": 9, "textLength": Math.max(1, left - 28), "lengthAdjust": "spacingAndGlyphs"}});
+      name.textContent = String(series.name);
+      const seriesTip = svgElement("title", {{}}); seriesTip.textContent = `Series ${{rowIndex + 1}}: ${{series.name}}, color ${{series.color}}`; name.appendChild(seriesTip);
+      svg.appendChild(name);
+      series.values.forEach((value, categoryIndex) => {{
+        const x = left + columnWidth * (categoryIndex + 0.5);
+        const cell = svgElement("text", {{x, y: y + 9, "text-anchor": "middle", fill: "#0f172a", "font-family": "Segoe UI, Microsoft YaHei, sans-serif", "font-size": Math.max(6, Math.min(11, columnWidth * 0.2)), "textLength": Math.max(1, columnWidth - 3), "lengthAdjust": "spacingAndGlyphs"}});
+        cell.textContent = String(value);
+        const valueTip = svgElement("title", {{}}); valueTip.textContent = `${{series.name}} · ${{spec.categories[categoryIndex]}}: ${{value}}`; cell.appendChild(valueTip);
+        svg.appendChild(cell);
+      }});
+      svg.appendChild(svgElement("line", {{x1: 6, y1: y + rowHeight, x2: right, y2: y + rowHeight, stroke: "#cbd5e1", "stroke-width": 0.7}}));
+    }});
+    chart.insertBefore(svg, chart.querySelector("script[data-pptx-chart-spec]"));
   }};
-  const renderChartProjections = () => document.querySelectorAll("[data-pptx-chart]").forEach(renderColumnChartProjection);
+  const renderChartProjections = () => document.querySelectorAll("[data-pptx-chart]").forEach(renderChartProjection);
   const initial = Math.max(0, slides.findIndex((slide) => slide.classList.contains("active")));
   slides.forEach((slide) => {{
     slide.dataset.workbenchOriginalDisplay = getComputedStyle(slide).display;
@@ -598,7 +910,10 @@ def _injected_script(nonce: str) -> str:
   document.addEventListener("click", (event) => {{
     const target = event.target && event.target.closest ? event.target.closest("[data-workbench-marker]") : null;
     if (!target) return;
-    send("selection", {{marker: target.getAttribute("data-workbench-marker"), slide: Number(target.closest(".slide")?.dataset.workbenchSlide || 0)}});
+    send("selection", Object.assign(
+      {{marker: target.getAttribute("data-workbench-marker"), slide: Number(target.closest(".slide")?.dataset.workbenchSlide || 0)}},
+      inspectStyles(target),
+    ));
   }});
   window.addEventListener("message", (event) => {{
     if (event.source !== window.parent || !event.data || event.data.channel !== channel || event.data.type !== "show-slide") return;
@@ -606,6 +921,7 @@ def _injected_script(nonce: str) -> str:
   }});
   slides.forEach((slide, index) => {{ slide.dataset.workbenchSlide = String(index + 1); }});
   renderChartProjections();
+  renderShapeProjections();
   fit();
   window.addEventListener("resize", fit);
   activate(initial);
@@ -633,8 +949,10 @@ def build_preview(
     blocked_resources: list[dict[str, str]] = []
     replacements: list[tuple[int, int, str]] = []
     source_map: dict[str, dict[str, Any]] = {}
+    chart_projections: dict[str, dict[str, Any]] = {}
+    table_cells = _table_cell_metadata(text, parser.events, parser_repaired=parser.repaired)
     marker_count = 0
-    for event in parser.events:
+    for event_index, event in enumerate(parser.events):
         sanitized = _sanitize_start_tag(
             event,
             asset_root=asset_root,
@@ -675,6 +993,55 @@ def build_preview(
             status=status,
             reason=reason,
         ).as_dict()
+        inner_start = event.end
+        inner_end = event.end_start
+        inner = text[inner_start:inner_end] if inner_end is not None else ""
+        editable_text = (
+            kind in {"text", "table-cell"}
+            and not parser.repaired
+            and not event.self_closing
+            and not event.has_element_child
+            and not event.has_comment
+            and inner_end is not None
+            and "<" not in inner
+        )
+        entry.update(
+            {
+                "text_start": inner_start if editable_text else None,
+                "text_end": inner_end if editable_text else None,
+                "text_value": unescape(inner) if editable_text else None,
+                "text_editable": editable_text,
+                "text_reason": None
+                if editable_text
+                else (
+                    "parser_repaired_candidate"
+                    if parser.repaired
+                    else "text_leaf_required"
+                    if kind == "text"
+                    else "not_text"
+                ),
+                "attributes": dict(event.attrs),
+                "attribute_ranges": dict(event.attr_ranges),
+            }
+        )
+        if kind == "table-cell":
+            entry["table_cell"] = table_cells.get(
+                event_index,
+                {
+                    "ownership": "unknown",
+                    "read_only_reason": "The selected cell has no reliable table-grid mapping.",
+                },
+            )
+        elif kind == "chart":
+            chart_info, projection = _chart_info(
+                text,
+                parser.events,
+                event_index,
+                parser_repaired=parser.repaired,
+            )
+            entry["chart_spec"] = chart_info
+            if projection is not None:
+                chart_projections[marker] = projection
         source_map[marker] = entry
         replacements.append((event.start, event.end, _insert_marker(sanitized, marker)))
 
@@ -705,7 +1072,7 @@ def build_preview(
         f'<meta http-equiv="Content-Security-Policy" content="{escape(csp, quote=True)}">'
         '<style data-workbench-style="ephemeral">html,body{margin:0;overflow:hidden;}</style>'
     )
-    script = _injected_script(nonce)
+    script = _injected_script(nonce, chart_projections)
     insertions: dict[int, list[str]] = {}
     if parser.head_end is not None:
         insertions.setdefault(parser.head_end, []).append(prefix)

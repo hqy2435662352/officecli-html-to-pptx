@@ -46,7 +46,7 @@ def test_capabilities_are_author_only_and_use_product_envelope(
     assert payload["status"] == "PASS"
     assert payload["product"] == {
         "name": "officecli-html-to-pptx",
-        "version": "0.6.1",
+        "version": "0.6.2",
     }
     assert payload["data"]["commands"] == [
         "capabilities",

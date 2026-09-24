@@ -1,4 +1,4 @@
-"""Task-oriented V0.6.1 application operations.
+"""Task-oriented V0.6.2 application operations.
 
 The module is deliberately an orchestration layer, not a second renderer.  It
 owns the public command semantics, the Artifact Pair transaction, and the
@@ -250,6 +250,50 @@ def get_capabilities() -> CommandResult:
             "bind": "loopback-only",
             "session_token": "unguessable",
             "remote_network": False,
+            "inspector": {
+                "object_kinds": ["text", "shape", "picture", "table-cell", "chart", "localized-fallback"],
+                "computed_with_source_origin": True,
+                "class_inline_override_label": True,
+                "text": {
+                    "editable_scope": "one_simple_leaf_or_run",
+                    "properties": ["font-family", "font-size", "color", "font-weight", "font-style", "text-align"],
+                },
+                "shape": {
+                    "properties": ["geometry", "background-color", "border-color", "border-width", "opacity", "text"],
+                    "solid_fill_only": True,
+                },
+                "picture": {
+                    "properties": ["src", "object-fit"],
+                    "maximum_decoded_import_bytes": 10 * 1024 * 1024,
+                    "object_fit": ["fill", "contain", "cover"],
+                },
+                "table_cell": {
+                    "ownership": "merged_region_anchor",
+                    "properties": ["text", "background-color"],
+                    "covered_cell": "anchor_or_read_only",
+                },
+                "chart": {
+                    "families": ["column", "bar", "line", "pie", "doughnut"],
+                    "properties": ["title", "category", "series_name", "series_value", "series_color", "legend", "labels"],
+                    "category_chart_series_counts": [1, 2, 3],
+                    "part_to_whole_series_counts": [1],
+                    "preview": "semantic_projection_from_the_unique_inert_chart_spec",
+                },
+                "read_only_kinds": ["localized-fallback"],
+                "mutation": {
+                    "source_patch": True,
+                    "draft_compare_and_swap": ["draft_revision", "draft_sha256"],
+                    "preview_revision_required": True,
+                    "save_explicit": True,
+                },
+                "excluded": [
+                    "mixed_run_or_complex_parent_replacement",
+                    "shared_class_rule_editing",
+                    "table_structure_editing",
+                    "chart_structure_editing",
+                    "existing_pptx_editing",
+                ],
+            },
         },
         "scope": {
             "creates_new_pptx": True,
@@ -1380,7 +1424,7 @@ def finalize_build(evidence_bundle: str | Path) -> CommandResult:
         if result_payload.get("product") != {"name": PRODUCT_NAME, "version": PRODUCT_VERSION}:
             raise ValueError("result.json product identity does not match this product")
         if result_payload.get("status") != "VISUAL_REVIEW_REQUIRED":
-            raise ValueError("result.json is not a pending Product 0.6.1 build")
+            raise ValueError("result.json is not a pending Product 0.6.2 build")
         build_id = result_payload.get("build_id")
         if not isinstance(build_id, str) or not build_id:
             raise ValueError("result.json must contain a build_id")

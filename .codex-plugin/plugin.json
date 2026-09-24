@@ -1,6 +1,6 @@
 {
   "name": "officecli-html-to-pptx",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Build new editable PowerPoint decks and author them in the source-authoritative Workbench.",
   "author": {
     "name": "Design Arena"

@@ -39,6 +39,15 @@ INDEX_HTML = r"""<!doctype html>
     .slide-thumbnail .slide-label { font-size: 11px; text-align: center; }
     #selection-status { white-space: pre-wrap; color: #155e75; min-height: 2em; }
     #preview-error { white-space: pre-wrap; color: #9b1c1c; }
+    #inspector { border-top: 1px solid #d5dce2; margin-top: 14px; padding-top: 8px; }
+    #inspector h2 { font-size: 14px; margin: 4px 0 8px; }
+    #inspector textarea, #inspector input { display: block; width: 100%; box-sizing: border-box; margin: 4px 0 6px;
+      padding: 6px; border: 1px solid #93a4b3; border-radius: 4px; background: transparent; color: inherit; }
+    #inspector textarea { min-height: 58px; resize: vertical; }
+    .inspector-field { border-top: 1px solid #e3e8ed; padding: 6px 0; }
+    .inspector-field label { font-weight: 600; }
+    .inspector-field .muted { font-size: 11px; }
+    #source-diff { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f6f8; padding: 8px; }
     button { border: 1px solid #93a4b3; border-radius: 5px; padding: 7px 10px; margin: 0 5px 8px 0;
       background: #fff; color: inherit; cursor: pointer; }
     button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
@@ -93,6 +102,19 @@ INDEX_HTML = r"""<!doctype html>
         <dt>Output root</dt><dd id="output-root"></dd>
         <dt>Recovery</dt><dd id="recovery"></dd>
       </dl>
+      <section id="inspector" aria-label="Selected object Inspector">
+        <h2>Inspector</h2>
+        <p id="inspector-selection" class="muted">Select a mapped Preview object to inspect its supported fields.</p>
+        <label for="inspector-text">Text</label>
+        <textarea id="inspector-text" disabled></textarea>
+        <div id="inspector-text-origin" class="muted"></div>
+        <button id="apply-text" type="button" disabled>Apply text</button>
+        <div id="inspector-fields"></div>
+        <details>
+          <summary>Focused source diff</summary>
+          <pre id="source-diff" class="muted">No Inspector patch applied.</pre>
+        </details>
+      </section>
       <section id="diagnostics" aria-live="polite"></section>
       <p id="message" role="status"></p>
     </aside>
@@ -114,13 +136,29 @@ INDEX_HTML = r"""<!doctype html>
       const slideRail = document.getElementById("slide-rail");
       const previewError = document.getElementById("preview-error");
       const selectionStatus = document.getElementById("selection-status");
+      const inspectorSelection = document.getElementById("inspector-selection");
+      const inspectorText = document.getElementById("inspector-text");
+      const inspectorTextOrigin = document.getElementById("inspector-text-origin");
+      const applyTextButton = document.getElementById("apply-text");
+      const inspectorFields = document.getElementById("inspector-fields");
+      const sourceDiff = document.getElementById("source-diff");
       let snapshot = null;
       let sessionId = "";
-      let draftTimer = null;
       let previewTimer = null;
       let preview = null;
       let previewRequest = 0;
+      let selectionRequest = 0;
+      let selected = null;
+      let editVersion = 0;
+      let lastServerText = null;
+      let mutationQueue = Promise.resolve();
       let requestedSlide = 1;
+
+      function normalizedText(value) { return String(value).replace(/\r\n?/g, "\n"); }
+      function editorMatchesText(value, text) { return normalizedText(value) === normalizedText(text); }
+      function editorDraftText() {
+        return snapshot && editorMatchesText(editor.value, snapshot.text) ? snapshot.text : editor.value;
+      }
 
       async function api(path, options = {}) {
         const headers = Object.assign({"Accept": "application/json", "X-Workbench-Token": token}, options.headers || {});
@@ -136,6 +174,173 @@ INDEX_HTML = r"""<!doctype html>
         return body;
       }
 
+      function enqueueMutation(action) {
+        const result = mutationQueue.then(action);
+        mutationQueue = result.catch(() => {});
+        return result;
+      }
+
+      function draftPreconditions() {
+        return {
+          expected_draft_revision: snapshot.draft_revision,
+          expected_draft_sha256: snapshot.draft_sha256,
+        };
+      }
+
+      function updatePreview(body) {
+        if (!body.preview) return;
+        preview = body.preview;
+        if (body.preview.status === "CURRENT" && body.preview.html) {
+          previewFrame.srcdoc = body.preview.html;
+          renderRail();
+        }
+        paintPreviewState(body.preview);
+      }
+
+      function clearInspector(messageText = "Select a mapped Preview object to inspect its supported fields.") {
+        selected = null;
+        selectionRequest += 1;
+        inspectorSelection.textContent = messageText;
+        inspectorText.value = "";
+        inspectorText.disabled = true;
+        inspectorTextOrigin.textContent = "";
+        applyTextButton.disabled = true;
+        inspectorFields.replaceChildren();
+      }
+
+      function renderInspector(selection, identity) {
+        const inspector = selection.inspector || {};
+        selected = Object.assign({marker: selection.marker}, identity);
+        const label = `${selection.kind || "object"}${selection.tag ? ` · <${selection.tag}>` : ""}`;
+        inspectorSelection.textContent = `Slide ${selection.slide || "?"} · ${label}`;
+        const text = inspector.text || {};
+        inspectorText.value = text.source || "";
+        inspectorText.disabled = !text.editable;
+        inspectorTextOrigin.textContent = [
+          text.computed != null ? `Computed: ${text.computed}` : "Computed: unavailable",
+          text.origin ? `Source/origin: ${text.origin}` : "",
+          text.reason || inspector.read_only_reason || "",
+        ].filter(Boolean).join(" · ");
+        applyTextButton.disabled = !text.editable;
+        inspectorFields.replaceChildren();
+        Object.entries(inspector.fields || {}).forEach(([name, field]) => {
+          const row = document.createElement("div");
+          row.className = "inspector-field";
+          const labelNode = document.createElement("label");
+          labelNode.textContent = name;
+          const computedNode = document.createElement("div");
+          computedNode.className = "muted";
+          computedNode.textContent = `Computed: ${field.computed == null ? "unavailable" : field.computed}`;
+          const sourceNode = document.createElement("div");
+          sourceNode.className = "muted";
+          sourceNode.textContent = `Source/origin: ${field.source || field.origin || "none"}`;
+          row.append(labelNode, computedNode, sourceNode);
+          if (field.allowed_values) {
+            const allowed = document.createElement("div");
+            allowed.className = "muted";
+            allowed.textContent = `Allowed: ${field.allowed_values.join(", ")}`;
+            row.appendChild(allowed);
+          }
+          if (field.preview_note) {
+            const previewNote = document.createElement("div");
+            previewNote.className = "muted";
+            previewNote.textContent = field.preview_note;
+            row.appendChild(previewNote);
+          }
+          if (field.local_override && field.editable) {
+            const override = document.createElement("div");
+            override.className = "muted";
+            override.textContent = "Local override: this edits only the selected object; the shared class rule stays unchanged.";
+            row.appendChild(override);
+          }
+          if (field.control === "select") {
+            const select = document.createElement("select");
+            select.disabled = !field.editable;
+            select.setAttribute("aria-label", `${name} value`);
+            (field.options || []).forEach((optionValue) => {
+              const option = document.createElement("option");
+              option.value = String(optionValue);
+              option.textContent = String(optionValue);
+              select.appendChild(option);
+            });
+            if (field.edit_value != null) select.value = String(field.edit_value);
+            select.addEventListener("change", () => {
+              applyInspector({kind: "property", name, value: select.value});
+            });
+            row.appendChild(select);
+            if (field.reason) {
+              const reason = document.createElement("div");
+              reason.className = "muted";
+              reason.textContent = `Read-only: ${field.reason}`;
+              row.appendChild(reason);
+            }
+            inspectorFields.appendChild(row);
+            return;
+          }
+          if (field.control === "image-file") {
+            const fileInput = document.createElement("input");
+            fileInput.type = "file";
+            fileInput.accept = "image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml";
+            fileInput.disabled = !field.editable;
+            fileInput.setAttribute("aria-label", "Replacement image file, up to 10 MiB");
+            fileInput.addEventListener("change", () => {
+              const file = fileInput.files && fileInput.files[0];
+              if (!file) return;
+              if (file.size > 10 * 1024 * 1024) {
+                showError(new Error("Replacement image exceeds the 10 MiB decoded import limit."));
+                fileInput.value = "";
+                return;
+              }
+              const chosen = Object.assign({}, selected);
+              const reader = new FileReader();
+              reader.onerror = () => showError(new Error("Could not read the selected image file."));
+              reader.onload = () => {
+                if (typeof reader.result !== "string") {
+                  showError(new Error("The selected image did not produce a data URI."));
+                  return;
+                }
+                applyInspector({kind: "property", name, value: reader.result}, chosen);
+              };
+              reader.readAsDataURL(file);
+            });
+            const hint = document.createElement("div");
+            hint.className = "muted";
+            hint.textContent = "Choose a supported image file. MIME, payload and decoded size are checked before the Draft changes.";
+            row.append(labelNode, computedNode, sourceNode, fileInput, hint);
+            if (field.reason) {
+              const reason = document.createElement("div");
+              reason.className = "muted";
+              reason.textContent = `Read-only: ${field.reason}`;
+              row.appendChild(reason);
+            }
+            inspectorFields.appendChild(row);
+            return;
+          }
+          const input = document.createElement("input");
+          input.type = field.input_type || "text";
+          input.value = field.edit_value != null ? String(field.edit_value) : (field.computed == null ? "" : String(field.computed));
+          input.disabled = !field.editable;
+          input.setAttribute("aria-label", `${name} value`);
+          const apply = document.createElement("button");
+          apply.type = "button";
+          apply.textContent = `Apply ${name}`;
+          apply.disabled = !field.editable;
+          apply.addEventListener("click", () => applyInspector(Object.assign(
+            {}, field.intent || {kind: "property", name}, {value: input.value}
+          )));
+          row.append(input, apply);
+          if (field.reason) {
+            const reason = document.createElement("div");
+            reason.className = "muted";
+            reason.textContent = `Read-only: ${field.reason}`;
+            row.appendChild(reason);
+          }
+          inspectorFields.appendChild(row);
+        });
+        selectionStatus.dataset.mapping = selection.status || "mapped";
+        selectionStatus.textContent = `Selected ${label} at line ${selection.line}, column ${selection.column}.`;
+      }
+
       function paintPreviewState(value) {
         const status = value.status || "IDLE";
         previewStatus.dataset.status = status;
@@ -144,11 +349,16 @@ INDEX_HTML = r"""<!doctype html>
         else previewError.textContent = "";
       }
 
-      function paint(body) {
+      function paint(body, editorVersion = null) {
         if (body.session_id) sessionId = body.session_id;
         snapshot = body.document;
-        if (document.activeElement !== editor || editor.value === "") editor.value = snapshot.text;
-        state.textContent = snapshot.state;
+        const editorWasInSync = lastServerText === null || editorMatchesText(editor.value, lastServerText);
+        if ((editorVersion === null && editorWasInSync) || editorVersion === editVersion) {
+          editor.value = snapshot.text;
+        }
+        lastServerText = snapshot.text;
+        const editorMatchesDraft = editorMatchesText(editor.value, snapshot.text);
+        state.textContent = editorMatchesDraft ? snapshot.state : "DIRTY";
         document.getElementById("source").textContent = snapshot.source_path;
         document.getElementById("source-sha").textContent = snapshot.source_sha256;
         document.getElementById("draft-sha").textContent = snapshot.draft_sha256;
@@ -188,6 +398,7 @@ INDEX_HTML = r"""<!doctype html>
           });
         }
         build.disabled = !(
+          editorMatchesDraft &&
           snapshot.author_status === "AUTHOR" &&
           snapshot.contract_status === "PASS" &&
           snapshot.state !== "DIRTY" &&
@@ -244,24 +455,27 @@ INDEX_HTML = r"""<!doctype html>
           wrapper.append(button, label);
           slideRail.appendChild(wrapper);
         });
-        selectSlide(1);
+        selectSlide(requestedSlide);
       }
 
       async function refreshPreview() {
         const requestId = ++previewRequest;
         paintPreviewState({status: "STALE"});
         try {
-          const body = await api("/api/preview", {
-            method: "POST",
-            body: JSON.stringify({text: editor.value}),
+          const result = await enqueueMutation(async () => {
+            const version = editVersion;
+            const body = await api("/api/preview", {
+              method: "POST",
+              body: JSON.stringify(Object.assign({text: editorDraftText()}, draftPreconditions())),
+            });
+            paint(body, version);
+            if (requestId !== previewRequest) paintPreviewState({status: "STALE"});
+            return {body, version};
           });
           if (requestId !== previewRequest) return;
-          paint(body);
-          preview = body.preview;
-          if (body.preview.status === "CURRENT" && body.preview.html) {
-            previewFrame.srcdoc = body.preview.html;
-            renderRail();
-          }
+          const body = result.body;
+          updatePreview(body);
+          clearInspector();
           if (!body.ok) previewError.textContent = (body.preview.error && body.preview.error.message) || "Preview failed";
         } catch (error) {
           if (requestId !== previewRequest) return;
@@ -275,31 +489,97 @@ INDEX_HTML = r"""<!doctype html>
         previewTimer = setTimeout(refreshPreview, 300);
       }
 
+      async function applyInspector(intent, selection = selected) {
+        if (!selection || !snapshot) return;
+        if (!editorMatchesText(editor.value, snapshot.text)) {
+          showError(new Error("Source editor has an unsent change; wait for Preview to refresh, then select the object again."));
+          return;
+        }
+        if (previewTimer) clearTimeout(previewTimer);
+        previewTimer = null;
+        const chosen = Object.assign({}, selection);
+        const version = editVersion;
+        try {
+          const body = await enqueueMutation(async () => {
+            if (
+              !selected || selected.marker !== chosen.marker || selected.preview_revision !== chosen.preview_revision ||
+              editVersion !== version || !editorMatchesText(editor.value, snapshot.text) ||
+              snapshot.draft_revision !== chosen.draft_revision ||
+              snapshot.draft_sha256 !== chosen.draft_sha256 ||
+              !preview || preview.revision !== chosen.preview_revision || preview.status !== "CURRENT"
+            ) throw new Error("Preview selection is stale; refresh Preview and select the object again.");
+            const response = await api("/api/inspector/apply", {
+              method: "POST",
+              body: JSON.stringify({
+                marker: chosen.marker,
+                preview_revision: chosen.preview_revision,
+                draft_revision: chosen.draft_revision,
+                draft_sha256: chosen.draft_sha256,
+                intent,
+              }),
+            });
+            paint(response, version);
+            return response;
+          });
+          if (version !== editVersion) {
+            paintPreviewState({status: "STALE"});
+            return;
+          }
+          if (body.source_patch) sourceDiff.textContent = body.source_patch.diff;
+          updatePreview(body);
+          clearInspector("Patch applied to the Draft. Select the refreshed Preview object to continue.");
+          message.textContent = body.source_patch && body.source_patch.local_override
+            ? "Applied as a local override; the shared class rule remains unchanged."
+            : "Inspector patch applied to the Draft. Save and Check remain explicit.";
+        } catch (error) { showError(error); }
+      }
+
       window.addEventListener("message", async (event) => {
         if (!event.data || event.source !== previewFrame.contentWindow || event.data.channel !== "officecli-workbench-preview") return;
+        if (event.data.type === "ready") {
+          selectSlide(requestedSlide);
+          return;
+        }
         if (event.data.type === "slide") {
           const reported = Number(event.data.index) || 1;
           if (reported === requestedSlide) selectSlide(reported, false);
           return;
         }
         if (event.data.type !== "selection" || !event.data.marker || !preview) return;
+        const requestId = ++selectionRequest;
+        const selectedPreview = preview;
+        const identity = {
+          preview_revision: selectedPreview.revision,
+          draft_revision: selectedPreview.draft_revision,
+          draft_sha256: selectedPreview.draft_sha256,
+        };
         try {
           const body = await api("/api/preview/select", {
             method: "POST",
-            body: JSON.stringify({marker: event.data.marker, revision: preview.revision}),
+            body: JSON.stringify(Object.assign({
+              marker: event.data.marker,
+              computed: {text: event.data.text, styles: event.data.styles},
+              matched_styles: event.data.matched_styles,
+            }, identity)),
           });
+          if (requestId !== selectionRequest || preview !== selectedPreview) return;
           const selected = body.selection || {};
           selectionStatus.dataset.mapping = selected.status || "unmapped";
           if (selected.status === "mapped") {
-            editor.focus();
-            editor.setSelectionRange(selected.editor_start ?? selected.source_start, selected.editor_end ?? selected.source_end);
-            selectionStatus.textContent = `Selected ${selected.kind} at line ${selected.line}, column ${selected.column}.`;
+            if (selected.editor_start != null && selected.editor_end != null) {
+              editor.focus();
+              editor.setSelectionRange(selected.editor_start, selected.editor_end);
+            }
+            renderInspector(selected, Object.assign({marker: event.data.marker}, identity));
           } else {
             selectionStatus.textContent = `Source selection ${selected.status || "unmapped"}: ${selected.reason || "No verified source range."}`;
+            clearInspector(selectionStatus.textContent);
           }
         } catch (error) {
+          if (requestId !== selectionRequest) return;
           selectionStatus.dataset.mapping = "unmapped";
           selectionStatus.textContent = error.message;
+          clearInspector(error.message);
         }
       });
 
@@ -311,27 +591,39 @@ INDEX_HTML = r"""<!doctype html>
       }
 
       editor.addEventListener("input", () => {
+        editVersion += 1;
         state.textContent = "DIRTY";
         build.disabled = true;
         paintPreviewState({status: "STALE"});
-        if (draftTimer) clearTimeout(draftTimer);
-        draftTimer = setTimeout(async () => {
-          try { paint(await api("/api/draft", {method: "POST", body: JSON.stringify({text: editor.value})})); }
-          catch (error) { showError(error); }
-        }, 180);
+        clearInspector("Source changed. Wait for Preview to refresh, then select the object again.");
         schedulePreview();
       });
 
+      applyTextButton.addEventListener("click", () => applyInspector({kind: "text", value: inspectorText.value}));
+
       check.addEventListener("click", async () => {
         check.disabled = true;
-        try { paint(await api("/api/check", {method: "POST", body: JSON.stringify({text: editor.value})})); }
+        if (previewTimer) clearTimeout(previewTimer);
+        previewTimer = null;
+        try {
+          await enqueueMutation(async () => {
+            const version = editVersion;
+            const body = await api("/api/check", {
+              method: "POST",
+              body: JSON.stringify(Object.assign({text: editorDraftText()}, draftPreconditions())),
+            });
+            paint(body, version);
+            if (version !== editVersion) paintPreviewState({status: "STALE"});
+            if (body.preview && body.preview.status === "STALE") schedulePreview();
+          });
+        }
         catch (error) { showError(error); }
         finally { check.disabled = false; }
       });
 
       build.addEventListener("click", async () => {
         build.disabled = true;
-        try { paint(await api("/api/build", {method: "POST", body: JSON.stringify({})})); }
+        try { await enqueueMutation(async () => paint(await api("/api/build", {method: "POST", body: JSON.stringify({})}))); }
         catch (error) { showError(error); }
       });
       refreshPreviewButton.addEventListener("click", refreshPreview);
@@ -340,13 +632,37 @@ INDEX_HTML = r"""<!doctype html>
         if (!snapshot) return;
         state.textContent = "SAVING";
         save.disabled = true;
-        try { paint(await api("/api/save", {method: "POST", body: JSON.stringify({expected_sha256: snapshot.source_sha256, text: editor.value})})); }
+        if (previewTimer) clearTimeout(previewTimer);
+        previewTimer = null;
+        try {
+          await enqueueMutation(async () => {
+            const version = editVersion;
+            const body = await api("/api/save", {
+              method: "POST",
+              body: JSON.stringify(Object.assign({expected_sha256: snapshot.source_sha256, text: editorDraftText()}, draftPreconditions())),
+            });
+            paint(body, version);
+            if (version !== editVersion) paintPreviewState({status: "STALE"});
+            if (body.preview && body.preview.status === "STALE") schedulePreview();
+          });
+        }
         catch (error) { showError(error); }
         finally { save.disabled = false; }
       });
 
       recover.addEventListener("click", async () => {
-        try { paint(await api("/api/recovery/restore", {method: "POST"})); }
+        if (previewTimer) clearTimeout(previewTimer);
+        previewTimer = null;
+        try {
+          await enqueueMutation(async () => {
+            const body = await api("/api/recovery/restore", {
+              method: "POST",
+              body: JSON.stringify(draftPreconditions()),
+            });
+            paint(body);
+            schedulePreview();
+          });
+        }
         catch (error) { showError(error); }
       });
 
